@@ -1,0 +1,42 @@
+{
+  "name": "maxbio",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.18.0 <23",
+    "pnpm": "11.9.0"
+  },
+  "scripts": {
+    "prepare:packages": "pnpm --filter @maxbio/contracts build && pnpm --filter @maxbio/database generate && pnpm --filter @maxbio/database build",
+    "dev": "pnpm prepare:packages && pnpm --parallel --filter @maxbio/api --filter @maxbio/web dev",
+    "dev:api": "pnpm prepare:packages && pnpm --filter @maxbio/api dev",
+    "dev:web": "pnpm --filter @maxbio/contracts build && pnpm --filter @maxbio/web dev",
+    "build": "pnpm --filter @maxbio/database generate && pnpm -r build",
+    "lint": "eslint .",
+    "typecheck": "pnpm prepare:packages && pnpm -r typecheck",
+    "test": "pnpm prepare:packages && pnpm --filter @maxbio/api test",
+    "test:database": "pnpm prepare:packages && pnpm --filter @maxbio/database test:integration",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @maxbio/database generate",
+    "db:migrate": "pnpm --filter @maxbio/database migrate:deploy",
+    "db:migrate:dev": "pnpm --filter @maxbio/database migrate:dev",
+    "db:seed": "pnpm --filter @maxbio/database build && pnpm --filter @maxbio/database seed",
+    "db:studio": "pnpm --filter @maxbio/database studio"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.4",
+    "@types/node": "^22.18.0",
+    "concurrently": "^9.2.1",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.3.8",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.4.0",
+    "prettier": "3.9.9",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.0"
+  }
+}

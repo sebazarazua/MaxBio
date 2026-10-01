@@ -1,0 +1,8 @@
+node_modules
+.next
+dist
+dist-test
+pnpm-lock.yaml
+packages/database/src/generated
+artifacts
+**/next-env.d.ts
