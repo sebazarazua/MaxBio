@@ -9,7 +9,7 @@
     "dev": "pnpm build && concurrently -k -n compiler,api \"tsc -p tsconfig.json --watch --preserveWatchOutput\" \"node --env-file=../../.env --watch dist/main.js\"",
     "start": "node --env-file-if-exists=../../.env dist/main.js",
     "bootstrap:admin": "pnpm build && node --env-file=../../.env dist/modules/identity/bootstrap-admin.js",
-    "test:integration": "tsc -p tsconfig.test.json && node --env-file=../../.env --test dist-test/test/identity.integration.js",
+    "test:integration": "tsc -p tsconfig.test.json && node --env-file=../../.env --test dist-test/test/*.integration.js",
     "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "dependencies": {

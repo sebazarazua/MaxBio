@@ -1,17 +1,14 @@
+'use client';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { Icon } from './icon';
-
-const upcoming = [
-  { label: 'Productos', icon: 'products' },
-  { label: 'Stock', icon: 'stock' },
-  { label: 'Remitos', icon: 'document' },
-  { label: 'Facturación', icon: 'billing' },
-  { label: 'Trazabilidad', icon: 'trace' },
-  { label: 'Clientes', icon: 'clients' },
-  { label: 'Proveedores', icon: 'suppliers' },
+const links = [
+  { href: '/', label: 'Inicio', icon: 'home' },
+  { href: '/productos', label: 'Productos', icon: 'products' },
+  { href: '/proveedores', label: 'Proveedores', icon: 'suppliers' },
 ] as const;
-
 export function Navigation() {
+  const path = usePathname();
   return (
     <aside className="sidebar">
       <Link href="/" className="brand" aria-label="MaxBio — Inicio">
@@ -23,28 +20,23 @@ export function Navigation() {
         </span>
       </Link>
       <nav aria-label="Navegación principal">
-        <Link className="nav-home" href="/" aria-current="page">
-          <Icon name="home" />
-          Inicio
-        </Link>
-        <p className="nav-label" id="upcoming-label">
-          Próximas secciones
-        </p>
-        <ul className="nav-upcoming" aria-labelledby="upcoming-label">
-          {upcoming.map(({ label, icon }) => (
-            <li key={label}>
-              <span aria-disabled="true">
-                <Icon name={icon} />
-                {label}
-              </span>
-            </li>
-          ))}
-        </ul>
+        {links.map((link) => (
+          <Link
+            key={link.href}
+            className="catalog-nav"
+            href={link.href}
+            aria-current={
+              (link.href === '/' ? path === '/' : path.startsWith(link.href)) ? 'page' : undefined
+            }
+          >
+            <Icon name={link.icon} />
+            {link.label}
+          </Link>
+        ))}
       </nav>
       <p className="sidebar-note">
-        Un espacio para organizar
-        <br />
-        el trabajo de todos los días.
+        El catálogo de tu organización,
+        <br />a mano todos los días.
       </p>
     </aside>
   );

@@ -18,6 +18,8 @@ El navegador consulta `/api/system-status`. Next.js llama a `/api/v1/health` usa
 
 Identity agrega `/api/auth/*` → `/api/v1/auth/*`, cookie opaca HttpOnly y sesiones persistidas por dispositivo. La web solo presenta estado público de identidad después de validar el contrato; no importa modelos Prisma ni recibe verificadores. AuditService persiste eventos semánticos con la misma transacción de los cambios. La política completa está en [authentication.md](authentication.md).
 
+Catalog agrega páginas de productos/proveedores y `/api/catalog/*` → rutas concretas de `/api/v1`. El proxy valida contratos, limita rutas/métodos y cuerpos, transporta solo la cookie de sesión y exige CSRF en escrituras. Nest delega en CatalogService: contexto tenant obligatorio, reglas puras de identificadores/nombres, Prisma y auditoría en una transacción. PostgreSQL refuerza relaciones de tenant mediante FK compuestas. Ver [catalog.md](catalog.md).
+
 La conexión a PostgreSQL es diferida. La API puede iniciar cuando la base está caída: liveness sigue disponible y readiness devuelve 503. El pool tiene tiempos máximos de conexión y consulta; se libera al cerrar la aplicación.
 
 ## Límites de dominio previstos
@@ -35,7 +37,7 @@ La conexión a PostgreSQL es diferida. La API puede iniciar cuando la base está
 | Files / Documents                | Metadatos y representaciones; almacenamiento detrás de un adaptador   |
 | Integrations                     | Adaptadores externos; no autoridad sobre reglas internas de negocio   |
 
-Identity y Audit ya tienen implementación; los límites comerciales orientan el desarrollo y todavía no constituyen módulos ni esquema de datos definitivo. Lotes, series y movimientos inicialmente pertenecen al mismo dominio de inventario, evitando fragmentar operaciones que requieren una transacción.
+Identity, Audit y Catalog ya tienen implementación. Catalog agrupa Product, ProductIdentifier, Supplier, SupplierProduct, Brand y Category porque comparten este flujo comercial pequeño; no se crean seis módulos artificiales. Los otros límites orientan desarrollo futuro. Lotes, series y movimientos inicialmente pertenecen al mismo dominio de inventario, evitando fragmentar operaciones que requieren una transacción.
 
 ## Organización del backend
 
@@ -58,7 +60,7 @@ Es una convención para código futuro, no una obligación de crear cuatro carpe
 
 Modelo de base compartida, con pertenencias por organización. `User` representa identidad global; `Membership` relaciona usuario, organización y rol ADMIN/OPERATOR. La restricción única `(organizationId, userId)` evita pertenencias duplicadas. La baja se expresa mediante fechas, conservando las relaciones.
 
-**Estado actual:** autenticación, sesiones, contexto tenant y roles ADMIN/OPERATOR implementados. Guard global: solo health y login son públicos; las demás rutas exigen sesión y tenant válido por defecto. CsrfGuard protege todas las escrituras, incluido login. No acepta `x-user-id`, `x-organization-id` ni identidad declarada por el cliente como autoridad. User.disabledAt, Membership.revokedAt, Organization.archivedAt y expiración/revocación de sesión se comprueban en cada request. No existen operaciones comerciales expuestas.
+**Estado actual:** autenticación, sesiones, contexto tenant, roles ADMIN/OPERATOR y catálogo comercial implementados. Guard global: solo health y login son públicos; las demás rutas exigen sesión y tenant válido por defecto. CsrfGuard protege todas las escrituras, incluido login. No acepta `x-user-id`, `x-organization-id` ni identidad declarada por el cliente como autoridad. User.disabledAt, Membership.revokedAt, Organization.archivedAt y expiración/revocación de sesión se comprueban en cada request. Catálogo completa la protección de sus recursos con scope explícito y constraints.
 
 Una pertenencia activa se selecciona automáticamente en login. Varias requieren selección validada server-side, persistida por sesión. El contexto confiable es `RequestActorContext`: usuario, organización, membership, rol, sesión y requestId. `@IdentityOnly()` está limitado al lifecycle de identidad; `@Roles('ADMIN')` aplica autorización de rol. Los métodos administrativos application-only revalidan permisos y no conceden administración global de identidades a un admin de tenant.
 
@@ -72,7 +74,7 @@ Identity ya implementa y prueba los pasos 1–4. Antes de cualquier endpoint emp
 6. Incluir `organizationId` en índices y unicidad de negocio, y en claves foráneas compuestas para relaciones entre entidades de tenant. Un UUID opaco no es autorización.
 7. Probar lecturas y escrituras con dos organizaciones, IDs ajenos, pertenencia revocada y roles insuficientes. Para recursos ajenos devolver una respuesta que no revele su existencia.
 
-No hay filtros automáticos universales de Prisma: son fáciles de omitir en SQL, nested writes y operaciones especiales. Los repositorios futuros deberán expresar el alcance de organización de forma explícita. RLS está diferido y deberá evaluarse como defensa adicional antes de abrir el SaaS a organizaciones independientes; el modelo actual no garantiza aislamiento por sí solo.
+No hay filtros automáticos universales de Prisma: son fáciles de omitir en SQL, nested writes y operaciones especiales. Catalog expresa organizationId en consultas, escrituras, locks y relaciones; IDs ajenos dan 404. RLS está diferido y deberá evaluarse como defensa adicional antes de abrir el SaaS a organizaciones independientes. Las FK compuestas protegen relaciones, pero no impiden consultas SQL sin scope por un usuario de DB privilegiado.
 
 ## Auditoría y registros históricos
 
@@ -84,6 +86,6 @@ No confundir logs de operación con auditoría de negocio. Hoy los logs de error
 
 El inventario futuro derivará de movimientos; no habrá un campo editable tratado como fuente única de stock. Producto, lote, serie, vencimiento, estados y reservas requieren análisis del dominio. Los saldos podrán materializarse para consultas sin reemplazar el historial. Ajustes y reversiones serán operaciones explícitas; concurrencia, unidad de medida e idempotencia se decidirán antes de implementar.
 
-Un remito será una entidad estructurada con líneas y relaciones. PDF, impresión en formulario preimpreso y archivos son representaciones. Generar una representación no debe ser el único registro de una operación.
+Un remito será una entidad estructurada con líneas y relaciones. Sus líneas, y las de compras/facturas, guardarán snapshots de nombre, código y otros datos relevantes además de productId: renombrar el catálogo no debe reescribir documentos históricos. PDF, impresión en formulario preimpreso y archivos son representaciones. Generar una representación no debe ser el único registro de una operación.
 
 ARCA, ANMAT/SNT, almacenamiento, email e IA se conectarán mediante adaptadores fuera del dominio. Una IA futura operará exclusivamente mediante tools/casos de uso autorizados, con el mismo contexto, permisos y auditoría que un humano; no recibirá SQL libre ni credenciales de PostgreSQL. No se agregó broker, Redis ni procesamiento asíncrono preventivo.

@@ -15,14 +15,20 @@ enum MembershipRole {
 }
 
 model Organization {
-  id          String       @id @default(uuid()) @db.Uuid
-  name        String       @db.VarChar(160)
-  slug        String       @unique @db.VarChar(80)
-  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
-  archivedAt  DateTime?    @db.Timestamptz(3)
-  memberships Membership[]
-  auditEvents AuditEvent[]
+  id                 String              @id @default(uuid()) @db.Uuid
+  name               String              @db.VarChar(160)
+  slug               String              @unique @db.VarChar(80)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
+  archivedAt         DateTime?           @db.Timestamptz(3)
+  memberships        Membership[]
+  auditEvents        AuditEvent[]
+  products           Product[]
+  productIdentifiers ProductIdentifier[]
+  suppliers          Supplier[]
+  supplierProducts   SupplierProduct[]
+  brands             Brand[]
+  categories         Category[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -96,4 +102,140 @@ model AuditEvent {
   @@index([actorUserId, createdAt])
   @@index([sessionId])
   @@index([requestId])
+}
+
+enum UnitOfMeasure {
+  UNIT
+  PAIR
+  METER
+  CENTIMETER
+  LITER
+  MILLILITER
+  KILOGRAM
+  GRAM
+}
+
+enum ProductIdentifierKind {
+  GTIN
+  INTERNAL_CODE
+  INTERNAL_BARCODE
+}
+
+model Product {
+  id               String              @id @default(uuid()) @db.Uuid
+  organizationId   String              @db.Uuid
+  name             String              @db.VarChar(200)
+  description      String?             @db.VarChar(4000)
+  presentation     String?             @db.VarChar(200)
+  unitOfMeasure    UnitOfMeasure
+  model            String?             @db.VarChar(160)
+  manufacturerName String?             @db.VarChar(160)
+  brandId          String?             @db.Uuid
+  categoryId       String?             @db.Uuid
+  version          Int                 @default(1)
+  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+  archivedAt       DateTime?           @db.Timestamptz(3)
+  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  brand            Brand?              @relation(fields: [organizationId, brandId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  category         Category?           @relation(fields: [organizationId, categoryId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  identifiers      ProductIdentifier[]
+  supplierProducts SupplierProduct[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt, name, id])
+  @@index([organizationId, brandId])
+  @@index([organizationId, categoryId])
+}
+
+model ProductIdentifier {
+  id              String                @id @default(uuid()) @db.Uuid
+  organizationId  String                @db.Uuid
+  productId       String                @db.Uuid
+  kind            ProductIdentifierKind
+  value           String                @db.VarChar(128)
+  normalizedValue String                @db.VarChar(128)
+  createdAt       DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime              @updatedAt @db.Timestamptz(3)
+  archivedAt      DateTime?             @db.Timestamptz(3)
+  organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  product         Product               @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Incluye archivados: no liberar códigos históricos.
+  @@unique([organizationId, kind, normalizedValue])
+  @@index([organizationId, productId, archivedAt])
+}
+
+model Supplier {
+  id               String            @id @default(uuid()) @db.Uuid
+  organizationId   String            @db.Uuid
+  name             String            @db.VarChar(200)
+  legalName        String?           @db.VarChar(200)
+  contactName      String?           @db.VarChar(160)
+  email            String?           @db.VarChar(254)
+  phone            String?           @db.VarChar(50)
+  version          Int               @default(1)
+  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime          @updatedAt @db.Timestamptz(3)
+  archivedAt       DateTime?         @db.Timestamptz(3)
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supplierProducts SupplierProduct[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, archivedAt, name, id])
+}
+
+model SupplierProduct {
+  id                  String       @id @default(uuid()) @db.Uuid
+  organizationId      String       @db.Uuid
+  supplierId          String       @db.Uuid
+  productId           String       @db.Uuid
+  supplierCode        String?      @db.VarChar(128)
+  supplierDescription String?      @db.VarChar(1000)
+  version             Int          @default(1)
+  createdAt           DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime     @updatedAt @db.Timestamptz(3)
+  archivedAt          DateTime?    @db.Timestamptz(3)
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supplier            Supplier     @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  product             Product      @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, supplierId, productId])
+  @@unique([organizationId, supplierId, supplierCode])
+  @@index([organizationId, productId, archivedAt])
+  @@index([organizationId, supplierCode])
+}
+
+model Brand {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  name           String       @db.VarChar(160)
+  normalizedName String       @db.VarChar(160)
+  version        Int          @default(1)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
+  archivedAt     DateTime?    @db.Timestamptz(3)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  products       Product[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, normalizedName])
+  @@index([organizationId, archivedAt, name, id])
+}
+
+model Category {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  name           String       @db.VarChar(160)
+  normalizedName String       @db.VarChar(160)
+  version        Int          @default(1)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
+  archivedAt     DateTime?    @db.Timestamptz(3)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  products       Product[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, normalizedName])
+  @@index([organizationId, archivedAt, name, id])
 }

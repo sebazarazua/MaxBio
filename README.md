@@ -1,6 +1,6 @@
 # MaxBio
 
-Base para el sistema de gestión de una distribuidora de productos médicos argentina. Incluye web, API REST, PostgreSQL y la fundación de Identity y Audit. Los módulos comerciales se desarrollarán por separado.
+Sistema de gestión de una distribuidora de productos médicos argentina. Incluye web, API REST, PostgreSQL, Identity, Audit y el primer módulo comercial: **Catálogo** (productos, identificadores, proveedores, marcas y categorías por organización).
 
 ## Requisitos
 
@@ -29,7 +29,17 @@ pnpm dev
 
 En macOS/Linux, reemplazar los dos comandos `Copy-Item` por `cp`. No sobrescribir archivos `.env` propios al actualizar una instalación.
 
-Abrir <http://localhost:3000>. Iniciar sesión con el administrador propio. Las siguientes visitas entran directamente mientras la sesión siga vigente. Después del login aparece **El sistema está conectado** y el botón **Cerrar sesión**. El seed sigue siendo idempotente y crea únicamente la organización MaxBio; no hay credenciales conocidas ni usuarios de prueba.
+Abrir <http://localhost:3000>. Iniciar sesión con el administrador propio. Las siguientes visitas entran directamente mientras la sesión siga vigente. Después del login aparecen **Productos**, **Proveedores**, el estado de conexión y **Cerrar sesión**. El seed sigue siendo idempotente y crea únicamente la organización MaxBio; no hay credenciales conocidas ni usuarios de prueba.
+
+## Usar el catálogo
+
+En **Productos → Nuevo producto**, completar nombre y unidad; código interno, marca, categoría y presentación son opcionales. Marca y categoría pueden crearse dentro del formulario. Los datos complementarios están en «Más datos». Guardar abre la ficha: permite editar, agregar identificadores y asociar/crear proveedores con su código comercial. La búsqueda encuentra nombre, códigos, GTIN, marca, fabricante y código de proveedor; los filtros son opcionales.
+
+**Proveedores** permite buscar, consultar contactos, crear y editar. Sus fichas muestran productos asociados. **Productos → Administrar marcas y categorías** permite cambiar nombres y archivar/restaurar opciones. Todas las listas y selectores están paginados. **Incluir archivados** permite recuperar registros históricos; el archivado nunca libera identificadores para otro producto.
+
+ADMIN puede modificar el catálogo. OPERATOR puede consultar y buscar; los controles de escritura están ocultos y la API rechaza mutaciones. Si otra persona modificó un registro, el formulario muestra el conflicto y permite cargar la información actual antes de guardar. Presentación (por ejemplo, «Caja x 100») y unidad (por ejemplo, «Unidad») son conceptos separados: no hay conversiones de cantidades.
+
+Modelo, constraints, endpoints y decisiones en [catalog.md](docs/architecture/catalog.md).
 
 ## Crear el primer administrador
 
@@ -128,7 +138,7 @@ pnpm test:database
 pnpm build
 ```
 
-`pnpm test` ejecuta pruebas HTTP y de seguridad con el runner nativo de Node, sin PostgreSQL. `pnpm test:database` necesita la base migrada: prueba constraints y autenticación HTTP real, roles, tenant, revocación y auditoría transaccional. Usa fixtures UUID que elimina al terminar. Usar una base de desarrollo/pruebas.
+`pnpm test` ejecuta pruebas HTTP, contratos, reglas de identificadores y seguridad con el runner nativo de Node, sin PostgreSQL. `pnpm test:database` necesita la base migrada: prueba constraints, autenticación y catálogo HTTP real, roles, tenant, concurrencia, revocación y auditoría transaccional. Usa fixtures UUID que elimina al terminar. Usar una base de desarrollo/pruebas.
 
 La evidencia del bootstrap y sus límites están en [verification.md](docs/architecture/verification.md).
 
@@ -147,6 +157,6 @@ El build no requiere una base activa. Para probar las aplicaciones compiladas, e
 
 ## Alcance y próximo paso
 
-No se implementaron catálogo, inventario, scanner, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
+Catálogo está implementado. No se implementaron inventario, scanner, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
 
-El siguiente paso recomendado es analizar Products con los usuarios y luego exigir `RequestActorContext` en cada caso de uso, alcance explícito por organización y auditoría en la transacción. La presente tarea se detiene antes de implementar Products. Las decisiones de dominio están registradas en [decisiones](docs/architecture/decisions.md).
+El siguiente paso recomendado es probar Catálogo con los usuarios y datos reales para ajustar vocabulario, códigos y búsquedas. Antes de Inventory, definir unidades/conversiones y el modelo de movimientos. Esta entrega se detiene en Catálogo. Las decisiones de dominio están registradas en [decisiones](docs/architecture/decisions.md).

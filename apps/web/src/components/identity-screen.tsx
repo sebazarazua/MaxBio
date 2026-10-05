@@ -1,12 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import { apiErrorSchema, identityResponseSchema } from '@maxbio/contracts';
 import type { IdentityResponse } from '@maxbio/contracts';
 import { ConnectionStatus } from './connection-status';
 
-export function IdentityScreen() {
+export function IdentityScreen({
+  children,
+}: {
+  children?: (identity: IdentityResponse) => ReactNode;
+}) {
   const [identity, setIdentity] = useState<IdentityResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -54,6 +58,7 @@ export function IdentityScreen() {
     };
     window.addEventListener('focus', revisit);
     window.addEventListener('pageshow', revisit);
+    window.addEventListener('maxbio-session-check', revisit);
     document.addEventListener('visibilitychange', revisit);
     // Mantener viva una pantalla usada, sin renovar pestañas abandonadas solo por un timer.
     let lastCheck = Date.now();
@@ -68,6 +73,7 @@ export function IdentityScreen() {
     return () => {
       window.removeEventListener('focus', revisit);
       window.removeEventListener('pageshow', revisit);
+      window.removeEventListener('maxbio-session-check', revisit);
       document.removeEventListener('visibilitychange', revisit);
       window.removeEventListener('pointerdown', activity);
       window.removeEventListener('keydown', activity);
@@ -179,6 +185,7 @@ export function IdentityScreen() {
         </p>
       </section>
     );
+  if (identity.activeOrganization && children) return children(identity);
   return (
     <section className="auth-card workspace-card" aria-labelledby="welcome-title">
       <p className="auth-brand">MAXBIO</p>

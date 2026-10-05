@@ -1,6 +1,6 @@
 # Decisiones del bootstrap
 
-Bootstrap: 1 de octubre de 2026. Fundación de seguridad: 4 de octubre de 2026. Estado: desarrollo local, sin módulos comerciales. Las decisiones originales siguientes se conservan como historial; la sección Identity/Audit actualiza las referidas a autenticación y proxies.
+Bootstrap: 1 de octubre de 2026. Fundación de seguridad: 4 de octubre de 2026. Catálogo: 5 de octubre de 2026. Estado: desarrollo local con Identity, Audit y Catalog. Las decisiones originales siguientes se conservan como historial; las secciones posteriores actualizan autenticación, proxies y dominio comercial.
 
 | Decisión                                           | Motivo y consecuencia                                                                                                         |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -38,7 +38,7 @@ Bootstrap: 1 de octubre de 2026. Fundación de seguridad: 4 de octubre de 2026. 
 - Recuperación/cambio de contraseña, altas posteriores, verificación de email, proveedores externos, MFA/passkeys y administración global de identidades multi-organización. Login, sesiones, selección y autorización básica ya están implementados.
 - Retención y acceso al historial; protección adicional contra modificación directa por administradores de DB. Auditoría persistida/transaccional y metadata limitada ya están implementadas.
 - RLS, aislamiento de archivos y política productiva de secretos, TLS, backups y recuperación.
-- Modelo de producto, identificadores, unidades, proveedores y clientes.
+- Clientes y ampliaciones fiscales/económicas del catálogo. Product, identificadores, unidad/presentación y proveedores V1 ya están definidos en Catalog.
 - Movimientos, reservas, disponibilidad, lotes, series, vencimientos y concurrencia.
 - Ciclo de vida y numeración de remitos; formatos de impresión y relación con facturación.
 - ARCA y ANMAT/SNT: alcance real, credenciales, certificados, ambientes y requisitos aplicables a validar en su etapa.
@@ -46,7 +46,7 @@ Bootstrap: 1 de octubre de 2026. Fundación de seguridad: 4 de octubre de 2026. 
 - Jobs, colas/outbox e infraestructura adicional únicamente ante una necesidad comprobada.
 - Entorno productivo, CI/CD, observabilidad extendida y estrategia de despliegue.
 
-No se implementaron catálogo, inventario, scanner, remitos, facturación, ARCA, ANMAT, presupuestos, WhatsApp, email, IA, analytics ni microservicios. No se hicieron commits ni pushes como parte del bootstrap.
+Al terminar el bootstrap no existían módulos comerciales. Catalog se añadió el 5 de octubre; inventario, scanner, remitos, facturación, ARCA, ANMAT, presupuestos, WhatsApp, email, IA, analytics y microservicios siguen diferidos. No se hicieron commits ni pushes.
 
 ## Identity y Audit — 4 de octubre de 2026
 
@@ -69,6 +69,30 @@ No se implementaron catálogo, inventario, scanner, remitos, facturación, ARCA,
 | Admin empresarial no es admin global           | Administración application-only de identidades exclusivas del tenant; las compartidas requieren política futura                      |
 
 Detalle y límites en [authentication.md](authentication.md). Se preserva la migración inicial y se añade `20261004120000_identity_sessions_audit`; no se usó db push.
+
+## Catalog — 5 de octubre de 2026
+
+| Decisión                                 | Motivo y consecuencia                                                                                                             |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Catálogo tenant-scoped                   | Cada entidad pertenece a Organization; no existe un catálogo global compartido                                                    |
+| Un módulo coherente Catalog              | Seis entidades en un flujo pequeño; controller REST, application service transaccional y reglas puras, sin repositorios genéricos |
+| Scope explícito y FKs compuestas         | Lecturas/escrituras con RequestActorContext; PostgreSQL impide asociaciones cross-tenant                                          |
+| Product sin stock ni precios             | La identidad descriptiva no sustituye inventario ni hechos económicos                                                             |
+| UnitOfMeasure separado de presentation   | Enum pequeño de medidas; texto de empaque; conversiones diferidas                                                                 |
+| Código propio como ProductIdentifier     | Un único lugar para códigos; GTIN con checksum/canonización a 14; internos conservadores                                          |
+| Unicidad histórica de códigos y vínculos | Archivado conserva titulares; no hay reutilización/reasignación silenciosa                                                        |
+| Brand/Category planas y normalizadas     | Evita duplicados triviales con unique/CHECK; altas inline y administración secundaria                                             |
+| manufacturerName como texto              | No existe una necesidad inmediata de una entidad Manufacturer                                                                     |
+| SupplierProduct sin costo                | Oferta/código del proveedor, no compra ni fuente económica                                                                        |
+| expectedVersion + locks con scope        | Detecta ediciones obsoletas con 409; versión de producto también protege identificadores y altas de vínculos                      |
+| Auditoría en la transacción              | Fallo de AuditService revierte el cambio; metadata comercial vacía, sin DTO/contactos                                             |
+| ADMIN modifica, OPERATOR consulta        | Política conservadora sobre guards existentes, revalidada en application y centralizada en UI                                     |
+| Paginación offset acotada                | 20 por defecto, máximo 100; relaciones y selectores paginados; búsquedas PostgreSQL sin infraestructura adicional                 |
+| Proxy comercial restringido              | Whitelist concreta de rutas/métodos/contratos, CSRF, cookie de sesión, límites y timeout; URL privada en servidor                 |
+| Snapshots en documentos futuros          | Nombre/código histórico no dependerán solo de Product actual; documentos todavía diferidos                                        |
+| Sin dependencias nuevas                  | Se reutiliza infraestructura existente y no se limpia configuración de agentes                                                    |
+
+Detalles, endpoints, constraints e índices en [catalog.md](catalog.md). No se implementan Inventory, Scanner, Remitos ni campos económicos.
 
 ## Referencias técnicas
 

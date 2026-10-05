@@ -6,12 +6,14 @@ import { validateEnvironment } from './config/environment.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
 import { CsrfGuard } from './common/auth/csrf.guard.js';
+import { CatalogModule } from './modules/catalog/catalog.module.js';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, validate: validateEnvironment }),
     HealthModule,
     IdentityModule,
+    CatalogModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: CsrfGuard },
