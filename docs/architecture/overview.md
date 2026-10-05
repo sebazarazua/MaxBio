@@ -1,4 +1,4 @@
-# Arquitectura inicial
+# Arquitectura de MaxBio
 
 MaxBio se organiza como **monolito modular**: una API desplegable y una web desplegable, con PostgreSQL compartido por los módulos de la API. La separación de procesos web/API no implica microservicios de negocio.
 
@@ -6,7 +6,7 @@ MaxBio se organiza como **monolito modular**: una API desplegable y una web desp
 
 ```mermaid
 flowchart LR
-  Browser[Navegador] --> Web[Next.js: shell y proxy público]
+  Browser[Navegador] --> Web[Next.js: login y proxies limitados]
   Web --> API[NestJS: REST /api/v1]
   API --> DB[(PostgreSQL)]
   Contracts[Contratos HTTP] -.-> Web
@@ -15,6 +15,8 @@ flowchart LR
 ```
 
 El navegador consulta `/api/system-status`. Next.js llama a `/api/v1/health` usando una URL del entorno del servidor. El controlador delega en `HealthService`, que consulta `DatabaseService`. Este servicio ejecuta `SELECT 1` con Prisma y `@prisma/adapter-pg`. Next.js valida la respuesta; la UI representa conexión, comprobación o indisponibilidad. La información técnica no se muestra en la pantalla.
+
+Identity agrega `/api/auth/*` → `/api/v1/auth/*`, cookie opaca HttpOnly y sesiones persistidas por dispositivo. La web solo presenta estado público de identidad después de validar el contrato; no importa modelos Prisma ni recibe verificadores. AuditService persiste eventos semánticos con la misma transacción de los cambios. La política completa está en [authentication.md](authentication.md).
 
 La conexión a PostgreSQL es diferida. La API puede iniciar cuando la base está caída: liveness sigue disponible y readiness devuelve 503. El pool tiene tiempos máximos de conexión y consulta; se libera al cerrar la aplicación.
 
@@ -33,7 +35,7 @@ La conexión a PostgreSQL es diferida. La API puede iniciar cuando la base está
 | Files / Documents                | Metadatos y representaciones; almacenamiento detrás de un adaptador   |
 | Integrations                     | Adaptadores externos; no autoridad sobre reglas internas de negocio   |
 
-Estos límites orientan el desarrollo; no son módulos implementados ni un esquema de datos definitivo. Lotes, series y movimientos inicialmente pertenecen al mismo dominio de inventario, evitando fragmentar operaciones que requieren una transacción.
+Identity y Audit ya tienen implementación; los límites comerciales orientan el desarrollo y todavía no constituyen módulos ni esquema de datos definitivo. Lotes, series y movimientos inicialmente pertenecen al mismo dominio de inventario, evitando fragmentar operaciones que requieren una transacción.
 
 ## Organización del backend
 
@@ -56,14 +58,16 @@ Es una convención para código futuro, no una obligación de crear cuatro carpe
 
 Modelo de base compartida, con pertenencias por organización. `User` representa identidad global; `Membership` relaciona usuario, organización y rol ADMIN/OPERATOR. La restricción única `(organizationId, userId)` evita pertenencias duplicadas. La baja se expresa mediante fechas, conservando las relaciones.
 
-**Estado actual:** no hay autenticación ni contexto de tenant implementados. El guard global cierra las rutas por defecto; solo health lleva `@Public()`. No acepta `x-user-id`, `x-organization-id` ni una identidad declarada por el cliente como autoridad. No existen lecturas o escrituras empresariales expuestas. Los timestamps de baja son datos del modelo: aún no hay casos de uso que apliquen sus efectos.
+**Estado actual:** autenticación, sesiones, contexto tenant y roles ADMIN/OPERATOR implementados. Guard global: solo health y login son públicos; las demás rutas exigen sesión y tenant válido por defecto. CsrfGuard protege todas las escrituras, incluido login. No acepta `x-user-id`, `x-organization-id` ni identidad declarada por el cliente como autoridad. User.disabledAt, Membership.revokedAt, Organization.archivedAt y expiración/revocación de sesión se comprueban en cada request. No existen operaciones comerciales expuestas.
 
-Antes de cualquier endpoint empresarial, implementar y probar esta secuencia:
+Una pertenencia activa se selecciona automáticamente en login. Varias requieren selección validada server-side, persistida por sesión. El contexto confiable es `RequestActorContext`: usuario, organización, membership, rol, sesión y requestId. `@IdentityOnly()` está limitado al lifecycle de identidad; `@Roles('ADMIN')` aplica autorización de rol. Los métodos administrativos application-only revalidan permisos y no conceden administración global de identidades a un admin de tenant.
+
+Identity ya implementa y prueba los pasos 1–4. Antes de cualquier endpoint empresarial, completar la secuencia para sus propios recursos:
 
 1. Autenticar una identidad mediante un mecanismo de sesión verificado en el servidor.
 2. Verificar usuario habilitado, organización no archivada y pertenencia no revocada.
 3. Resolver organización activa y rol desde esa pertenencia; una selección enviada por el cliente es solo una solicitud que debe validarse.
-4. Crear contexto de ejecución confiable con `userId`, `organizationId`, rol y `requestId`.
+4. Crear contexto confiable con `userId`, `organizationId`, `membershipId`, rol, `sessionId` y `requestId`.
 5. Exigir ese contexto en cada caso de uso/repository empresarial. Filtrar lecturas, escrituras, listados, exports, archivos e identificadores por `organizationId`.
 6. Incluir `organizationId` en índices y unicidad de negocio, y en claves foráneas compuestas para relaciones entre entidades de tenant. Un UUID opaco no es autorización.
 7. Probar lecturas y escrituras con dos organizaciones, IDs ajenos, pertenencia revocada y roles insuficientes. Para recursos ajenos devolver una respuesta que no revele su existencia.
@@ -72,7 +76,7 @@ No hay filtros automáticos universales de Prisma: son fáciles de omitir en SQL
 
 ## Auditoría y registros históricos
 
-Auditoría es una capacidad transversal prevista, todavía sin tabla ni servicio. Antes del primer caso de uso que modifique datos, definir un registro append-only con organización, actor, acción, recurso, resultado, instante UTC y correlación. Registrar cambios y su auditoría de éxito en la misma transacción. Definir el tratamiento de fallos y acciones externas, con idempotencia cuando corresponda. Minimizar datos personales y excluir contraseñas, tokens y secretos.
+AuditEvent y AuditService implementan auditoría append-oriented con organización/actor/sesión opcionales para eventos de identidad, acción, recurso, resultado, instante UTC y correlación. Login, logout, selección, revocación y disable guardan cambio y evento en una transacción. La interfaz acepta `Prisma.TransactionClient` para cambios comerciales futuros. Metadata se construye mediante allowlist acotada; no contiene credenciales, hashes, tokens, cookies ni dumps de requests. No se expusieron endpoints de edición/borrado. El propietario de DB conserva capacidad técnica de modificar datos; retención y protección frente a administradores de DB se deciden antes de producción.
 
 No confundir logs de operación con auditoría de negocio. Hoy los logs de error solo permiten correlación y no constituyen una auditoría completa. No aplicar borrado físico genérico. Las correcciones de registros históricos necesitarán acciones explícitas, vinculadas al registro original; políticas de retención y obligaciones se analizarán con información real, sin inventar requisitos regulatorios.
 

@@ -4,12 +4,18 @@ import { ConfigModule } from '@nestjs/config';
 import { AccessGuard } from './common/auth/access.guard.js';
 import { validateEnvironment } from './config/environment.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { IdentityModule } from './modules/identity/identity.module.js';
+import { CsrfGuard } from './common/auth/csrf.guard.js';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, validate: validateEnvironment }),
     HealthModule,
+    IdentityModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: AccessGuard }],
+  providers: [
+    { provide: APP_GUARD, useClass: CsrfGuard },
+    { provide: APP_GUARD, useClass: AccessGuard },
+  ],
 })
 export class AppModule {}

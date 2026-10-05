@@ -5,7 +5,7 @@ import { createDatabaseClient } from '@maxbio/database';
 
 @Injectable()
 export class DatabaseService implements OnModuleDestroy {
-  private readonly client;
+  readonly client;
 
   constructor(@Inject(ConfigService) config: ConfigService) {
     this.client = createDatabaseClient(config.getOrThrow<string>('DATABASE_URL'));

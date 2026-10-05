@@ -3,6 +3,7 @@ import { PrismaClient } from './generated/prisma/client.js';
 
 export { PrismaClient } from './generated/prisma/client.js';
 export { MembershipRole } from './generated/prisma/enums.js';
+export type { Prisma, Session, Membership, User } from './generated/prisma/client.js';
 
 // La API es dueña del ciclo de vida; no hay singleton global compartido con la web.
 export function createDatabaseClient(connectionString: string): PrismaClient {

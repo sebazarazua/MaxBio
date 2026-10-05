@@ -130,7 +130,11 @@ test('validación rechaza campos adicionales y tipos inválidos', async () => {
   for (const body of [{ name: 'ok', organizationId: 'untrusted' }, { name: 42 }, {}]) {
     const response = await fetch(`${base}/api/v1/probe/validate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'http://localhost:3000',
+        'X-Maxbio-Csrf': '1',
+      },
       body: JSON.stringify(body),
     });
     assert.equal(response.status, 400);
@@ -143,7 +147,11 @@ test('validación rechaza campos adicionales y tipos inválidos', async () => {
 test('validación permite un DTO válido', async () => {
   const response = await fetch(`${base}/api/v1/probe/validate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: 'http://localhost:3000',
+      'X-Maxbio-Csrf': '1',
+    },
     body: JSON.stringify({ name: 'MaxBio' }),
   });
   assert.equal(response.status, 201);

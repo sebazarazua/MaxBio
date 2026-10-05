@@ -9,6 +9,7 @@ const codes: Record<number, string> = {
   403: 'FORBIDDEN',
   404: 'NOT_FOUND',
   409: 'CONFLICT',
+  429: 'TOO_MANY_REQUESTS',
   503: 'SERVICE_UNAVAILABLE',
 };
 
@@ -24,8 +25,15 @@ export class HttpErrorFilter implements ExceptionFilter {
     const requestId = String(response.locals.requestId);
     let message = 'Ocurrió un error inesperado. Volvé a intentar.';
     let details: string[] | undefined;
+    let sessionEnded = false;
     if (exception instanceof HttpException) {
       const body = exception.getResponse();
+      sessionEnded =
+        status === 401 &&
+        typeof body === 'object' &&
+        body !== null &&
+        'code' in body &&
+        body.code === 'SESSION_ENDED';
       if (typeof body === 'object' && body !== null && 'message' in body) {
         const content = body.message;
         if (
@@ -49,7 +57,9 @@ export class HttpErrorFilter implements ExceptionFilter {
     }
     const body: ApiError = {
       statusCode: status,
-      code: codes[status] ?? (status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR'),
+      code: sessionEnded
+        ? 'SESSION_ENDED'
+        : (codes[status] ?? (status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR')),
       message,
       requestId,
       timestamp: new Date().toISOString(),

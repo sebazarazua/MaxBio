@@ -7,6 +7,7 @@ import { HttpErrorFilter } from './common/http/http-error.filter.js';
 
 export function configureApp(app: INestApplication) {
   app.setGlobalPrefix('api/v1');
+  app.getHttpAdapter().getInstance().disable('x-powered-by');
   app.use(helmet());
   app.use((_request: Request, response: Response, next: NextFunction) => {
     const requestId = randomUUID();

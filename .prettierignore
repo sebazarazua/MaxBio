@@ -6,3 +6,7 @@ pnpm-lock.yaml
 packages/database/src/generated
 artifacts
 **/next-env.d.ts
+**/.agents
+**/.claude
+**/.windsurf
+**/skills-lock.json

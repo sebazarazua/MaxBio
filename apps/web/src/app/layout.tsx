@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
-import { Navigation } from '@/components/navigation';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -16,18 +15,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <a href="#main-content" className="skip-link">
           Ir al contenido principal
         </a>
-        <div className="app-shell">
-          <Navigation />
-          <div className="workspace">
-            <header className="workspace-header">
-              <span>Espacio de trabajo</span>
-              <span className="stage-label">Versión inicial</span>
-            </header>
-            <main id="main-content" tabIndex={-1}>
-              {children}
-            </main>
-            <footer className="workspace-footer">MaxBio · Gestión de distribución</footer>
-          </div>
+        <div className="auth-shell">
+          <main id="main-content" tabIndex={-1}>
+            {children}
+          </main>
+          <footer className="auth-footer">MaxBio · Gestión de distribución</footer>
         </div>
       </body>
     </html>

@@ -18,3 +18,23 @@ export const apiErrorSchema = z.object({
   details: z.array(z.string()).optional(),
 });
 export type ApiError = z.infer<typeof apiErrorSchema>;
+
+const organizationAccessSchema = z
+  .object({
+    id: z.uuid(),
+    name: z.string(),
+    membershipId: z.uuid(),
+    role: z.enum(['ADMIN', 'OPERATOR']),
+  })
+  .strict();
+export const identityResponseSchema = z
+  .object({
+    user: z.object({ id: z.uuid(), email: z.email(), displayName: z.string() }).strict(),
+    session: z
+      .object({ id: z.uuid(), expiresAt: z.iso.datetime(), absoluteExpiresAt: z.iso.datetime() })
+      .strict(),
+    activeOrganization: organizationAccessSchema.nullable(),
+    organizations: z.array(organizationAccessSchema),
+  })
+  .strict();
+export type IdentityResponse = z.infer<typeof identityResponseSchema>;

@@ -22,17 +22,21 @@ model Organization {
   updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
   archivedAt  DateTime?    @db.Timestamptz(3)
   memberships Membership[]
+  auditEvents AuditEvent[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
 model User {
-  id          String       @id @default(uuid()) @db.Uuid
-  email       String       @unique @db.VarChar(254)
-  displayName String       @db.VarChar(160)
-  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
-  disabledAt  DateTime?    @db.Timestamptz(3)
-  memberships Membership[]
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique @db.VarChar(254)
+  displayName  String       @db.VarChar(160)
+  createdAt    DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime     @updatedAt @db.Timestamptz(3)
+  disabledAt   DateTime?    @db.Timestamptz(3)
+  passwordHash String?      @db.VarChar(512)
+  memberships  Membership[]
+  sessions     Session[]
+  auditEvents  AuditEvent[]
 }
 
 model Membership {
@@ -43,9 +47,53 @@ model Membership {
   createdAt      DateTime       @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime       @updatedAt @db.Timestamptz(3)
   revokedAt      DateTime?      @db.Timestamptz(3)
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  user           User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  sessions       Session[]
 
   @@unique([organizationId, userId])
+  @@unique([id, userId])
   @@index([userId])
+}
+
+model Session {
+  id                 String       @id @default(uuid()) @db.Uuid
+  userId             String       @db.Uuid
+  activeMembershipId String?      @db.Uuid
+  tokenHash          String       @unique @db.Char(64)
+  createdAt          DateTime     @default(now()) @db.Timestamptz(3)
+  lastUsedAt         DateTime     @default(now()) @db.Timestamptz(3)
+  expiresAt          DateTime     @db.Timestamptz(3)
+  absoluteExpiresAt  DateTime     @db.Timestamptz(3)
+  revokedAt          DateTime?    @db.Timestamptz(3)
+  deviceName         String?      @db.VarChar(80)
+  user               User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  activeMembership   Membership?  @relation(fields: [activeMembershipId, userId], references: [id, userId], onDelete: Restrict)
+  auditEvents        AuditEvent[]
+
+  @@index([userId, revokedAt, expiresAt])
+  @@index([activeMembershipId, userId])
+  @@index([expiresAt])
+}
+
+model AuditEvent {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String?       @db.Uuid
+  actorUserId    String?       @db.Uuid
+  sessionId      String?       @db.Uuid
+  action         String        @db.VarChar(80)
+  resourceType   String        @db.VarChar(80)
+  resourceId     String?       @db.Uuid
+  result         String        @db.VarChar(20)
+  requestId      String        @db.Uuid
+  metadata       Json          @default("{}")
+  createdAt      DateTime      @default(now()) @db.Timestamptz(3)
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actorUser      User?         @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  session        Session?      @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt, id])
+  @@index([actorUserId, createdAt])
+  @@index([sessionId])
+  @@index([requestId])
 }

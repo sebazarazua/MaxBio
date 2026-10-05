@@ -1,6 +1,6 @@
 # Decisiones del bootstrap
 
-Fecha: 1 de octubre de 2026. Estado: base inicial local, sin módulos comerciales.
+Bootstrap: 1 de octubre de 2026. Fundación de seguridad: 4 de octubre de 2026. Estado: desarrollo local, sin módulos comerciales. Las decisiones originales siguientes se conservan como historial; la sección Identity/Audit actualiza las referidas a autenticación y proxies.
 
 | Decisión                                           | Motivo y consecuencia                                                                                                         |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -25,7 +25,7 @@ Fecha: 1 de octubre de 2026. Estado: base inicial local, sin módulos comerciale
 
 ## Costos y riesgos considerados antes de modelar negocio
 
-- **Identidad global:** cambiar luego a usuarios independientes por organización requeriría migrar sesiones, unicidad y vínculos. Se eligió identidad global con pertenencias explícitas para el futuro SaaS. No se decidió todavía un proveedor de autenticación ni almacenamiento de contraseñas.
+- **Identidad global:** cambiar luego a usuarios independientes por organización requeriría migrar sesiones, unicidad y vínculos. Se eligió identidad global con pertenencias explícitas para el futuro SaaS. Identity V1 utiliza email/contraseña local y sesiones persistidas.
 - **Base compartida:** separar físicamente cada tenant más adelante implicaría exportar relaciones, migrar datos y enrutar conexiones. La opción actual reduce infraestructura inicial; el alcance de tenant deberá formar parte de todos los modelos comerciales y operaciones desde su primera migración.
 - **RLS diferido:** no se afirma aislamiento a nivel del motor. El guard actual solo cierra endpoints. Antes de producción multi-organización, evaluar RLS y uso de roles de DB no propietarios, además de los controles y tests de aplicación.
 - **Históricos:** las fechas de baja impiden perder información por un borrado normal del caso de uso, pero Prisma aún permite deletes. Las APIs futuras no deberán exponer un borrado genérico; FK Restrict protege relaciones, no todos los datos.
@@ -35,8 +35,8 @@ Fecha: 1 de octubre de 2026. Estado: base inicial local, sin módulos comerciale
 
 ## Decisiones deliberadamente diferidas
 
-- Login, sesiones, recuperación, proveedor de identidad, selección de organización y permisos aplicados a casos de uso.
-- Auditoría persistida y transaccional, retención, acceso al historial y redacción de datos sensibles.
+- Recuperación/cambio de contraseña, altas posteriores, verificación de email, proveedores externos, MFA/passkeys y administración global de identidades multi-organización. Login, sesiones, selección y autorización básica ya están implementados.
+- Retención y acceso al historial; protección adicional contra modificación directa por administradores de DB. Auditoría persistida/transaccional y metadata limitada ya están implementadas.
 - RLS, aislamiento de archivos y política productiva de secretos, TLS, backups y recuperación.
 - Modelo de producto, identificadores, unidades, proveedores y clientes.
 - Movimientos, reservas, disponibilidad, lotes, series, vencimientos y concurrencia.
@@ -47,6 +47,28 @@ Fecha: 1 de octubre de 2026. Estado: base inicial local, sin módulos comerciale
 - Entorno productivo, CI/CD, observabilidad extendida y estrategia de despliegue.
 
 No se implementaron catálogo, inventario, scanner, remitos, facturación, ARCA, ANMAT, presupuestos, WhatsApp, email, IA, analytics ni microservicios. No se hicieron commits ni pushes como parte del bootstrap.
+
+## Identity y Audit — 4 de octubre de 2026
+
+| Decisión                                       | Motivo y consecuencia                                                                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Email/contraseña sin proveedor externo         | Minimiza dependencias y mantiene control local de identidad                                                                          |
+| Argon2id: 64 MiB, t=3, p=1                     | Hash moderno con salt y PHC mediante `argon2`; rehash en login cuando cambian parámetros                                             |
+| Sesiones opacas server-side                    | Token aleatorio de 256 bits; solo SHA-256 del verificador en DB; revocación inmediata en siguientes requests                         |
+| Cookie HttpOnly host-only persistente          | Sin localStorage; Secure y prefijo __Host- en producción, SameSite=Lax y Path=/                                                      |
+| 180 días absolutos + 30 días de inactividad    | Reduce interrupciones operativas sin sesiones eternas; configuración central                                                         |
+| Actividad condicional cada 15 minutos          | Evita write por request y nunca revive una sesión revocada/expirada                                                                  |
+| Renovación sin rotación por request            | Evita carreras entre pestañas; cada login genera token nuevo; robo/replay requiere revocación o expiración                           |
+| Pertenencia activa por sesión con FK compuesta | No permite pertenencia ajena; organización y rol se derivan de DB                                                                    |
+| Tenant obligatorio por defecto                 | IdentityOnly es una excepción explícita de lifecycle; Roles exige rol del tenant activo                                              |
+| Origin exacto + header obligatorio             | CSRF en Next y guard global Nest, incluido login; sin CORS abierto ni confianza en Host/forwarded headers                            |
+| Limiter de memoria acotado                     | Una instancia, ventana de 15 min; 10/email, 30/IP de conexión, 4 hashes simultáneos; reinicios y distribución son límites explícitos |
+| Sin IP/UA persistidos                          | DeviceName opcional; minimiza datos personales y no hace fingerprinting                                                              |
+| AuditService con TransactionClient             | Cambio y éxito se confirman juntos; metadata semántica con allowlist; login fallido no almacena email ni actor supuesto              |
+| Bootstrap CLI bloqueado e idempotente          | Variables temporales, contraseña leída sin eco; no credenciales conocidas ni sustitución de identidad existente                      |
+| Admin empresarial no es admin global           | Administración application-only de identidades exclusivas del tenant; las compartidas requieren política futura                      |
+
+Detalle y límites en [authentication.md](authentication.md). Se preserva la migración inicial y se añade `20261004120000_identity_sessions_audit`; no se usó db push.
 
 ## Referencias técnicas
 
