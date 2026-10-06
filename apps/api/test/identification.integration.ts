@@ -216,10 +216,9 @@ test('resolve UNKNOWN/INVALID/UNSUPPORTED no escribe negocio ni auditoría ni st
   assert.equal((await resolve('4006381333932')).status, 'INVALID');
   assert.equal((await resolve('(01)04006381333931(10)LOT')).status, 'UNSUPPORTED');
   assert.deepEqual(await counts(), initial);
-  const tables = await client.$queryRaw<
-    { tablename: string }[]
-  >`SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename ~* '^(Stock|Inventory|Lot|SerialNumber|Reservation)'`;
-  assert.deepEqual(tables, []);
+  const where = { organizationId: { in: orgs } };
+  assert.equal(await client.inventoryMovement.count({ where }), 0);
+  assert.equal(await client.inventoryBalance.count({ where }), 0);
 });
 test('reportedGtin es candidato fuerte; búsqueda manual incluye presentación, marca, proveedor y código', async () => {
   const ref = await reference('DL2115', supplierA, orgs[0], canonical);

@@ -34,6 +34,19 @@ model Organization {
   supplierCatalogUploads SupplierCatalogUpload[]
   scanIdentifiers        SupplierScanIdentifier[]
   identifications        CatalogIdentification[]
+  inventoryLocations     InventoryLocation[]
+  inventoryPolicies      ProductInventoryPolicy[]
+  inventoryLots          InventoryLot[]
+  inventorySerials       InventorySerial[]
+  inventoryScopes        InventoryStockScope[]
+  inventoryBalances      InventoryBalance[]
+  inventoryReceipts      InventoryReceipt[]
+  inventoryReceiptLines  InventoryReceiptLine[]
+  inventoryCounts        InventoryCountSession[]
+  inventoryCountScopes   InventoryCountScope[]
+  inventoryCountLines    InventoryCountLine[]
+  inventoryMovements     InventoryMovement[]
+  inventoryMovementLines InventoryMovementLine[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -51,19 +64,22 @@ model User {
 }
 
 model Membership {
-  id              String                  @id @default(uuid()) @db.Uuid
-  organizationId  String                  @db.Uuid
-  userId          String                  @db.Uuid
-  role            MembershipRole          @default(OPERATOR)
-  createdAt       DateTime                @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime                @updatedAt @db.Timestamptz(3)
-  revokedAt       DateTime?               @db.Timestamptz(3)
-  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  user            User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
-  sessions        Session[]
-  catalogImports  SupplierCatalogImport[]
-  catalogUploads  SupplierCatalogUpload[]
-  identifications CatalogIdentification[]
+  id                 String                  @id @default(uuid()) @db.Uuid
+  organizationId     String                  @db.Uuid
+  userId             String                  @db.Uuid
+  role               MembershipRole          @default(OPERATOR)
+  createdAt          DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime                @updatedAt @db.Timestamptz(3)
+  revokedAt          DateTime?               @db.Timestamptz(3)
+  organization       Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user               User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
+  sessions           Session[]
+  catalogImports     SupplierCatalogImport[]
+  catalogUploads     SupplierCatalogUpload[]
+  identifications    CatalogIdentification[]
+  inventoryReceipts  InventoryReceipt[]
+  inventoryCounts    InventoryCountSession[]
+  inventoryMovements InventoryMovement[]
 
   @@unique([organizationId, userId])
   @@unique([id, userId])
@@ -88,6 +104,9 @@ model Session {
   catalogImports     SupplierCatalogImport[]
   catalogUploads     SupplierCatalogUpload[]
   identifications    CatalogIdentification[]
+  inventoryReceipts  InventoryReceipt[]
+  inventoryCounts    InventoryCountSession[]
+  inventoryMovements InventoryMovement[]
 
   @@unique([id, userId])
   @@index([userId, revokedAt, expiresAt])
@@ -135,25 +154,34 @@ enum ProductIdentifierKind {
 }
 
 model Product {
-  id               String              @id @default(uuid()) @db.Uuid
-  organizationId   String              @db.Uuid
-  name             String              @db.VarChar(200)
-  description      String?             @db.VarChar(4000)
-  presentation     String?             @db.VarChar(200)
-  unitOfMeasure    UnitOfMeasure
-  model            String?             @db.VarChar(160)
-  manufacturerName String?             @db.VarChar(160)
-  brandId          String?             @db.Uuid
-  categoryId       String?             @db.Uuid
-  version          Int                 @default(1)
-  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
-  archivedAt       DateTime?           @db.Timestamptz(3)
-  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  brand            Brand?              @relation(fields: [organizationId, brandId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
-  category         Category?           @relation(fields: [organizationId, categoryId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
-  identifiers      ProductIdentifier[]
-  supplierProducts SupplierProduct[]
+  id                     String                  @id @default(uuid()) @db.Uuid
+  organizationId         String                  @db.Uuid
+  name                   String                  @db.VarChar(200)
+  description            String?                 @db.VarChar(4000)
+  presentation           String?                 @db.VarChar(200)
+  unitOfMeasure          UnitOfMeasure
+  model                  String?                 @db.VarChar(160)
+  manufacturerName       String?                 @db.VarChar(160)
+  brandId                String?                 @db.Uuid
+  categoryId             String?                 @db.Uuid
+  version                Int                     @default(1)
+  createdAt              DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                @updatedAt @db.Timestamptz(3)
+  archivedAt             DateTime?               @db.Timestamptz(3)
+  organization           Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  brand                  Brand?                  @relation(fields: [organizationId, brandId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  category               Category?               @relation(fields: [organizationId, categoryId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  identifiers            ProductIdentifier[]
+  supplierProducts       SupplierProduct[]
+  inventoryPolicy        ProductInventoryPolicy?
+  inventoryLots          InventoryLot[]
+  inventorySerials       InventorySerial[]
+  inventoryScopes        InventoryStockScope[]
+  inventoryBalances      InventoryBalance[]
+  inventoryReceiptLines  InventoryReceiptLine[]
+  inventoryCountScopes   InventoryCountScope[]
+  inventoryCountLines    InventoryCountLine[]
+  inventoryMovementLines InventoryMovementLine[]
 
   @@unique([organizationId, id])
   @@index([organizationId, archivedAt, name, id])
@@ -174,28 +202,29 @@ model ProductIdentifier {
   organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   product         Product               @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
 
-  // Incluye archivados: no liberar códigos históricos.
+  // Incluye archivados: no liberar cÃ³digos histÃ³ricos.
   @@unique([organizationId, kind, normalizedValue])
   @@index([organizationId, productId, archivedAt])
 }
 
 model Supplier {
-  id               String                  @id @default(uuid()) @db.Uuid
-  organizationId   String                  @db.Uuid
-  name             String                  @db.VarChar(200)
-  legalName        String?                 @db.VarChar(200)
-  contactName      String?                 @db.VarChar(160)
-  email            String?                 @db.VarChar(254)
-  phone            String?                 @db.VarChar(50)
-  version          Int                     @default(1)
-  createdAt        DateTime                @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime                @updatedAt @db.Timestamptz(3)
-  archivedAt       DateTime?               @db.Timestamptz(3)
-  organization     Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  supplierProducts SupplierProduct[]
-  catalogItems     SupplierCatalogItem[]
-  catalogImports   SupplierCatalogImport[]
-  catalogUploads   SupplierCatalogUpload[]
+  id                String                  @id @default(uuid()) @db.Uuid
+  organizationId    String                  @db.Uuid
+  name              String                  @db.VarChar(200)
+  legalName         String?                 @db.VarChar(200)
+  contactName       String?                 @db.VarChar(160)
+  email             String?                 @db.VarChar(254)
+  phone             String?                 @db.VarChar(50)
+  version           Int                     @default(1)
+  createdAt         DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                @updatedAt @db.Timestamptz(3)
+  archivedAt        DateTime?               @db.Timestamptz(3)
+  organization      Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supplierProducts  SupplierProduct[]
+  catalogItems      SupplierCatalogItem[]
+  catalogImports    SupplierCatalogImport[]
+  catalogUploads    SupplierCatalogUpload[]
+  inventoryReceipts InventoryReceipt[]
 
   @@unique([organizationId, id])
   @@index([organizationId, archivedAt, name, id])
@@ -350,7 +379,7 @@ model CatalogIdentification {
   @@index([organizationId, supplierId, referenceId])
 }
 
-// Inspección temporal: celdas de texto acotadas, nunca el archivo original.
+// InspecciÃ³n temporal: celdas de texto acotadas, nunca el archivo original.
 model SupplierCatalogUpload {
   id             String       @id @default(uuid()) @db.Uuid
   organizationId String       @db.Uuid
@@ -416,7 +445,7 @@ model SupplierCatalogImportRow {
   outcome        SupplierCatalogRowOutcome
   itemId         String?                   @db.Uuid
   supplierCode   String?                   @db.VarChar(128)
-  // Solo cinco campos mapeados válidos, o null para errores/vacías.
+  // Solo cinco campos mapeados vÃ¡lidos, o null para errores/vacÃ­as.
   data           Json?
   messages       Json
   import         SupplierCatalogImport     @relation(fields: [organizationId, supplierId, importId], references: [organizationId, supplierId, id], onDelete: Restrict, onUpdate: Restrict)
@@ -425,4 +454,333 @@ model SupplierCatalogImportRow {
   @@unique([organizationId, importId, rowNumber])
   @@index([organizationId, importId, outcome, rowNumber])
   @@index([organizationId, supplierId, itemId])
+}
+
+enum InventoryCondition {
+  USABLE
+  DAMAGED
+  QUARANTINE
+}
+
+enum InventoryDocumentStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+enum InventoryMovementType {
+  RECEIPT
+  INITIAL_COUNT
+  ADJUSTMENT
+}
+
+model InventoryLocation {
+  id             String                  @id @default(uuid()) @db.Uuid
+  organizationId String                  @db.Uuid
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdAt      DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime                @updatedAt @db.Timestamptz(3)
+  code           String                  @db.VarChar(40)
+  name           String                  @db.VarChar(160)
+  archivedAt     DateTime?               @db.Timestamptz(3)
+  scopes         InventoryStockScope[]
+  balances       InventoryBalance[]
+  receipts       InventoryReceipt[]
+  receiptLines   InventoryReceiptLine[]
+  counts         InventoryCountSession[]
+  countScopes    InventoryCountScope[]
+  countLines     InventoryCountLine[]
+  movementLines  InventoryMovementLine[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, code])
+}
+
+model ProductInventoryPolicy {
+  id                 String       @id @default(uuid()) @db.Uuid
+  organizationId     String       @db.Uuid
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId          String       @db.Uuid
+  product            Product      @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  createdAt          DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime     @updatedAt @db.Timestamptz(3)
+  lotRequired        Boolean      @default(false)
+  expirationRequired Boolean      @default(false)
+  serialRequired     Boolean      @default(false)
+  version            Int          @default(1)
+
+  @@unique([organizationId, productId])
+}
+
+model InventoryLot {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  organizationId      String                  @db.Uuid
+  organization        Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId           String                  @db.Uuid
+  product             Product                 @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  createdAt           DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime                @updatedAt @db.Timestamptz(3)
+  lotNumber           String?                 @db.VarChar(128)
+  normalizedLotNumber String?                 @db.VarChar(128)
+  expirationDate      DateTime?               @db.Date
+  balances            InventoryBalance[]
+  movementLines       InventoryMovementLine[]
+  receiptLines        InventoryReceiptLine[]
+  countLines          InventoryCountLine[]
+
+  @@unique([organizationId, productId, id])
+  @@unique([organizationId, productId, normalizedLotNumber])
+  @@index([organizationId, expirationDate, id])
+}
+
+model InventorySerial {
+  id                     String                  @id @default(uuid()) @db.Uuid
+  organizationId         String                  @db.Uuid
+  organization           Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId              String                  @db.Uuid
+  product                Product                 @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  serialNumber           String                  @db.VarChar(128)
+  normalizedSerialNumber String                  @db.VarChar(128)
+  createdAt              DateTime                @default(now()) @db.Timestamptz(3)
+  balances               InventoryBalance[]
+  movementLines          InventoryMovementLine[]
+
+  @@unique([organizationId, productId, id])
+  @@unique([organizationId, productId, normalizedSerialNumber])
+}
+
+model InventoryStockScope {
+  id                   String                 @id @default(uuid()) @db.Uuid
+  organizationId       String                 @db.Uuid
+  organization         Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId            String                 @db.Uuid
+  product              Product                @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  locationId           String                 @db.Uuid
+  location             InventoryLocation      @relation(fields: [organizationId, locationId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  version              Int                    @default(1)
+  initializedAt        DateTime?              @db.Timestamptz(3)
+  initialCountScopeId  String?                @db.Uuid
+  activeCountSessionId String?                @db.Uuid
+  initialCountScope    InventoryCountScope?   @relation("InitialCoverage", fields: [organizationId, productId, locationId, initialCountScopeId], references: [organizationId, productId, locationId, id], onDelete: Restrict, onUpdate: Restrict)
+  activeCountSession   InventoryCountSession? @relation("CountHold", fields: [organizationId, locationId, activeCountSessionId], references: [organizationId, locationId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, productId, locationId])
+}
+
+model InventoryBalance {
+  id             String             @id @default(uuid()) @db.Uuid
+  organizationId String             @db.Uuid
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId      String             @db.Uuid
+  product        Product            @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  locationId     String             @db.Uuid
+  location       InventoryLocation  @relation(fields: [organizationId, locationId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  lotId          String?            @db.Uuid
+  serialId       String?            @db.Uuid
+  condition      InventoryCondition
+  lot            InventoryLot?      @relation(fields: [organizationId, productId, lotId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+  serial         InventorySerial?   @relation(fields: [organizationId, productId, serialId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+  quantity       Decimal            @db.Decimal(20, 6)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, productId, locationId, lotId, serialId, condition], map: "InventoryBalance_position_key")
+  @@index([organizationId, productId, locationId])
+  @@index([organizationId, lotId])
+  @@index([organizationId, serialId])
+}
+
+model InventoryReceipt {
+  id                      String                  @id @default(uuid()) @db.Uuid
+  organizationId          String                  @db.Uuid
+  organization            Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  locationId              String                  @db.Uuid
+  location                InventoryLocation       @relation(fields: [organizationId, locationId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  actorUserId             String                  @db.Uuid
+  membershipId            String                  @db.Uuid
+  sessionId               String                  @db.Uuid
+  membership              Membership              @relation(fields: [organizationId, membershipId, actorUserId], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  session                 Session                 @relation(fields: [sessionId, actorUserId], references: [id, userId], onDelete: Restrict, onUpdate: Restrict)
+  createdAt               DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime                @updatedAt @db.Timestamptz(3)
+  status                  InventoryDocumentStatus @default(DRAFT)
+  version                 Int                     @default(1)
+  notes                   String?                 @db.VarChar(1000)
+  confirmationOperationId String?                 @db.Uuid
+  requestHash             String?                 @db.Char(64)
+  confirmedAt             DateTime?               @db.Timestamptz(3)
+  supplierId              String                  @db.Uuid
+  supplier                Supplier                @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  lines                   InventoryReceiptLine[]
+  movement                InventoryMovement?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, locationId, id])
+  @@unique([organizationId, confirmationOperationId])
+  @@index([organizationId, actorUserId, createdAt, id])
+}
+
+model InventoryCountSession {
+  id                      String                  @id @default(uuid()) @db.Uuid
+  organizationId          String                  @db.Uuid
+  organization            Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  locationId              String                  @db.Uuid
+  location                InventoryLocation       @relation(fields: [organizationId, locationId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  actorUserId             String                  @db.Uuid
+  membershipId            String                  @db.Uuid
+  sessionId               String                  @db.Uuid
+  membership              Membership              @relation(fields: [organizationId, membershipId, actorUserId], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  session                 Session                 @relation(fields: [sessionId, actorUserId], references: [id, userId], onDelete: Restrict, onUpdate: Restrict)
+  createdAt               DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime                @updatedAt @db.Timestamptz(3)
+  status                  InventoryDocumentStatus @default(DRAFT)
+  version                 Int                     @default(1)
+  notes                   String?                 @db.VarChar(1000)
+  confirmationOperationId String?                 @db.Uuid
+  requestHash             String?                 @db.Char(64)
+  confirmedAt             DateTime?               @db.Timestamptz(3)
+  scopes                  InventoryCountScope[]
+  activeScopes            InventoryStockScope[]   @relation("CountHold")
+  movement                InventoryMovement?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, locationId, id])
+  @@unique([organizationId, confirmationOperationId])
+  @@index([organizationId, actorUserId, createdAt, id])
+}
+
+model InventoryReceiptLine {
+  id             String                  @id @default(uuid()) @db.Uuid
+  organizationId String                  @db.Uuid
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId      String                  @db.Uuid
+  product        Product                 @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  locationId     String                  @db.Uuid
+  location       InventoryLocation       @relation(fields: [organizationId, locationId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  quantity       Decimal                 @db.Decimal(20, 6)
+  lotNumber      String?                 @db.VarChar(128)
+  lotId          String?                 @db.Uuid
+  expirationDate DateTime?               @db.Date
+  serialNumbers  Json                    @default("[]")
+  condition      InventoryCondition      @default(USABLE)
+  policyVersion  Int
+  unitOfMeasure  UnitOfMeasure
+  productName    String                  @db.VarChar(200)
+  createdAt      DateTime                @default(now()) @db.Timestamptz(3)
+  receiptId      String                  @db.Uuid
+  receipt        InventoryReceipt        @relation(fields: [organizationId, locationId, receiptId], references: [organizationId, locationId, id], onDelete: Restrict, onUpdate: Restrict)
+  movementLines  InventoryMovementLine[]
+  declaredLot    InventoryLot?           @relation(fields: [organizationId, productId, lotId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, productId, locationId, id])
+  @@index([organizationId, receiptId, createdAt, id])
+}
+
+model InventoryCountScope {
+  id                   String                @id @default(uuid()) @db.Uuid
+  organizationId       String                @db.Uuid
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId            String                @db.Uuid
+  product              Product               @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  locationId           String                @db.Uuid
+  location             InventoryLocation     @relation(fields: [organizationId, locationId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  sessionId            String                @db.Uuid
+  session              InventoryCountSession @relation(fields: [organizationId, locationId, sessionId], references: [organizationId, locationId, id], onDelete: Restrict, onUpdate: Restrict)
+  expectedScopeVersion Int
+  coverageConfirmed    Boolean               @default(false)
+  createdAt            DateTime              @default(now()) @db.Timestamptz(3)
+  confirmedAt          DateTime?             @db.Timestamptz(3)
+  initialStockScopes   InventoryStockScope[] @relation("InitialCoverage")
+  lines                InventoryCountLine[]
+
+  @@unique([organizationId, productId, locationId, id])
+  @@unique([organizationId, sessionId, productId, locationId])
+}
+
+model InventoryCountLine {
+  id             String                  @id @default(uuid()) @db.Uuid
+  organizationId String                  @db.Uuid
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId      String                  @db.Uuid
+  product        Product                 @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  locationId     String                  @db.Uuid
+  location       InventoryLocation       @relation(fields: [organizationId, locationId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  quantity       Decimal                 @db.Decimal(20, 6)
+  lotNumber      String?                 @db.VarChar(128)
+  lotId          String?                 @db.Uuid
+  expirationDate DateTime?               @db.Date
+  serialNumbers  Json                    @default("[]")
+  condition      InventoryCondition      @default(USABLE)
+  policyVersion  Int
+  unitOfMeasure  UnitOfMeasure
+  productName    String                  @db.VarChar(200)
+  createdAt      DateTime                @default(now()) @db.Timestamptz(3)
+  scopeId        String                  @db.Uuid
+  scope          InventoryCountScope     @relation(fields: [organizationId, productId, locationId, scopeId], references: [organizationId, productId, locationId, id], onDelete: Restrict, onUpdate: Restrict)
+  movementLines  InventoryMovementLine[]
+  declaredLot    InventoryLot?           @relation(fields: [organizationId, productId, lotId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, productId, locationId, id])
+  @@index([organizationId, scopeId, createdAt, id])
+}
+
+model InventoryMovement {
+  id             String                  @id @default(uuid()) @db.Uuid
+  organizationId String                  @db.Uuid
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  actorUserId    String                  @db.Uuid
+  membershipId   String                  @db.Uuid
+  sessionId      String                  @db.Uuid
+  membership     Membership              @relation(fields: [organizationId, membershipId, actorUserId], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  session        Session                 @relation(fields: [sessionId, actorUserId], references: [id, userId], onDelete: Restrict, onUpdate: Restrict)
+  type           InventoryMovementType
+  reason         String?                 @db.VarChar(40)
+  notes          String?                 @db.VarChar(1000)
+  operationId    String?                 @db.Uuid
+  requestHash    String?                 @db.Char(64)
+  receiptId      String?                 @db.Uuid
+  countSessionId String?                 @db.Uuid
+  receipt        InventoryReceipt?       @relation(fields: [organizationId, receiptId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  countSession   InventoryCountSession?  @relation(fields: [organizationId, countSessionId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  occurredAt     DateTime                @default(now()) @db.Timestamptz(3)
+  recordedAt     DateTime                @default(now()) @db.Timestamptz(3)
+  postedAt       DateTime?               @db.Timestamptz(3)
+  lines          InventoryMovementLine[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, receiptId])
+  @@unique([organizationId, countSessionId])
+  @@unique([organizationId, operationId])
+  @@index([organizationId, recordedAt, id])
+}
+
+model InventoryMovementLine {
+  id             String                @id @default(uuid()) @db.Uuid
+  organizationId String                @db.Uuid
+  organization   Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId      String                @db.Uuid
+  product        Product               @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  locationId     String                @db.Uuid
+  location       InventoryLocation     @relation(fields: [organizationId, locationId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  lotId          String?               @db.Uuid
+  serialId       String?               @db.Uuid
+  condition      InventoryCondition
+  lot            InventoryLot?         @relation(fields: [organizationId, productId, lotId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+  serial         InventorySerial?      @relation(fields: [organizationId, productId, serialId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+  movementId     String                @db.Uuid
+  movement       InventoryMovement     @relation(fields: [organizationId, movementId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  quantityDelta  Decimal               @db.Decimal(20, 6)
+  unitOfMeasure  UnitOfMeasure
+  productName    String                @db.VarChar(200)
+  gtin           String?               @db.VarChar(14)
+  lotNumber      String?               @db.VarChar(128)
+  expirationDate DateTime?             @db.Date
+  serialNumber   String?               @db.VarChar(128)
+  receiptLineId  String?               @db.Uuid
+  countLineId    String?               @db.Uuid
+  receiptLine    InventoryReceiptLine? @relation(fields: [organizationId, productId, locationId, receiptLineId], references: [organizationId, productId, locationId, id], onDelete: Restrict, onUpdate: Restrict, map: "InventoryMovementLine_receipt_source_fkey")
+  countLine      InventoryCountLine?   @relation(fields: [organizationId, productId, locationId, countLineId], references: [organizationId, productId, locationId, id], onDelete: Restrict, onUpdate: Restrict, map: "InventoryMovementLine_count_source_fkey")
+
+  @@index([organizationId, productId, movementId, id])
+  @@index([organizationId, lotId, movementId])
+  @@index([organizationId, serialId, movementId])
 }

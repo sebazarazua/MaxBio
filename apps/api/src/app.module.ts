@@ -7,6 +7,7 @@ import { HealthModule } from './modules/health/health.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
 import { CsrfGuard } from './common/auth/csrf.guard.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
+import { InventoryModule } from './modules/inventory/inventory.module.js';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { CatalogModule } from './modules/catalog/catalog.module.js';
     HealthModule,
     IdentityModule,
     CatalogModule,
+    InventoryModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: CsrfGuard },

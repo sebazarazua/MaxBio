@@ -39,7 +39,7 @@ La conexión a PostgreSQL es diferida. La API puede iniciar cuando la base está
 | Files / Documents                | Metadatos y representaciones; almacenamiento detrás de un adaptador   |
 | Integrations                     | Adaptadores externos; no autoridad sobre reglas internas de negocio   |
 
-Identity, Audit y Catalog ya tienen implementación. Catalog agrupa Product, ProductIdentifier, Supplier, SupplierProduct, Brand y Category porque comparten este flujo comercial pequeño; no se crean seis módulos artificiales. Los otros límites orientan desarrollo futuro. Lotes, series y movimientos inicialmente pertenecen al mismo dominio de inventario, evitando fragmentar operaciones que requieren una transacción.
+Identity, Audit, Catalog e Inventory V1 ya tienen implementación. Catalog agrupa Product, ProductIdentifier, Supplier, SupplierProduct, Brand y Category porque comparten este flujo comercial pequeño; no se crean seis módulos artificiales. Los otros límites orientan desarrollo futuro. Lotes, series y movimientos pertenecen al mismo dominio de inventario, evitando fragmentar operaciones que requieren una transacción. Reservas y Remitos siguen diferidos.
 
 ## Organización del backend
 
@@ -86,7 +86,7 @@ No confundir logs de operación con auditoría de negocio. Hoy los logs de error
 
 ## Inventario, documentos e integraciones
 
-El inventario futuro derivará de movimientos; no habrá un campo editable tratado como fuente única de stock. Producto, lote, serie, vencimiento, estados y reservas requieren análisis del dominio. Los saldos podrán materializarse para consultas sin reemplazar el historial. Ajustes y reversiones serán operaciones explícitas; concurrencia, unidad de medida e idempotencia se decidirán antes de implementar.
+Inventory V1 deriva de InventoryMovement/Line inmutable, con InventoryBalance reconstruible en la misma transacción. Ingresos y conteos iniciales tienen borradores persistidos que no crean stock. Una ubicación plana, política mínima por Product, unidad base exacta, lotes/series, vencimientos y condiciones permiten consultas de disponibilidad. Product locks/versiones, claves de operación y FK compuestas defienden consistencia y tenant. Ajustes ADMIN sobre posiciones existentes registran nuevos deltas; reservas, correcciones de dimensiones y reversiones completas siguen diferidas. Ver [implementación](inventory.md) y [diseño original](inventory-design.md).
 
 Un remito será una entidad estructurada con líneas y relaciones. Sus líneas, y las de compras/facturas, guardarán snapshots de nombre, código y otros datos relevantes además de productId: renombrar el catálogo no debe reescribir documentos históricos. PDF, impresión en formulario preimpreso y archivos son representaciones. Generar una representación no debe ser el único registro de una operación.
 

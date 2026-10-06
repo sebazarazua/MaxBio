@@ -1150,3 +1150,21 @@ h2 {
   border-radius: 12px;
   overflow-wrap: anywhere;
 }
+
+.inventory-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+.inventory-summary p {
+  min-width: 150px;
+}
+.inventory-summary strong,
+.inventory-summary span {
+  display: block;
+}
+.inventory-summary span {
+  margin-top: 8px;
+  font-size: 30px;
+  font-weight: 700;
+}

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "inventory:verify": "pnpm build && node --env-file-if-exists=../../.env dist/modules/inventory/verify-inventory.js",
     "catalog:cleanup": "pnpm build && node --env-file-if-exists=../../.env dist/modules/catalog/cleanup-supplier-catalog.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",

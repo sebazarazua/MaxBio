@@ -1,5 +1,41 @@
 # Verificación de MaxBio
 
+## Inventory V1 — 6 de octubre de 2026
+
+Esta evidencia corresponde al incremento reducido de [inventory.md](inventory.md). Las secciones históricas describen sus propios incrementos, cuando Inventory todavía no existía.
+
+| Comprobación       | Resultado                                                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Instalación        | pnpm install --frozen-lockfile correcto; sin dependencias nuevas                                                                                           |
+| Prisma             | format/validate/generate correctos; siete migraciones aplicadas a local/fixture                                                                            |
+| Desde cero         | Suite Inventory crea DB vacía propia y ejecuta migrate deploy de las siete migraciones, sin desactivar triggers históricos                                 |
+| Estado/drift       | migrate status actualizado; migrate diff datasource/schema --exit-code: sin diferencias                                                                    |
+| Lint/formato       | pnpm lint y pnpm format:check correctos                                                                                                                    |
+| Typecheck          | pnpm typecheck correcto en todos los paquetes                                                                                                              |
+| Unit/HTTP sin DB   | pnpm test: 36/36 sin skips, incluyendo tres pruebas Inventory                                                                                              |
+| DB/HTTP real       | pnpm test:database: 1/1 database y 93/93 API sin skips; 23 escenarios Inventory y regresión Identity/Catalog/Identification/importación                    |
+| Build              | pnpm build correcto con MAXBIO_BUILD_DIR aislado; rutas Inventory incluidas                                                                                |
+| Ledger/balance     | Draft/scan/import/identificación cero stock; confirmación atómica, snapshots, historia inmutable y reconstrucción                                          |
+| Concurrencia/retry | Confirmaciones, posiciones ausentes, claims, ajustes y series concurrentes sin duplicados/parciales                                                        |
+| Rollback/seguridad | Fallo Audit revierte todo; tenant/FK, permisos, CSRF, acceso revocado, unidad y archivo protegidos                                                         |
+| Disponibilidad     | Vencimiento inclusive Argentina; unión expired/damaged/quarantine sin doble resta ni movimientos ficticios                                                 |
+| Físico             | Lote reutilizado entre proveedores; conflicto de fecha rechaza; serie duplicada/segunda posición positiva rechazan                                         |
+| 500 series         | Documento máximo confirmado por API real; escenario completo aislado aproximadamente 4,6 segundos en una ejecución local, no benchmark/SLO del posting     |
+| CLI rebuild        | Divergencia inducida en DB propia detectada y reconstruida bajo lock; ledger conserva sus filas                                                            |
+| Navegador          | Stack propio PostgreSQL15440/API3111/Next3110; login ADMIN/OPERATOR, proxy y DB reales                                                                     |
+| HID                | Código + Enter simulado por teclado, sin scanner físico; Product reconocido y captura física                                                               |
+| Receipt            | Cinco líneas: diez unidades vigentes, tres vencidas, dos dañadas, 3.125 metros y dos series; draft cero, confirmed UNIT físico15/disponible10/unavailable5 |
+| Retry manual       | Se descartó respuesta después del commit; segundo click recuperó la misma confirmación sin duplicar stock                                                  |
+| Initial/adjustment | Product contado7, borrador recargado y coverage confirmado; stock7/inicializado; ADMIN ajuste+3 dejó stock10 e historia+7/+3                               |
+| Catalog manual     | Cambio de unidad y archivo de Product con stock rechazados con mensajes visibles                                                                           |
+| Móvil              | 390×844 sin overflow horizontal de página, tablas con scroll propio y captura inspeccionada                                                                |
+
+Problemas corregidos: GET policy ausente devolvía cuerpo vacío (ahora JSON null explícito, regresión HTTP), texto inválido podía lanzar BigInt (ahora HTTP400), checks nullable/cantidad serial, orden temporal después de locks y paginación de conteo cero. Dos tests anteriores exigían ausencia de tablas Inventory; ahora verifican cero movimientos/balances del tenant. El diseño original permanece intacto.
+
+También se ejecutaron build API/contratos, migrate diff para generar SQL revisado, migrate deploy en fixture/local, verificador desde tests, CLI agent-browser para UI y git diff/check. El CLI final informó mismatches=0 en local y fixture. Código desconocido llevó a Identificación y regresó al mismo borrador; conteo de Product con receipt previo rechazado desde UI. Browser errors vacío; console solo HMR/DevTools. Logs y capturas en artifacts/inventory/, ignorado. Credenciales, browser y stack/volumen propios de prueba eliminados; migraciones locales permanecen y datos habituales se preservan. Web3000/API3001 y readiness/proxy quedaron disponibles. La implementación y las verificaciones se completaron antes de preparar la publicación en main, autorizada posteriormente por el usuario.
+
+Límites: sin hardware HID, salidas/Remitos, regulación, FEFO operativo, reservas, packaging, correcciones de dimensiones o despliegue remoto. pg/Prisma mantiene una advertencia previa de query concurrente en tests. Revisión responsive/teclado básica, no auditoría WCAG. Los tiempos locales no certifican capacidad bajo carga. La UI representa existencia registrada y cobertura; no promete contar stock previo sin inventario inicial ni salidas todavía no registradas.
+
 ## Product Identification — segundo incremento, 6 de octubre de 2026
 
 Windows, Node 22.18.0, pnpm 11.9.0 y PostgreSQL 17.9. Estado inicial de Git limpio. Sin commit/push ni cambios a secretos/.gitignore. Se preservaron la web existente en 3000 y los contenedores ajenos. El watcher original de API quedó sin listener después de recompilaciones; al finalizar se reinició solo ese proceso mediante `pnpm dev:api`, con API recuperada en 3001 y health/database ok. Fixture propio con ADMIN/OPERATOR y Docker Compose `maxbio-identification-verify`, puerto 15439. Web/API de prueba en 3010/3011; build aislado con `MAXBIO_BUILD_DIR=.next/identification-build` y dev con `.next/identification-verify`, dentro del directorio ignorado.

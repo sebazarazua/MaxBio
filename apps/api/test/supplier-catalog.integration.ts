@@ -330,10 +330,9 @@ test('5.000 referencias reales, paginadas, sin Products nuevos ni cambios a Prod
   assert.equal(list.total, 5000);
   assert.equal(list.items.length, 100);
   assert.equal(list.page, 2);
-  const tables = await client.$queryRaw<
-    { table_name: string }[]
-  >`SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('Inventory','Stock','InventoryMovement','Lot','SerialNumber')`;
-  assert.equal(tables.length, 0);
+  const where = { organizationId: { in: orgs } };
+  assert.equal(await client.inventoryMovement.count({ where }), 0);
+  assert.equal(await client.inventoryBalance.count({ where }), 0);
   console.log(
     `Supplier catalog 5000 rows: ${Date.now() - start} ms including inspect + preview + commit + assertions`,
   );

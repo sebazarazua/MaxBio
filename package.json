@@ -8,6 +8,7 @@
     "pnpm": "11.9.0"
   },
   "scripts": {
+    "inventory:verify": "pnpm prepare:packages && pnpm --filter @maxbio/api inventory:verify",
     "catalog:cleanup": "pnpm prepare:packages && pnpm --filter @maxbio/api catalog:cleanup",
     "prepare:packages": "pnpm --filter @maxbio/contracts build && pnpm --filter @maxbio/database generate && pnpm --filter @maxbio/database build",
     "dev": "pnpm prepare:packages && pnpm --parallel --filter @maxbio/api --filter @maxbio/web dev",

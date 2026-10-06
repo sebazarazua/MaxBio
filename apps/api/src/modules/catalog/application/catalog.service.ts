@@ -317,6 +317,43 @@ export class CatalogService {
       const row = await this.lockProduct(tx, context, id);
       this.expectVersion(row.version, input.expectedVersion, 'producto');
       this.active(row.archivedAt);
+      if (input.unitOfMeasure && input.unitOfMeasure !== row.unitOfMeasure) {
+        const policy = await tx.productInventoryPolicy.findUnique({
+          where: {
+            organizationId_productId: { organizationId: context.organizationId, productId: id },
+          },
+        });
+        if (policy?.serialRequired && !['UNIT', 'PAIR'].includes(input.unitOfMeasure))
+          throw new ConflictException(
+            'El producto requiere series individuales; su unidad debe ser Unidad o Par.',
+          );
+        const history = await tx.inventoryMovementLine.findFirst({
+          where: { organizationId: context.organizationId, productId: id },
+          select: { id: true },
+        });
+        const counted = await tx.inventoryCountScope.findFirst({
+          where: {
+            organizationId: context.organizationId,
+            productId: id,
+            confirmedAt: { not: null },
+          },
+          select: { id: true },
+        });
+        if (history || counted)
+          throw new ConflictException(
+            'No se puede cambiar la unidad porque el producto ya tiene movimientos de stock o inventario inicial confirmado.',
+          );
+        const counting = await tx.inventoryStockScope.findFirst({
+          where: {
+            organizationId: context.organizationId,
+            productId: id,
+            activeCountSessionId: { not: null },
+          },
+          select: { id: true },
+        });
+        if (counting)
+          throw new ConflictException('No se puede cambiar la unidad durante un conteo activo.');
+      }
       if (input.brandId && input.brandId !== row.brandId)
         this.active((await this.classification(tx, context, 'brand', input.brandId)).archivedAt);
       if (input.categoryId && input.categoryId !== row.categoryId)
@@ -343,6 +380,24 @@ export class CatalogService {
       const row = await this.lockProduct(tx, context, id);
       this.expectVersion(row.version, expectedVersion, 'producto');
       if (Boolean(row.archivedAt) === !restore) return productView(row);
+      if (!restore) {
+        const stock = await tx.inventoryBalance.findFirst({
+          where: { organizationId: context.organizationId, productId: id, quantity: { gt: 0 } },
+          select: { id: true },
+        });
+        const counting = await tx.inventoryStockScope.findFirst({
+          where: {
+            organizationId: context.organizationId,
+            productId: id,
+            activeCountSessionId: { not: null },
+          },
+          select: { id: true },
+        });
+        if (stock || counting)
+          throw new ConflictException(
+            'No se puede archivar un producto con existencia física o un conteo activo.',
+          );
+      }
       const updated = await tx.product.update({
         where: { id, organizationId: context.organizationId, version: expectedVersion },
         data: { archivedAt: restore ? null : new Date(), version: { increment: 1 } },

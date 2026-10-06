@@ -12,12 +12,17 @@ export class CatalogHttpError extends Error {
 export async function catalogFetch<T>(
   path: string,
   schema: ResponseParser<T>,
-  options: { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; signal?: AbortSignal } = {},
+  options: {
+    method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+    body?: unknown;
+    signal?: AbortSignal;
+    scope?: 'catalog' | 'inventory';
+  } = {},
 ): Promise<T> {
   const method = options.method ?? 'GET';
   let response: Response;
   try {
-    response = await fetch(`/api/catalog/${path}`, {
+    response = await fetch(`/api/${options.scope ?? 'catalog'}/${path}`, {
       method,
       cache: 'no-store',
       signal: options.signal ?? AbortSignal.timeout(20000),

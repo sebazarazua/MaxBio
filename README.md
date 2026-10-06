@@ -90,6 +90,8 @@ apps/
     src/modules/health/      Liveness/readiness
     src/modules/identity/    Login, sesiones, organización activa y bootstrap
     src/modules/audit/       Eventos persistidos y transaccionales
+    src/modules/catalog/     Productos, proveedores, listas e identificación
+    src/modules/inventory/   Ingresos, conteo inicial, ledger y balance
     test/                    Pruebas HTTP del bootstrap
 packages/
   contracts/                 Contratos HTTP con validación de runtime
@@ -144,7 +146,7 @@ pnpm test:database
 pnpm build
 ```
 
-`pnpm test` ejecuta pruebas HTTP, contratos, reglas de identificadores y seguridad con el runner nativo de Node, sin PostgreSQL. `pnpm test:database` necesita la base migrada: prueba constraints, autenticación y catálogo HTTP real, roles, tenant, concurrencia, revocación y auditoría transaccional. Usa fixtures UUID que elimina al terminar. Usar una base de desarrollo/pruebas.
+`pnpm test` ejecuta pruebas HTTP, contratos, cantidades, reglas de identificadores y seguridad con el runner nativo de Node, sin PostgreSQL. `pnpm test:database` necesita una base de desarrollo/pruebas migrada: verifica Identity, Catalog e Inventory HTTP real, constraints, roles, tenant, concurrencia y rollback. Inventory crea y elimina una base propia para probar el ledger inmutable; el usuario PostgreSQL de pruebas necesita CREATE DATABASE. No ejecutar contra producción. Los fixtures anteriores se eliminan por UUID.
 
 La evidencia del bootstrap y sus límites están en [verification.md](docs/architecture/verification.md).
 
@@ -163,6 +165,16 @@ El build no requiere una base activa. Para probar las aplicaciones compiladas, e
 
 ## Alcance y próximo paso
 
-Catálogo, listas e identificación HID están implementados. No se implementaron inventario, cámara, parser GS1 completo, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
+Catálogo, listas, identificación HID e Inventory V1 están implementados. No se implementaron salidas comerciales, reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, parser GS1 completo, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
 
-El siguiente paso recomendado es probar identificación con usuarios, lectores HID y datos reales. Supplier Catalog → Product Identification → Inventory futuro. Antes de Inventory, definir unidades/conversiones y el modelo de movimientos. Esta entrega se detiene en identificación. Las decisiones de dominio están registradas en [decisiones](docs/architecture/decisions.md).
+El siguiente paso es probar Inventory con usuarios, lectores HID y datos reales, validar unidades/políticas y el procedimiento de conteo gradual; luego ampliar correcciones físicas y salidas/Remitos. Las decisiones están registradas en [decisiones](docs/architecture/decisions.md).
+
+## Inventory V1
+
+Inicio ofrece **Ingresar productos**, **Consultar stock** e **Inventario inicial**. ADMIN debe revisar primero los requisitos de lote/vencimiento/serie del Product desde su ficha de stock; OPERATOR puede recibir y contar. Las cantidades se ingresan en Product.unitOfMeasure: la presentación no convierte cajas en unidades.
+
+Ingreso: proveedor → código + Enter → cantidad/datos físicos → Agregar → siguiente producto → Revisar → Confirmar. El borrador se conserva y genera cero stock. Confirmar registra un movimiento auditable y su balance en una transacción; un reintento no duplica existencia. Vencidos, dañados y cuarentena siguen físicamente presentes sin disponibilidad.
+
+Inventario inicial: sesiones pequeñas, un producto completo por toma de conteo, sin historia previa de Inventory. Hacerlo antes de recibir nueva mercadería de un producto que ya tenía existencias. Se puede retomar/cancelar el borrador; cantidad cero confirma cobertura sin movimiento artificial. Un producto con historia requiere ajuste ADMIN o recuento futuro. ADMIN puede registrar diferencias observado/registrado sobre posiciones existentes con motivo y explicación, conservando el movimiento original.
+
+Ver [implementación y reporte completo](docs/architecture/inventory.md), [diseño original](docs/architecture/inventory-design.md) y [verificación](docs/architecture/verification.md). Para comprobar la proyección: `pnpm inventory:verify`. Reconstrucción técnica por producto: `pnpm inventory:verify --organization UUID --product UUID --rebuild`; no usarla para corregir historia de negocio. Sin salidas comerciales, el saldo representa los movimientos registrados y la cobertura mostrada.

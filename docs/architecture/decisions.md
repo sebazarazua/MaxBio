@@ -135,4 +135,22 @@ Este incremento reemplaza las decisiones temporales anteriores de dejar scanner/
 | HID local y parser GS1 acotado              | Sin SDK/cámara; detección compuesta UNSUPPORTED; GTIN manual disponible.                     |
 | MAXBIO_BUILD_DIR opcional                   | Permite verificaciones/builds aislados en .next sin interferir con un dev server activo.     |
 
-Detalles y límites en [product-identification.md](product-identification.md). Inventory y Remitos siguen diferidos.
+Detalles y límites en [product-identification.md](product-identification.md). Inventory estaba diferido en ese incremento; la entrega siguiente implementa V1. Remitos continúa diferido.
+
+## Inventory — V1 operativo reducido, 6 de octubre de 2026
+
+| Decisión                                                      | Consecuencia                                                                                    |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Ledger inmutable + balance transaccional reconstruible        | Historia de negocio verificable y consultas sin sumar todo el ledger                            |
+| Receipt/Count drafts separados del movimiento                 | Capturar varios productos no genera stock antes de confirmar                                    |
+| Scope Product + Location con toma exclusiva                   | Conteo gradual y defensa de posiciones aún ausentes                                             |
+| INITIAL solo sin historia previa                              | Reduce reconciliación concurrente; requiere contar existencias previas antes de nuevos ingresos |
+| NUMERIC(20,6), strings HTTP y BigInt                          | Cantidades exactas; UNIT/PAIR enteros, sin conversiones de presentación                         |
+| Lote tenant/Product/número; fecha fuera de la clave           | Reutilización entre recepciones/proveedores; datos contradictorios rechazan                     |
+| Política explícita de tres flags, serie solo cuando requerida | Sin inferencias regulatorias ni serialización universal; congelada con historia                 |
+| unavailable como unión condición/vencimiento                  | Vencido/dañado siguen físicos y no se descuentan dos veces                                      |
+| Clave/hash/actor y locks ordenados                            | Retry sin duplicar stock; versión protege cambios de borrador/ajuste                            |
+| Ajuste ADMIN sobre posición existente                         | Registra diferencia/motivo; correcciones de dimensiones/reversión quedan para otro incremento   |
+| FK fuente tipada y snapshots                                  | Remito podrá integrarse con relación real; sin sourceId libre o tablas ficticias                |
+
+Modelo, endpoints, migraciones, límites, reporte de 28 puntos y self-review en [inventory.md](inventory.md). No se implementan reservas, OUTBOUND, Remitos, LotRevision, transferencias, packaging, FEFO operativo ni regulación.

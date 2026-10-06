@@ -2,6 +2,7 @@ import { z } from 'zod';
 export * from './catalog.js';
 export * from './supplier-catalog.js';
 export * from './identification.js';
+export * from './inventory.js';
 
 export const healthResponseSchema = z.object({
   status: z.literal('ok'),
