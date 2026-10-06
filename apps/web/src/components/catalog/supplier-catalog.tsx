@@ -16,6 +16,7 @@ import {
   type CatalogImportView,
   type CatalogColumnMapping,
   type CatalogImportRowView,
+  type SupplierCatalogItemView,
 } from '@maxbio/contracts';
 import { catalogFetch, CatalogHttpError } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
@@ -39,6 +40,21 @@ export function Unassociated() {
     </span>
   );
 }
+export function ReferenceAssociation({ item }: { item: SupplierCatalogItemView }) {
+  if (!item.supplierProduct) return <Unassociated />;
+  return (
+    <div>
+      <span className="status-tag">Asociado</span>
+      <br />
+      <Link href={'/productos/' + item.supplierProduct.product.id}>
+        {item.supplierProduct.product.name} · Ver producto
+      </Link>
+      {(item.supplierProduct.archivedAt || item.supplierProduct.product.archivedAt) && (
+        <small className="muted">Vínculo o producto archivado</small>
+      )}
+    </div>
+  );
+}
 export function ReferenceCatalog({
   supplier,
 }: {
@@ -48,20 +64,22 @@ export function ReferenceCatalog({
   const search = useSearch();
   const [revision, setRevision] = useState(0);
   const [importing, setImporting] = useState(false);
+  const [association, setAssociation] = useState('ALL');
   const resource = useResource(
     (supplier ? `suppliers/${supplier.id}/catalog-items` : 'supplier-catalog-items') +
       '?' +
-      search.query,
+      search.query +
+      '&association=' +
+      association,
     supplierCatalogListSchema,
   );
   return (
     <section className="catalog-panel">
       <div className="page-heading">
         <div>
-          <h2>{supplier ? 'Catálogo del proveedor' : 'Referencias de proveedores'}</h2>
+          <h2>{supplier ? 'Catálogo del proveedor' : 'Listas de proveedores'}</h2>
           <p className="muted">
-            Lo que informa cada proveedor. Todavía no se confirmó qué producto de MaxBio corresponde
-            a cada artículo.
+            Lo que informa cada proveedor y su asociación confirmada con productos de MaxBio.
           </p>
         </div>
         {supplier && isAdmin && !supplier.archivedAt && (
@@ -79,7 +97,23 @@ export function ReferenceCatalog({
           }}
         />
       )}
-      <SearchBar state={search} placeholder="Código, descripción, marca, GTIN o proveedor" />
+      <SearchBar
+        state={search}
+        placeholder="Código, descripción, marca, presentación, GTIN o proveedor"
+      />
+      <Field label="Asociación">
+        <select
+          value={association}
+          onChange={(event) => {
+            setAssociation(event.target.value);
+            search.setPage(1);
+          }}
+        >
+          <option value="ALL">Todos</option>
+          <option value="UNASSOCIATED">Sin asociar</option>
+          <option value="ASSOCIATED">Asociados</option>
+        </select>
+      </Field>
       <Feedback {...resource} reload={resource.reload} />
       {resource.data && (
         <>
@@ -118,7 +152,7 @@ export function ReferenceCatalog({
                       <small className="muted">{item.presentationText || '—'}</small>
                     </td>
                     <td>
-                      <Unassociated />
+                      <ReferenceAssociation item={item} />
                       {item.missingFromLatestCompleteListAt && (
                         <small className="muted">No aparece en la última lista completa</small>
                       )}
@@ -152,9 +186,12 @@ export function ReferenceDetail({ id }: { id: string }) {
       </Link>
       <p className="eyebrow">REFERENCIA DEL PROVEEDOR</p>
       <h1>{item.description}</h1>
-      <Unassociated />
+      <ReferenceAssociation item={item} />
       <p className="catalog-notice">
-        Todavía no se confirmó qué producto de MaxBio corresponde a este artículo.
+        {item.supplierProduct
+          ? 'Esta referencia conserva su producto confirmado. Podés agregarle un identificador desde Identificar producto.'
+          : 'Todavía no se confirmó qué producto de MaxBio corresponde a este artículo.'}{' '}
+        <Link href="/identificar">Identificar producto</Link>
       </p>
       <section className="catalog-panel">
         <dl className="data-grid">

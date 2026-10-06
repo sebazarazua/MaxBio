@@ -25,7 +25,7 @@ unitOfMeasure: UNIT, PAIR, METER, CENTIMETER, LITER, MILLILITER, KILOGRAM, GRAM.
 
 Cada caso de uso recibe RequestActorContext. organizationId proviene exclusivamente de la sesión/pertenencia activa. No se acepta en cuerpos, filtros ni headers como autoridad; los contratos rechazan campos extra. Las consultas, escrituras y locks expresan el scope. Recursos ajenos/inexistentes dan 404, incluso asociaciones.
 
-Los guards globales existentes validan sesión y tenant. Todas las mutaciones usan Roles(ADMIN); la aplicación también exige ADMIN y revalida acceso/sesión dentro de la transacción. OPERATOR consulta las seis entidades, sin mutaciones estructurales. La web centraliza la política mediante useWorkspace y oculta las acciones. Un 401/403 comercial dispara revalidación de identidad; el contenido de tenant se desmonta cuando se pierde acceso o cambia organización.
+Los guards globales existentes validan sesión y tenant. Las mutaciones estructurales usan Roles(ADMIN); la aplicación también exige ADMIN y revalida acceso/sesión dentro de la transacción. OPERATOR consulta las seis entidades y confirma el workflow específico de identificación, sin acceso a mutaciones estructurales. La web centraliza la política mediante useWorkspace y oculta las acciones administrativas. Un 401/403 comercial dispara revalidación de identidad; el contenido de tenant se desmonta cuando se pierde acceso o cambia organización.
 
 ## Identificadores y normalización
 
@@ -37,7 +37,7 @@ Las reglas son funciones puras en domain/identifiers.ts, independientes de Nest/
 | INTERNAL_CODE    | Trim externo; conserva case, ceros, espacios internos y puntuación; no acepta controles ni vacío                                                                                           | Exacta, sensible a mayúsculas                                                                                  |
 | INTERNAL_BARCODE | Namespace explícito MB-, seguido de 1–61 caracteres ASCII permitidos. Primer carácter alfanumérico; restantes A–Z, 0–9, punto, guion, guion bajo                                           | Exacta; no convierte a mayúsculas ni genera/imprime etiquetas                                                  |
 
-Unicidad (organizationId, kind, normalizedValue) incluye archivados. Archivar producto/identificador nunca libera el código ni lo reasigna. Restaurar recupera la asociación original. Una corrección de titular futura necesitaría un caso de uso específico y auditado; no existe ahora. La resolución tipada acepta kind/value manuales, sin scanner, cámara ni parser GS1.
+Unicidad (organizationId, kind, normalizedValue) incluye archivados. Archivar producto/identificador nunca libera el código ni lo reasigna. Restaurar recupera la asociación original. Una corrección de titular futura necesitaría un caso de uso específico y auditado; no existe ahora. La resolución administrativa tipada acepta kind/value manuales. El segundo incremento agrega [identificación HID](product-identification.md) con confirmación explícita para ADMIN/OPERATOR. Cámara y parser GS1 completo siguen diferidos.
 
 Referencia primaria de normalización: [GS1 sobre representación GTIN de 14 dígitos](https://support.gs1.org/support/solutions/articles/43000734355-what-is-the-required-format-of-gtin-in-gs1-edi-standards-) y [cálculo del dígito de control](https://www.gs1.org/services/how-calculate-check-digit-manually). Esta validación comprueba formato/checksum, no consulta registro de asignaciones GS1.
 
@@ -109,7 +109,7 @@ Formularios cortos con detalles progresivos, etiquetas, controles de 44–48 px,
 
 Sin nuevas dependencias de aplicación. Se reutilizan Next/React, Nest, Prisma/PostgreSQL, Zod, Audit e Identity. El navegador de verificación se ejecutó desde caché npm fuera del proyecto.
 
-Diferidos: inventario y conversiones, scanner/GS1, documentos, datos fiscales/CUIT/cuentas bancarias, Manufacturer estructurado, costos/precios/compras, jerarquías de categoría, atributos dinámicos, reasignación especial de identificadores, visor de auditoría, RLS y despliegue productivo. No se incorporan tablas ni placeholders de esos dominios.
+Diferidos: inventario y conversiones, cámara/parser GS1 completo, documentos, datos fiscales/CUIT/cuentas bancarias, Manufacturer estructurado, costos/precios/compras, jerarquías de categoría, atributos dinámicos, reasignación especial de identificadores, visor de auditoría, RLS y despliegue productivo. No se incorporan tablas ni placeholders de esos dominios.
 
 ## Validación y límites
 
@@ -120,3 +120,7 @@ La UI usa offsets, no cursores; páginas pueden variar entre requests si se modi
 Prisma/adapter-pg emite una advertencia de deprecación de queries concurrentes con relaciones durante las pruebas; pg actual sigue soportándolas y los tests pasan. No se modifica ni actualiza el driver en esta entrega. Los listados ejecutan filas y total secuencialmente dentro de la misma transacción.
 
 Los skills Prisma en packages/database/.agents son la fuente; .claude/skills y .windsurf/skills contienen junctions Windows hacia esa misma fuente, no copias independientes. Se conservaron. No se recomienda borrar la fuente como limpieza de duplicados; cualquier retiro de aliases de herramientas que ya no se usen pertenece a otra tarea. No se realizaron commits/push. Próximo paso: validar el flujo con usuarios y un catálogo real; definir unidades/movimientos antes de comenzar Inventory en una tarea posterior.
+
+## Identificación física (segundo incremento)
+
+SupplierCatalogItem deriva Product mediante SupplierProduct, con FK compuesta de tenant/proveedor. Importar nunca crea Products; solo una confirmación explícita agrega identidad/vínculo/producto. ProductIdentifier mantiene sus tres kinds existentes; códigos externos físicos quedan en SupplierScanIdentifier por proveedor. OPERATOR ejecuta ese workflow sin acceder al CRUD ADMIN. Ver [modelo, endpoints, transacciones y límites](product-identification.md).

@@ -2,6 +2,7 @@ import type { NextConfig } from 'next';
 import path from 'node:path';
 
 const config: NextConfig = {
+  distDir: process.env.MAXBIO_BUILD_DIR ?? '.next',
   poweredByHeader: false,
   devIndicators: false,
   turbopack: { root: path.resolve(import.meta.dirname, '../..') },

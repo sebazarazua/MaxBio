@@ -33,7 +33,9 @@ Abrir <http://localhost:3000>. Iniciar sesión con el administrador propio. Las 
 
 ## Usar el catálogo
 
-En la ficha de **Proveedores**, abrí **Catálogo**. ADMIN puede elegir **Importar lista**, cargar CSV/XLSX, elegir hoja/columnas, revisar y confirmar. OPERATOR consulta referencias e historia. La búsqueda transversal está en **Referencias de proveedores**. Importar una lista no crea Products, identificadores, asociaciones ni stock.
+En la ficha de **Proveedores**, abrí **Catálogo**. ADMIN puede elegir **Importar lista**, cargar CSV/XLSX, elegir hoja/columnas, revisar y confirmar. OPERATOR consulta referencias e historia. La búsqueda transversal está en **Listas de proveedores**. Importar una lista no crea Products, identificadores, asociaciones ni stock.
+
+**Identificar producto** admite scanner HID USB/Bluetooth o código manual + Enter. ADMIN y OPERATOR pueden resolver, buscar una referencia, comparar productos existentes o crear uno básico y confirmar explícitamente. Guarda identificador y `SupplierCatalogItem → SupplierProduct → Product` en una transacción auditable e idempotente. El mismo código vuelve a reconocer el producto. GTIN exige checksum; externos necesitan proveedor explícito. Las listas tienen filtros de asociación. Ver [identificación/scanner](docs/architecture/product-identification.md).
 
 Detalles, límites y mantenimiento en [Supplier Catalog](docs/architecture/supplier-catalog.md). `pnpm catalog:cleanup` elimina solamente inspecciones/previews vencidos; preserva todas las importaciones confirmadas. Ejecutarlo regularmente al desplegar.
 
@@ -41,7 +43,7 @@ En **Productos → Nuevo producto**, completar nombre y unidad; código interno,
 
 **Proveedores** permite buscar, consultar contactos, crear y editar. Sus fichas muestran productos asociados. **Productos → Administrar marcas y categorías** permite cambiar nombres y archivar/restaurar opciones. Todas las listas y selectores están paginados. **Incluir archivados** permite recuperar registros históricos; el archivado nunca libera identificadores para otro producto.
 
-ADMIN puede modificar el catálogo. OPERATOR puede consultar y buscar; los controles de escritura están ocultos y la API rechaza mutaciones. Si otra persona modificó un registro, el formulario muestra el conflicto y permite cargar la información actual antes de guardar. Presentación (por ejemplo, «Caja x 100») y unidad (por ejemplo, «Unidad») son conceptos separados: no hay conversiones de cantidades.
+ADMIN puede modificar el catálogo. OPERATOR consulta y busca; puede confirmar identificaciones desde el workflow operativo. El CRUD general sigue restringido a ADMIN. Si otra persona modificó un registro, el formulario muestra el conflicto y permite cargar la información actual antes de guardar. Presentación (por ejemplo, «Caja x 100») y unidad (por ejemplo, «Unidad») son conceptos separados: no hay conversiones de cantidades.
 
 Modelo, constraints, endpoints y decisiones en [catalog.md](docs/architecture/catalog.md).
 
@@ -161,6 +163,6 @@ El build no requiere una base activa. Para probar las aplicaciones compiladas, e
 
 ## Alcance y próximo paso
 
-Catálogo está implementado. No se implementaron inventario, scanner, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
+Catálogo, listas e identificación HID están implementados. No se implementaron inventario, cámara, parser GS1 completo, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
 
-El siguiente paso recomendado es probar Catálogo con los usuarios y datos reales para ajustar vocabulario, códigos y búsquedas. Antes de Inventory, definir unidades/conversiones y el modelo de movimientos. Esta entrega se detiene en Catálogo. Las decisiones de dominio están registradas en [decisiones](docs/architecture/decisions.md).
+El siguiente paso recomendado es probar identificación con usuarios, lectores HID y datos reales. Supplier Catalog → Product Identification → Inventory futuro. Antes de Inventory, definir unidades/conversiones y el modelo de movimientos. Esta entrega se detiene en identificación. Las decisiones de dominio están registradas en [decisiones](docs/architecture/decisions.md).

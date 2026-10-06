@@ -4,6 +4,7 @@ import {
   apiErrorSchema,
   catalogRouteContract,
   supplierCatalogRouteContract,
+  identificationRouteContract,
 } from '@maxbio/contracts';
 
 export const dynamic = 'force-dynamic';
@@ -31,6 +32,7 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
     );
   const path = (await context.params).path.join('/');
   const contract =
+    identificationRouteContract(path, request.method) ??
     supplierCatalogRouteContract(path, request.method) ??
     catalogRouteContract(path, request.method);
   if (!contract) return failure(404, 'No encontramos lo que buscás.');

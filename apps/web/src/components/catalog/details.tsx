@@ -9,6 +9,7 @@ import {
   supplierSchema,
   supplierProductListSchema,
   supplierProductMutationResultSchema,
+  supplierScanIdentifierListSchema,
   unitLabels,
   type ProductView,
   type SupplierProductView,
@@ -108,8 +109,41 @@ function ProductBody({ product, reload }: { product: ProductView; reload: () => 
         )}
       </section>
       <Identifiers product={product} reload={reload} />
+      <SupplierScanIdentifiers productId={product.id} />
       <ProductSuppliers product={product} reload={reload} />
     </>
+  );
+}
+function SupplierScanIdentifiers({ productId }: { productId: string }) {
+  const search = useSearch();
+  const resource = useResource(
+    `products/${productId}/supplier-scan-identifiers?${search.query}`,
+    supplierScanIdentifierListSchema,
+  );
+  return (
+    <section className="catalog-panel">
+      <h2>Códigos externos por proveedor</h2>
+      <p className="muted">Para reconocerlos, elegí ese proveedor en Identificar producto.</p>
+      <SearchBar state={search} placeholder="Código externo o proveedor" />
+      <Feedback {...resource} reload={resource.reload} />
+      {resource.data && (
+        <>
+          <ul className="identification-results">
+            {resource.data.items.map((item) => (
+              <li key={item.id}>
+                <span>
+                  <strong className="code">{item.value}</strong> · {item.supplier.name}
+                  {(item.archivedAt || item.linkArchivedAt || item.supplier.archivedAt) &&
+                    ' · Archivado'}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {!resource.data.total && <p>Sin códigos externos registrados.</p>}
+          <Pagination {...resource.data} change={search.setPage} />
+        </>
+      )}
+    </section>
   );
 }
 function Identifiers({ product, reload }: { product: ProductView; reload: () => void }) {

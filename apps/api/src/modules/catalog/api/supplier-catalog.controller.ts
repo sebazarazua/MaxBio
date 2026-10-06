@@ -65,7 +65,7 @@ export class SupplierCatalogController {
   ) {
     return this.catalog.listItems(
       actor(request),
-      parseCatalogInput(catalogListQuerySchema, query),
+      parseCatalogInput(supplierCatalogQuerySchema, query),
       id,
     );
   }

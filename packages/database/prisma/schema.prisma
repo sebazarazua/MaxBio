@@ -15,12 +15,12 @@ enum MembershipRole {
 }
 
 model Organization {
-  id                     String                  @id @default(uuid()) @db.Uuid
-  name                   String                  @db.VarChar(160)
-  slug                   String                  @unique @db.VarChar(80)
-  createdAt              DateTime                @default(now()) @db.Timestamptz(3)
-  updatedAt              DateTime                @updatedAt @db.Timestamptz(3)
-  archivedAt             DateTime?               @db.Timestamptz(3)
+  id                     String                   @id @default(uuid()) @db.Uuid
+  name                   String                   @db.VarChar(160)
+  slug                   String                   @unique @db.VarChar(80)
+  createdAt              DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                 @updatedAt @db.Timestamptz(3)
+  archivedAt             DateTime?                @db.Timestamptz(3)
   memberships            Membership[]
   auditEvents            AuditEvent[]
   products               Product[]
@@ -32,6 +32,8 @@ model Organization {
   supplierCatalogItems   SupplierCatalogItem[]
   supplierCatalogImports SupplierCatalogImport[]
   supplierCatalogUploads SupplierCatalogUpload[]
+  scanIdentifiers        SupplierScanIdentifier[]
+  identifications        CatalogIdentification[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -49,18 +51,19 @@ model User {
 }
 
 model Membership {
-  id             String                  @id @default(uuid()) @db.Uuid
-  organizationId String                  @db.Uuid
-  userId         String                  @db.Uuid
-  role           MembershipRole          @default(OPERATOR)
-  createdAt      DateTime                @default(now()) @db.Timestamptz(3)
-  updatedAt      DateTime                @updatedAt @db.Timestamptz(3)
-  revokedAt      DateTime?               @db.Timestamptz(3)
-  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  user           User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
-  sessions       Session[]
-  catalogImports SupplierCatalogImport[]
-  catalogUploads SupplierCatalogUpload[]
+  id              String                  @id @default(uuid()) @db.Uuid
+  organizationId  String                  @db.Uuid
+  userId          String                  @db.Uuid
+  role            MembershipRole          @default(OPERATOR)
+  createdAt       DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime                @updatedAt @db.Timestamptz(3)
+  revokedAt       DateTime?               @db.Timestamptz(3)
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user            User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
+  sessions        Session[]
+  catalogImports  SupplierCatalogImport[]
+  catalogUploads  SupplierCatalogUpload[]
+  identifications CatalogIdentification[]
 
   @@unique([organizationId, userId])
   @@unique([id, userId])
@@ -84,6 +87,7 @@ model Session {
   auditEvents        AuditEvent[]
   catalogImports     SupplierCatalogImport[]
   catalogUploads     SupplierCatalogUpload[]
+  identifications    CatalogIdentification[]
 
   @@unique([id, userId])
   @@index([userId, revokedAt, expiresAt])
@@ -212,6 +216,11 @@ model SupplierProduct {
   supplier            Supplier     @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
   product             Product      @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
 
+  catalogItems    SupplierCatalogItem[]
+  scanIdentifiers SupplierScanIdentifier[]
+  identifications CatalogIdentification[]
+
+  @@unique([organizationId, supplierId, id])
   @@unique([organizationId, supplierId, productId])
   @@unique([organizationId, supplierId, supplierCode])
   @@index([organizationId, productId, archivedAt])
@@ -290,11 +299,55 @@ model SupplierCatalogItem {
   organization                    Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   supplier                        Supplier                   @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
   importRows                      SupplierCatalogImportRow[]
+  supplierProductId               String?                    @db.Uuid
+  supplierProduct                 SupplierProduct?           @relation(fields: [organizationId, supplierId, supplierProductId], references: [organizationId, supplierId, id], onDelete: Restrict, onUpdate: Restrict)
+  identifications                 CatalogIdentification[]
 
   @@unique([organizationId, supplierId, supplierCode])
   @@unique([organizationId, supplierId, id])
   @@index([organizationId, supplierId, archivedAt, supplierCode, id])
   @@index([organizationId, normalizedReportedGtin])
+  @@index([organizationId, supplierId, supplierProductId])
+}
+
+// External physical codes have a supplier namespace, never a universal GTIN namespace.
+model SupplierScanIdentifier {
+  id                String          @id @default(uuid()) @db.Uuid
+  organizationId    String          @db.Uuid
+  supplierId        String          @db.Uuid
+  supplierProductId String          @db.Uuid
+  value             String          @db.VarChar(128)
+  normalizedValue   String          @db.VarChar(128)
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+  archivedAt        DateTime?       @db.Timestamptz(3)
+  organization      Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supplierProduct   SupplierProduct @relation(fields: [organizationId, supplierId, supplierProductId], references: [organizationId, supplierId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, supplierId, normalizedValue])
+  @@index([organizationId, supplierId, supplierProductId])
+}
+
+// Durable receipt: identical retries have the same effects and never repeat audit events.
+model CatalogIdentification {
+  id                String              @id @default(uuid()) @db.Uuid
+  operationId       String              @db.Uuid
+  organizationId    String              @db.Uuid
+  actorUserId       String              @db.Uuid
+  membershipId      String              @db.Uuid
+  sessionId         String              @db.Uuid
+  requestHash       String              @db.Char(64)
+  supplierId        String              @db.Uuid
+  referenceId       String              @db.Uuid
+  supplierProductId String              @db.Uuid
+  createdAt         DateTime            @default(now()) @db.Timestamptz(3)
+  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  membership        Membership          @relation(fields: [organizationId, membershipId, actorUserId], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  session           Session             @relation(fields: [sessionId, actorUserId], references: [id, userId], onDelete: Restrict, onUpdate: Restrict)
+  reference         SupplierCatalogItem @relation(fields: [organizationId, supplierId, referenceId], references: [organizationId, supplierId, id], onDelete: Restrict, onUpdate: Restrict)
+  supplierProduct   SupplierProduct     @relation(fields: [organizationId, supplierId, supplierProductId], references: [organizationId, supplierId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, operationId])
+  @@index([organizationId, supplierId, referenceId])
 }
 
 // Inspección temporal: celdas de texto acotadas, nunca el archivo original.

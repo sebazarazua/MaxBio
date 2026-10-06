@@ -26,7 +26,7 @@ import type { RequestActorContext } from '../../../common/auth/request-context.j
 import { CatalogRuleError, normalizeIdentifier, normalizeName } from '../domain/identifiers.js';
 
 const classificationSelect = { id: true, name: true, archivedAt: true } as const;
-const productInclude = {
+export const productInclude = {
   brand: { select: classificationSelect },
   category: { select: classificationSelect },
   identifiers: {
@@ -54,7 +54,7 @@ const pageResult = <T>(items: T[], total: number, query: CatalogListQuery) => ({
   limit: query.limit,
 });
 const textSearch = (q: string) => ({ contains: q, mode: 'insensitive' as const });
-const productView = (row: ProductRecord) => {
+export const productView = (row: ProductRecord) => {
   const { organizationId: _organizationId, identifiers, ...view } = row;
   void _organizationId;
   return { ...view, internalCodes: identifiers.map((identifier) => identifier.value) };

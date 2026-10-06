@@ -6,7 +6,7 @@ Implementado el 6 de octubre de 2026 dentro del módulo Catalog existente. Evide
 
 **SupplierCatalogItem ≠ Product ≠ Inventory.** Una lista declara qué ofrece/identifica el proveedor. Importar escribe referencias, procedencia, observaciones y AuditEvent. No busca Products por similitud ni por GTIN; no crea/modifica Product, ProductIdentifier o SupplierProduct. Una referencia con nombre/código igual al de un producto o vínculo existente sigue sin asociar. No hay tablas nuevas de inventario.
 
-No se agrega relación nullable con SupplierProduct, CatalogConfirmation, Product.status o productVerified. La asociación necesitará un caso de uso y migración posteriores: se acepta ese cambio futuro para evitar placeholders sin comportamiento.
+El segundo incremento agrega la relación nullable con SupplierProduct y un recibo durable mediante [identificación explícita](product-identification.md). Product se deriva del vínculo; importar conserva esa relación. No se agregan Product.status ni productVerified.
 
 ## Entidades y procedencia
 
@@ -94,7 +94,7 @@ Uploads se eliminan al confirmar; vencidos se limpian al inspeccionar otro archi
 
 ## Permisos, auditoría, API y UI
 
-ADMIN inspecciona/revisa/confirma/consulta. OPERATOR busca/abre referencias y consulta historia confirmada. Guard y application exigen ADMIN; commit revalida acceso dentro de la transacción. No se agregan permisos del scanner futuro.
+ADMIN inspecciona/revisa/confirma importaciones y consulta. OPERATOR busca/abre referencias y consulta historia confirmada. Guard y application exigen ADMIN para importar; commit revalida acceso dentro de la transacción. El workflow separado de identificación admite ambos roles sin ampliar permisos de importación o CRUD general.
 
 AuditService existente: SUPPLIER_CATALOG_IMPORTED, recurso SupplierCatalogImport, actor/session/organization/requestId. Allowlist: supplierId, importId, mode, created, updated, unchanged, ignored, errors, conflicts, missing. No archivo/filas/DTO/texto arbitrario. Fallo de auditoría revierte referencia, ausencias, filas y confirmación.
 
@@ -112,7 +112,7 @@ API bajo `/api/v1`, JSON web con whitelist `/api/catalog`:
 
 Contratos Zod estrictos en packages/contracts; frontend no comparte Prisma. Rows paginadas con filtro outcome/código. Inspecciones/previews privados al actor/sesión; historia confirmada legible por tenant.
 
-Ficha con Datos/Catálogo, Importar lista solo ADMIN/proveedor activo, búsqueda e historia paginadas. Archivo → Columnas → Revisar/Confirmar → Resultado. `/referencias` busca transversalmente, `/referencias/:id` abre referencia, `/referencias/importaciones/:id` explica resultados. Proveedor/código/descripción y «Sin asociar» con ayuda visible, sin stock ni propiedad física sugerida. Controles etiquetados, encabezados de tabla, feedback y scroll horizontal local en móvil.
+Ficha con Datos/Catálogo, Importar lista solo ADMIN/proveedor activo, búsqueda e historia paginadas. Archivo → Columnas → Revisar/Confirmar → Resultado. `/referencias` busca transversalmente, `/referencias/:id` abre referencia, `/referencias/importaciones/:id` explica resultados. Proveedor/código/descripción y «Sin asociar» o «Asociado · Producto · Ver producto», con filtros Todos/Sin asociar/Asociados globales y por proveedor, sin stock ni propiedad física sugerida. Controles etiquetados, encabezados de tabla, feedback y scroll horizontal local en móvil.
 
 ## Dependencias y decisiones diferidas
 
@@ -129,4 +129,8 @@ Tipos dev @types/multer 2.3.0 y @types/yauzl 3.4.0; saxen sin tipos publicados r
 
 Fuentes primarias: [read-excel-file](https://github.com/catamphetamine/read-excel-file), [csv-parse](https://csv.js.org/parse/options/), [yauzl](https://github.com/thejoshwolfe/yauzl), [saxen](https://github.com/nikku/saxen).
 
-Diferidos asociación explícita, scanner/HID, GS1, EXTERNAL_BARCODE, creación de Products por identificación, CatalogConfirmation, Inventory/Stock/Lot/Series/movimientos, documentos y economía. Siguiente paso: probar listas reales acotadas y acordar asociación operativa antes de otro incremento. No se inicia scanner ni Inventory.
+Asociación explícita, HID y Product básico desde identificación están implementados en el segundo incremento. Diferidos parser GS1 completo, namespace universal EXTERNAL_BARCODE, Inventory/Stock/Lot/Series/movimientos, documentos y economía. Siguiente paso: probar listas y lectores reales; no se inicia Inventory.
+
+## Asociación confirmada
+
+El menú visible usa **Listas de proveedores**. Búsqueda incluye presentationText. supplierProductId nullable vincula la referencia al Product derivado; FK organización/proveedor/vínculo impide cruces. Reimportar solo cambia declaraciones y conserva esa FK; asociar incrementa versión e invalida previews obsoletos. Estado asociado se conserva aunque vínculo/producto se archive. [Identificación física](product-identification.md) explica el caso de uso ADMIN/OPERATOR y sus reservas/idempotencia.

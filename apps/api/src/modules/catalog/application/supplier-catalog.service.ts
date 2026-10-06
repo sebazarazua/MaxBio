@@ -42,12 +42,18 @@ const importInclude = {
   membership: { select: { user: { select: { id: true, displayName: true } } } },
 } as const;
 type ImportRecord = Prisma.SupplierCatalogImportGetPayload<{ include: typeof importInclude }>;
-const itemInclude = { supplier: { select: supplierSelect } } as const;
+export const itemInclude = {
+  supplier: { select: supplierSelect },
+  supplierProduct: { select: { id: true, archivedAt: true, product: { select: supplierSelect } } },
+} as const;
 type ItemRecord = Prisma.SupplierCatalogItemGetPayload<{ include: typeof itemInclude }>;
-const itemView = (row: ItemRecord) => {
+export const itemView = (row: ItemRecord) => {
   const { organizationId: _scope, ...view } = row;
   void _scope;
-  return { ...view, associationStatus: 'UNASSOCIATED' as const };
+  return {
+    ...view,
+    associationStatus: row.supplierProductId ? ('ASSOCIATED' as const) : ('UNASSOCIATED' as const),
+  };
 };
 function importView(row: ImportRecord) {
   const {
@@ -201,6 +207,11 @@ export class SupplierCatalogService {
     const where: Prisma.SupplierCatalogItemWhereInput = {
       organizationId: context.organizationId,
       ...(supplierId || query.supplierId ? { supplierId: supplierId ?? query.supplierId } : {}),
+      ...(query.association === 'ASSOCIATED'
+        ? { supplierProductId: { not: null } }
+        : query.association === 'UNASSOCIATED'
+          ? { supplierProductId: null }
+          : {}),
       ...(query.includeArchived ? {} : { archivedAt: null, supplier: { archivedAt: null } }),
       ...(query.q
         ? {
@@ -208,6 +219,7 @@ export class SupplierCatalogService {
               { supplierCode: search(query.q) },
               { description: search(query.q) },
               { brandText: search(query.q) },
+              { presentationText: search(query.q) },
               { reportedGtin: search(query.q) },
               { normalizedReportedGtin: search(query.q) },
               { supplier: { name: search(query.q) } },

@@ -119,3 +119,20 @@ Modelo, endpoints, límites y dependencias en [supplier-catalog.md](supplier-cat
 - [Autenticación y guards globales en NestJS](https://docs.nestjs.com/security/authentication).
 
 Las versiones concretas se obtuvieron del registro npm y quedan resueltas en `pnpm-lock.yaml`; las páginas de documentación pueden describir versiones posteriores.
+
+## Product Identification — segundo incremento, 6 de octubre de 2026
+
+Este incremento reemplaza las decisiones temporales anteriores de dejar scanner/asociación diferidos.
+
+| Decisión                                    | Motivo y consecuencia                                                                        |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Referencia → SupplierProduct → Product      | FK compuesta tenant/proveedor, sin productId duplicado ni reasignación silenciosa.           |
+| SupplierScanIdentifier scoped por proveedor | No hay evidencia de namespace externo universal; mantiene GTIN/MB-/INTERNAL_CODE separados.  |
+| Recibo CatalogIdentification permanente     | Unique operationId por tenant + hash/actor; retry sin efectos/eventos repetidos.             |
+| Caso de uso ADMIN/OPERATOR específico       | Permite operar con scanner sin ampliar CRUD administrativo.                                  |
+| Resolve sin escrituras comerciales          | Reconocer no ingresa stock ni confirma identidad de declaraciones externas.                  |
+| Confirmación humana y transaccional         | Product nuevo, identidad, vínculo, referencia, auditoría y recibo comparten commit/rollback. |
+| HID local y parser GS1 acotado              | Sin SDK/cámara; detección compuesta UNSUPPORTED; GTIN manual disponible.                     |
+| MAXBIO_BUILD_DIR opcional                   | Permite verificaciones/builds aislados en .next sin interferir con un dev server activo.     |
+
+Detalles y límites en [product-identification.md](product-identification.md). Inventory y Remitos siguen diferidos.

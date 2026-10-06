@@ -128,7 +128,12 @@ export const supplierCatalogItemSchema = supplierCatalogDataSchema
     updatedAt: z.iso.datetime(),
     archivedAt: z.iso.datetime().nullable(),
     missingFromLatestCompleteListAt: z.iso.datetime().nullable(),
-    associationStatus: z.literal('UNASSOCIATED'),
+    supplierProductId: z.uuid().nullable(),
+    supplierProduct: z
+      .object({ id: z.uuid(), archivedAt: z.iso.datetime().nullable(), product: supplierBrief })
+      .strict()
+      .nullable(),
+    associationStatus: z.enum(['UNASSOCIATED', 'ASSOCIATED']),
   })
   .strict();
 const pageFields = {
@@ -140,7 +145,10 @@ export const supplierCatalogListSchema = z
   .object({ items: z.array(supplierCatalogItemSchema), ...pageFields })
   .strict();
 export const supplierCatalogQuerySchema = catalogListQuerySchema
-  .extend({ supplierId: z.uuid().optional() })
+  .extend({
+    supplierId: z.uuid().optional(),
+    association: z.enum(['ALL', 'UNASSOCIATED', 'ASSOCIATED']).default('ALL'),
+  })
   .strict();
 export const catalogImportRowSchema = z
   .object({
@@ -203,7 +211,7 @@ export function supplierCatalogRouteContract(path: string, method: string) {
     if (path === 'supplier-catalog-items')
       return { response: supplierCatalogListSchema, query: supplierCatalogQuerySchema };
     if (new RegExp(`^suppliers/${id}/catalog-items$`).test(path))
-      return { response: supplierCatalogListSchema, query: catalogListQuerySchema };
+      return { response: supplierCatalogListSchema, query: supplierCatalogQuerySchema };
     if (new RegExp(`^supplier-catalog-items/${id}$`).test(path))
       return { response: supplierCatalogItemSchema };
     if (new RegExp(`^supplier-catalog-imports/${id}$`).test(path))
