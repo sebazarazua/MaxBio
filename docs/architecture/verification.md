@@ -1,5 +1,77 @@
 # Verificación de MaxBio
 
+## Supplier Catalog — evidencia nueva de esta notebook, 6 de octubre de 2026
+
+Windows, Node 22.18.0, pnpm 11.9.0, Docker Desktop 28.5.1 y PostgreSQL 17.9. `.env` y configuración web local estaban presentes; no se imprimieron credenciales ni se modificaron esos archivos. La DB local existente recibió la migración. Las pruebas usan fixtures propios en bases temporales, sin datos privados ni usuarios/bootstrap anteriores. Sin commit/push.
+
+| Comando/comprobación realmente ejecutada                                             | Resultado final                                                                                                                               |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`                                                     | Exit 0, antes de cambios y con lockfile final; resolución reproducible.                                                                       |
+| `pnpm lint`                                                                          | Exit 0; sin errores de ESLint.                                                                                                                |
+| `pnpm format:check`                                                                  | Exit 0; todos los archivos coinciden con Prettier.                                                                                            |
+| `pnpm typecheck`                                                                     | Exit 0, contratos/database/API/web; Next typegen.                                                                                             |
+| `pnpm test`                                                                          | Exit 0, 29/29, sin skips. 12 pruebas nuevas de Supplier Catalog más las 17 existentes.                                                        |
+| `pnpm test:database`                                                                 | Exit 0: database 1/1 y API 55/55 (12 nuevas más 43 existentes), sin skips.                                                                    |
+| `pnpm build`                                                                         | Exit 0; Prisma generado, paquetes/API compilados y Next build con las nuevas rutas.                                                           |
+| `prisma format`, `pnpm prepare:packages`, compilaciones dirigidas                    | Exit 0 en comprobaciones finales.                                                                                                             |
+| `prisma migrate dev --name supplier_catalog --create-only`                           | No ejecutó creación: rechazado por CLI no interactivo. Se utilizó el procedimiento diff/deploy siguiente.                                     |
+| `prisma migrate diff --from-config-datasource --to-schema ... --script --output ...` | Exit 0 contra temporal con las tres migraciones previas; SQL revisado y CHECKs incluidos antes de aplicar.                                    |
+| `prisma migrate deploy` sobre DB local `maxbio`                                      | Exit 0; nueva migración aplicada, sin editar migraciones previas.                                                                             |
+| `prisma migrate deploy` en temporal `maxbio_verify`                                  | Exit 0; cadena previa y después nueva migración.                                                                                              |
+| `prisma migrate deploy` desde cero en `maxbio_supplier_catalog_fresh`                | Exit 0; las cuatro migraciones; `prisma migrate status` confirmó actualizado.                                                                 |
+| `pnpm catalog:cleanup`                                                               | Exit 0; CLI inicial sin vencidos. Caso posterior eliminó 1 upload/1 preview/1 fila vencidos y conservó 1 import confirmado/4 filas/1 Product. |
+| `pnpm audit --prod --json`                                                           | Exit 1: 2 high y 1 moderate **preexistentes**, transitivas de Prisma, detalladas debajo. Ningún aviso en nuevas dependencias.                 |
+| `git diff --check`                                                                   | Exit 0; sin errores de whitespace.                                                                                                            |
+
+Se ejecutaron también metadata npm, revisión de las fuentes/dependencias, creación de fixtures OOXML/CSV, Docker Compose temporal, consultas PostgreSQL y comandos browser descritos a continuación. Los logs y capturas son locales en `artifacts/supplier-catalog-*`; el directorio continúa ignorado. Scripts/configuración privados no se agregan a Git.
+
+### Casos de importación e invariantes
+
+CSV: UTF-8/BOM, delimitadores, comillas, códigos con ceros/case/puntuación, mapeo corregible, vacías y errores/longitudes/límites. XLSX: varias hojas y elección, encabezados con título, ceros textuales, fila original/vacías finales; rechazo de ZIP inválido, macros, fórmulas, links/DTD/entidades, expansión y coordenadas dispersas incluso codificadas. Contratos estrictos/paginación/rutas explícitas.
+
+Pruebas de DB/HTTP comprueban:
+
+- Inspect/preview no escriben referencias ni Products. Importar una fila y **5.000 filas** crea cero Products, ProductIdentifiers y SupplierProducts; Product existente y vínculo ya confirmado permanecen intactos. Consultar schema verifica que no se crearon tablas de Inventory/Stock/movimientos/lotes/series.
+- 5.000 referencias/observaciones se confirman y paginan; última medición **2457 ms** incluyendo inspect + preview + commit + consultas/assertions. Es una medición local, no un SLO ni tiempo aislado de transacción.
+- Máximo **10.000 filas**, tanto alta como actualización en lote: pasa sin duplicados ni Products nuevos.
+- Reimportación idempotente de datos, modificación solo de referencia, opcionales no mapeados conservados y GTIN inválido textual con advertencia.
+- Parcial conserva ausentes; completa marca ausencia separada de archivedAt; completa con errores excluidos no cambia indicadores de completitud.
+- ADMIN puede importar; OPERATOR lee/busca/abre y sus POST son 403, reforzado en application.
+- IDs ajenos dan 404; FKs reales rechazan item/proveedor de distinto tenant, procedencia de pertenencia ajena y fila/item de otro proveedor.
+- Hash incorrecto/DTO alterado/preview obsoleto/expirado rechazados; dos imports concurrentes mismo código producen un ganador; doble commit del mismo preview produce un evento; archivado no libera unique.
+- Evento con actor/sesión/tenant/proveedor/import/cantidades y claves allowlisted. Fallo inyectado de auditoría revierte referencias, ausencias, vínculos de observaciones y estado del import.
+- Filas históricas distinguen CREATED/UPDATED/UNCHANGED/DUPLICATE/EMPTY/ERROR/CONFLICT y ofrecen paginación/filtros.
+
+### Evidencia visual y flujo real
+
+Se aplicaron las skills agent-browser, agent-browser-verify, verification y react-best-practices. Se inició API/Next en **desarrollo** contra DB temporal, con origen localhost y variables temporales explícitas. Se utilizó una sesión browser dedicada y usuarios ADMIN/OPERATOR de fixture con contraseña aleatoria local; no credenciales privadas.
+
+- Login visible y funcional; página con contenido, sin overlay ni errores de página; consola solo mensajes normales React/HMR.
+- ADMIN abrió ficha → Catálogo → Importar lista → archivo CSV → columnas sugeridas/corregibles → preview (4 filas, 2 nuevas, 1 repetida, 1 vacía, 1 advertencia GTIN) → Confirmar → resultado → historial de filas.
+- UI y consultas DB tras confirmar: **Products antes/después = 1**, referencias = 2, identifiers = 0, SupplierProducts = 0, imports confirmados = 1, evento de importación = 1.
+- OPERATOR inició sesión, buscó DL2115 en referencias globales, abrió ficha, abrió catálogo de proveedor y buscó walker. Vio referencias «Sin asociar» con ayuda contextual, sin acciones de importación.
+- Se inspeccionaron capturas de login/preview y catálogo en escritorio/móvil (390×844), con tabla de scroll horizontal local. Revisión básica de etiquetas, encabezados, feedback y navegación. No se afirma auditoría WCAG completa: el comando a11y del CLI devolvió cero checks/passes y no se utilizó como evidencia de conformidad.
+- Un 503 transitorio ocurrió mientras el watch recompilaba/reiniciaba la API. El botón Volver a cargar recuperó la consulta; la navegación final funcionó.
+
+Capturas locales: `supplier-catalog-login.png`, `supplier-catalog-preview.png`, `supplier-catalog-result.png`, `supplier-catalog-operator.png`, `supplier-catalog-mobile.png`, `supplier-catalog-supplier-operator-mobile.png`. La prueba visual de importación usó CSV; XLSX/múltiples hojas se verificaron mediante parser y HTTP/DB, no se afirma haber recorrido su upload completo visualmente.
+
+### Incidencias, límites y verificaciones no realizadas
+
+- `pnpm start` de API fue rechazado por revisión automática de ejecución (“blocked by policy”, sin razón adicional). El flujo se verificó con `pnpm dev`. **No se verificó runtime compilado de producción**; sí pasó build optimizado.
+- `migrate dev` no interactivo rechazado; diff/deploy probado en existentes y desde cero.
+- Contenedor temporal detenido durante un intento inicial: migrate diff informó P1001. Se reinició únicamente ese contenedor y luego pasó. No se borraron datos para reparar el entorno.
+- Dos comandos que regeneraban Prisma en paralelo produjeron EEXIST en Windows. Se repitieron los checks en secuencia; últimos test/typecheck/build pasaron.
+- Primeras versiones tuvieron errores de tipos/formato corregidos antes de los resultados finales. La prueba de 5.000 falló inicialmente por statement timeout en un join de filas; la adicional de 10.000 detectó otro join de actualización lento. Ambos revierten el commit y se corrigieron con lotes sobre unique/IDs; últimos tests de ambos tamaños pasaron sin ampliar timeouts generales.
+- Algunas pruebas existentes emiten una deprecación de pg por queries concurrentes en la misma conexión; no hay fallos. La nueva autorización usa lecturas secuenciales dentro de transacción.
+- agent-browser 0.38.2 (herramienta externa de verificación, no dependencia del repo) avisó engine Node >=24 con Node 22.18; los comandos utilizados/download de Chrome funcionaron. No se cambió el runtime del proyecto.
+- No se probó cada combinación de formato comercial real, fechas/formato visual numérico, carga productiva concurrente prolongada ni RLS. Los códigos Excel deben almacenarse como Texto para conservar ceros/precisión. Los límites iniciales están documentados y requieren medición con listas reales.
+
+Audit advisories de Prisma: [deepmerge-ts GHSA-ggr8-5vv4-36mx](https://github.com/advisories/GHSA-ggr8-5vv4-36mx), [mysql2 GHSA-3f6p-5ww8-9rcr](https://github.com/advisories/GHSA-3f6p-5ww8-9rcr), [mysql2 GHSA-rgwj-5xj2-c3m3](https://github.com/advisories/GHSA-rgwj-5xj2-c3m3). Ya estaban presentes antes de agregar los lectores. Se registran sin forzar actualizaciones ajenas al incremento.
+
+Las secciones siguientes son **evidencia histórica** de otras ejecuciones/notebook y no se cuentan como checks de este incremento.
+
+Al finalizar se cerraron la sesión browser dedicada y los servidores de desarrollo, se retiró solamente el proyecto Docker temporal `maxbio-supplier-catalog-verify` con su volumen de fixtures, y se eliminó el archivo local de credenciales de prueba. La base local existente conserva sus datos y la nueva migración aplicada. Capturas/logs permanecen en artifacts, ignorados por Git.
+
 ## Catálogo — 5 de octubre de 2026
 
 Entorno local existente: Windows, Node 22.18.0, pnpm 11.9.0, PostgreSQL 17.9 healthy, API 3001 y Next 3000. No se realizaron commits ni pushes. No se agregaron dependencias de aplicación.

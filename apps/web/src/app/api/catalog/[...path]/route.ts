@@ -1,6 +1,10 @@
 import 'server-only';
 import { randomUUID } from 'node:crypto';
-import { apiErrorSchema, catalogRouteContract } from '@maxbio/contracts';
+import {
+  apiErrorSchema,
+  catalogRouteContract,
+  supplierCatalogRouteContract,
+} from '@maxbio/contracts';
 
 export const dynamic = 'force-dynamic';
 async function proxy(request: Request, context: { params: Promise<{ path: string[] }> }) {
@@ -26,7 +30,9 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
       { status, headers },
     );
   const path = (await context.params).path.join('/');
-  const contract = catalogRouteContract(path, request.method);
+  const contract =
+    supplierCatalogRouteContract(path, request.method) ??
+    catalogRouteContract(path, request.method);
   if (!contract) return failure(404, 'No encontramos lo que buscás.');
   const write = request.method !== 'GET';
   const origin =

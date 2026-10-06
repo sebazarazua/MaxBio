@@ -1,5 +1,7 @@
 # Catálogo V1
 
+Extensión del 6 de octubre de 2026: [Catálogo de referencia de proveedores](supplier-catalog.md). Las listas importadas crean referencias independientes; no Products, identificadores ni SupplierProducts.
+
 Implementación: 5 de octubre de 2026. Primer flujo comercial del monolito existente. Catálogo responde «qué producto es» y cómo lo ofrecen los proveedores. No contiene existencias, movimientos ni una fuente de verdad económica.
 
 ## Modelo

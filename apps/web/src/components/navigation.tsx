@@ -6,6 +6,7 @@ const links = [
   { href: '/', label: 'Inicio', icon: 'home' },
   { href: '/productos', label: 'Productos', icon: 'products' },
   { href: '/proveedores', label: 'Proveedores', icon: 'suppliers' },
+  { href: '/referencias', label: 'Referencias de proveedores', icon: 'products' },
 ] as const;
 export function Navigation() {
   const path = usePathname();

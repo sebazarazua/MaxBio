@@ -45,6 +45,13 @@ export class HttpErrorFilter implements ExceptionFilter {
         } else if (typeof content === 'string') message = content;
       }
       if (status === 404) message = 'No encontramos lo que buscás.';
+      if (status === 413) message = 'Elegí un archivo de hasta 10 MiB.';
+      if (
+        status === 400 &&
+        typeof message === 'string' &&
+        /^(Too many|Unexpected field|Multipart:)/.test(message)
+      )
+        message = 'Elegí un único archivo .csv o .xlsx, sin campos adicionales.';
     }
     if (status >= 500) {
       message =

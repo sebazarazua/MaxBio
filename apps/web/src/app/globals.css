@@ -9,6 +9,53 @@
 }
 
 /* Catálogo: controles cómodos, contraste y una sola columna en pantallas pequeñas. */
+.reference-table-scroll {
+  overflow-x: auto;
+  margin: 18px 0;
+}
+.reference-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 16px;
+}
+.reference-table th,
+.reference-table td {
+  padding: 14px 12px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+  min-width: 120px;
+  overflow-wrap: anywhere;
+}
+.reference-table th {
+  background: var(--accent-soft);
+}
+.reference-table small {
+  display: block;
+  margin-top: 6px;
+}
+.catalog-import {
+  margin: 20px 0;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+}
+.catalog-import .actions,
+.supplier-sections {
+  margin-top: 20px;
+}
+.import-rows {
+  margin: 24px 0;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .auth-shell main:has(.app-shell) {
   display: block;
   padding: 0;

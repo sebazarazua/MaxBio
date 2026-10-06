@@ -33,6 +33,10 @@ Abrir <http://localhost:3000>. Iniciar sesión con el administrador propio. Las 
 
 ## Usar el catálogo
 
+En la ficha de **Proveedores**, abrí **Catálogo**. ADMIN puede elegir **Importar lista**, cargar CSV/XLSX, elegir hoja/columnas, revisar y confirmar. OPERATOR consulta referencias e historia. La búsqueda transversal está en **Referencias de proveedores**. Importar una lista no crea Products, identificadores, asociaciones ni stock.
+
+Detalles, límites y mantenimiento en [Supplier Catalog](docs/architecture/supplier-catalog.md). `pnpm catalog:cleanup` elimina solamente inspecciones/previews vencidos; preserva todas las importaciones confirmadas. Ejecutarlo regularmente al desplegar.
+
 En **Productos → Nuevo producto**, completar nombre y unidad; código interno, marca, categoría y presentación son opcionales. Marca y categoría pueden crearse dentro del formulario. Los datos complementarios están en «Más datos». Guardar abre la ficha: permite editar, agregar identificadores y asociar/crear proveedores con su código comercial. La búsqueda encuentra nombre, códigos, GTIN, marca, fabricante y código de proveedor; los filtros son opcionales.
 
 **Proveedores** permite buscar, consultar contactos, crear y editar. Sus fichas muestran productos asociados. **Productos → Administrar marcas y categorías** permite cambiar nombres y archivar/restaurar opciones. Todas las listas y selectores están paginados. **Incluir archivados** permite recuperar registros históricos; el archivado nunca libera identificadores para otro producto.

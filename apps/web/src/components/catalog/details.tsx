@@ -15,6 +15,7 @@ import {
 } from '@maxbio/contracts';
 import { catalogFetch } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
+import { ReferenceCatalog } from './supplier-catalog';
 import {
   ArchiveAction,
   EntityChoice,
@@ -414,6 +415,7 @@ function SupplierLink({
 }
 export function SupplierDetail({ id }: { id: string }) {
   const { isAdmin } = useWorkspace();
+  const [tab, setTab] = useState<'data' | 'catalog'>('data');
   const resource = useResource('suppliers/' + id, supplierSchema);
   const search = useSearch();
   const links = useResource(
@@ -468,58 +470,80 @@ export function SupplierDetail({ id }: { id: string }) {
           listados normales.
         </p>
       )}
-      <section className="catalog-panel">
-        <h2>Datos de contacto</h2>
-        <dl className="data-grid">
-          {[
-            ['Contacto', supplier.contactName],
-            ['Email', supplier.email],
-            ['Teléfono', supplier.phone],
-            ['Razón social', supplier.legalName],
-          ].map(([label, value]) => (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd>{value || 'Sin especificar'}</dd>
-            </div>
-          ))}
-        </dl>
-      </section>
-      <section className="catalog-panel">
-        <h2>Productos de este proveedor</h2>
-        <SearchBar state={search} placeholder="Producto o código del proveedor" />
-        <Feedback {...links} />
-        {links.data && (
-          <>
-            <ul className="association-list">
-              {links.data.items.map((link) => (
-                <li key={link.id}>
-                  <div>
-                    <Link href={'/productos/' + link.productId}>
-                      <strong>{link.product.name}</strong>
-                    </Link>
-                    <p className="code">{link.supplierCode || 'Sin código de proveedor'}</p>
-                    {link.supplierDescription && <p>{link.supplierDescription}</p>}
-                    <Status archived={link.archivedAt} />
-                    {link.product.archivedAt && (
-                      <span className="muted"> · Producto archivado</span>
-                    )}
-                  </div>
-                  <Link className="secondary-button" href={'/productos/' + link.productId}>
-                    Ver producto
-                  </Link>
-                </li>
+      <nav className="actions supplier-sections" aria-label="Secciones del proveedor">
+        <button
+          className={tab === 'data' ? 'primary-button' : 'secondary-button'}
+          aria-pressed={tab === 'data'}
+          onClick={() => setTab('data')}
+        >
+          Datos
+        </button>
+        <button
+          className={tab === 'catalog' ? 'primary-button' : 'secondary-button'}
+          aria-pressed={tab === 'catalog'}
+          onClick={() => setTab('catalog')}
+        >
+          Catálogo
+        </button>
+      </nav>
+      {tab === 'catalog' ? (
+        <ReferenceCatalog supplier={supplier} />
+      ) : (
+        <>
+          <section className="catalog-panel">
+            <h2>Datos de contacto</h2>
+            <dl className="data-grid">
+              {[
+                ['Contacto', supplier.contactName],
+                ['Email', supplier.email],
+                ['Teléfono', supplier.phone],
+                ['Razón social', supplier.legalName],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value || 'Sin especificar'}</dd>
+                </div>
               ))}
-            </ul>
-            {!links.data.items.length && (
-              <p className="empty-copy">
-                No hay productos para esta búsqueda. Las asociaciones se administran desde la ficha
-                del producto.
-              </p>
+            </dl>
+          </section>
+          <section className="catalog-panel">
+            <h2>Productos de este proveedor</h2>
+            <SearchBar state={search} placeholder="Producto o código del proveedor" />
+            <Feedback {...links} />
+            {links.data && (
+              <>
+                <ul className="association-list">
+                  {links.data.items.map((link) => (
+                    <li key={link.id}>
+                      <div>
+                        <Link href={'/productos/' + link.productId}>
+                          <strong>{link.product.name}</strong>
+                        </Link>
+                        <p className="code">{link.supplierCode || 'Sin código de proveedor'}</p>
+                        {link.supplierDescription && <p>{link.supplierDescription}</p>}
+                        <Status archived={link.archivedAt} />
+                        {link.product.archivedAt && (
+                          <span className="muted"> · Producto archivado</span>
+                        )}
+                      </div>
+                      <Link className="secondary-button" href={'/productos/' + link.productId}>
+                        Ver producto
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+                {!links.data.items.length && (
+                  <p className="empty-copy">
+                    No hay productos para esta búsqueda. Las asociaciones se administran desde la
+                    ficha del producto.
+                  </p>
+                )}
+                <Pagination {...links.data} change={search.setPage} />
+              </>
             )}
-            <Pagination {...links.data} change={search.setPage} />
-          </>
-        )}
-      </section>
+          </section>
+        </>
+      )}
     </>
   );
 }

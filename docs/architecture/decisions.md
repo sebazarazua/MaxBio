@@ -94,6 +94,23 @@ Detalle y límites en [authentication.md](authentication.md). Se preserva la mig
 
 Detalles, endpoints, constraints e índices en [catalog.md](catalog.md). No se implementan Inventory, Scanner, Remitos ni campos económicos.
 
+## Supplier Catalog — 6 de octubre de 2026
+
+| Decisión                                        | Motivo y consecuencia                                                                                             |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Referencia independiente de Product             | Importar declaraciones no confirma identidad ni existencia física. No reconcilia automáticamente por texto/GTIN.  |
+| Sin relación pendiente con SupplierProduct      | El caso de asociación explícita tendrá su propia migración; evita placeholders.                                   |
+| Código estable con unique histórica             | Case, ceros y puntuación se conservan; archivo no libera identidad.                                               |
+| Preview persistido, hash canónico y fingerprint | Commit aplica el plan revisado; cambio concurrente requiere revisión nueva.                                       |
+| Completitud separada de archivedAt              | Ausente de lista completa es información comercial; errores suprimen cambios de completitud.                      |
+| Historia de filas acotada                       | Solo campos mapeados/resultados/mensajes; staging temporal para elegir columnas, sin binario permanente.          |
+| Escritura en bloques de 500, commit único       | Se verificó escala de 5.000/10.000; evita joins lentos por estadísticas obsoletas sin ampliar timeouts generales. |
+| ADMIN importa, OPERATOR consulta                | Política deliberada de este incremento, revalidada por guards/application.                                        |
+| Auditoría transaccional allowlisted             | Actor/sesión/tenant/proveedor/import/cantidades, sin archivos/DTOs/filas.                                         |
+| Lectores especializados + preflight ZIP/XML     | CSV real, XLSX acotado, atributos decodificados, sin macros/fórmulas/enlaces.                                     |
+
+Modelo, endpoints, límites y dependencias en [supplier-catalog.md](supplier-catalog.md). Scanner e Inventory permanecen diferidos.
+
 ## Referencias técnicas
 
 - [Instalación de Next.js](https://nextjs.org/docs/app/getting-started/installation).

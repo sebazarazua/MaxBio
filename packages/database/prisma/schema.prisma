@@ -15,20 +15,23 @@ enum MembershipRole {
 }
 
 model Organization {
-  id                 String              @id @default(uuid()) @db.Uuid
-  name               String              @db.VarChar(160)
-  slug               String              @unique @db.VarChar(80)
-  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
-  archivedAt         DateTime?           @db.Timestamptz(3)
-  memberships        Membership[]
-  auditEvents        AuditEvent[]
-  products           Product[]
-  productIdentifiers ProductIdentifier[]
-  suppliers          Supplier[]
-  supplierProducts   SupplierProduct[]
-  brands             Brand[]
-  categories         Category[]
+  id                     String                  @id @default(uuid()) @db.Uuid
+  name                   String                  @db.VarChar(160)
+  slug                   String                  @unique @db.VarChar(80)
+  createdAt              DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                @updatedAt @db.Timestamptz(3)
+  archivedAt             DateTime?               @db.Timestamptz(3)
+  memberships            Membership[]
+  auditEvents            AuditEvent[]
+  products               Product[]
+  productIdentifiers     ProductIdentifier[]
+  suppliers              Supplier[]
+  supplierProducts       SupplierProduct[]
+  brands                 Brand[]
+  categories             Category[]
+  supplierCatalogItems   SupplierCatalogItem[]
+  supplierCatalogImports SupplierCatalogImport[]
+  supplierCatalogUploads SupplierCatalogUpload[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -46,37 +49,43 @@ model User {
 }
 
 model Membership {
-  id             String         @id @default(uuid()) @db.Uuid
-  organizationId String         @db.Uuid
-  userId         String         @db.Uuid
-  role           MembershipRole @default(OPERATOR)
-  createdAt      DateTime       @default(now()) @db.Timestamptz(3)
-  updatedAt      DateTime       @updatedAt @db.Timestamptz(3)
-  revokedAt      DateTime?      @db.Timestamptz(3)
-  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  user           User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  id             String                  @id @default(uuid()) @db.Uuid
+  organizationId String                  @db.Uuid
+  userId         String                  @db.Uuid
+  role           MembershipRole          @default(OPERATOR)
+  createdAt      DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime                @updatedAt @db.Timestamptz(3)
+  revokedAt      DateTime?               @db.Timestamptz(3)
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user           User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
   sessions       Session[]
+  catalogImports SupplierCatalogImport[]
+  catalogUploads SupplierCatalogUpload[]
 
   @@unique([organizationId, userId])
   @@unique([id, userId])
+  @@unique([organizationId, id, userId])
   @@index([userId])
 }
 
 model Session {
-  id                 String       @id @default(uuid()) @db.Uuid
-  userId             String       @db.Uuid
-  activeMembershipId String?      @db.Uuid
-  tokenHash          String       @unique @db.Char(64)
-  createdAt          DateTime     @default(now()) @db.Timestamptz(3)
-  lastUsedAt         DateTime     @default(now()) @db.Timestamptz(3)
-  expiresAt          DateTime     @db.Timestamptz(3)
-  absoluteExpiresAt  DateTime     @db.Timestamptz(3)
-  revokedAt          DateTime?    @db.Timestamptz(3)
-  deviceName         String?      @db.VarChar(80)
-  user               User         @relation(fields: [userId], references: [id], onDelete: Restrict)
-  activeMembership   Membership?  @relation(fields: [activeMembershipId, userId], references: [id, userId], onDelete: Restrict)
+  id                 String                  @id @default(uuid()) @db.Uuid
+  userId             String                  @db.Uuid
+  activeMembershipId String?                 @db.Uuid
+  tokenHash          String                  @unique @db.Char(64)
+  createdAt          DateTime                @default(now()) @db.Timestamptz(3)
+  lastUsedAt         DateTime                @default(now()) @db.Timestamptz(3)
+  expiresAt          DateTime                @db.Timestamptz(3)
+  absoluteExpiresAt  DateTime                @db.Timestamptz(3)
+  revokedAt          DateTime?               @db.Timestamptz(3)
+  deviceName         String?                 @db.VarChar(80)
+  user               User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
+  activeMembership   Membership?             @relation(fields: [activeMembershipId, userId], references: [id, userId], onDelete: Restrict)
   auditEvents        AuditEvent[]
+  catalogImports     SupplierCatalogImport[]
+  catalogUploads     SupplierCatalogUpload[]
 
+  @@unique([id, userId])
   @@index([userId, revokedAt, expiresAt])
   @@index([activeMembershipId, userId])
   @@index([expiresAt])
@@ -167,19 +176,22 @@ model ProductIdentifier {
 }
 
 model Supplier {
-  id               String            @id @default(uuid()) @db.Uuid
-  organizationId   String            @db.Uuid
-  name             String            @db.VarChar(200)
-  legalName        String?           @db.VarChar(200)
-  contactName      String?           @db.VarChar(160)
-  email            String?           @db.VarChar(254)
-  phone            String?           @db.VarChar(50)
-  version          Int               @default(1)
-  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime          @updatedAt @db.Timestamptz(3)
-  archivedAt       DateTime?         @db.Timestamptz(3)
-  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  id               String                  @id @default(uuid()) @db.Uuid
+  organizationId   String                  @db.Uuid
+  name             String                  @db.VarChar(200)
+  legalName        String?                 @db.VarChar(200)
+  contactName      String?                 @db.VarChar(160)
+  email            String?                 @db.VarChar(254)
+  phone            String?                 @db.VarChar(50)
+  version          Int                     @default(1)
+  createdAt        DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime                @updatedAt @db.Timestamptz(3)
+  archivedAt       DateTime?               @db.Timestamptz(3)
+  organization     Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   supplierProducts SupplierProduct[]
+  catalogItems     SupplierCatalogItem[]
+  catalogImports   SupplierCatalogImport[]
+  catalogUploads   SupplierCatalogUpload[]
 
   @@unique([organizationId, id])
   @@index([organizationId, archivedAt, name, id])
@@ -238,4 +250,126 @@ model Category {
   @@unique([organizationId, id])
   @@unique([organizationId, normalizedName])
   @@index([organizationId, archivedAt, name, id])
+}
+
+enum SupplierCatalogImportMode {
+  PARTIAL
+  COMPLETE
+}
+
+enum SupplierCatalogImportStatus {
+  PREVIEW
+  COMMITTED
+}
+
+enum SupplierCatalogRowOutcome {
+  CREATED
+  UPDATED
+  UNCHANGED
+  DUPLICATE
+  EMPTY
+  ERROR
+  CONFLICT
+}
+
+model SupplierCatalogItem {
+  id                              String                     @id @default(uuid()) @db.Uuid
+  organizationId                  String                     @db.Uuid
+  supplierId                      String                     @db.Uuid
+  supplierCode                    String                     @db.VarChar(128)
+  description                     String                     @db.VarChar(1000)
+  brandText                       String?                    @db.VarChar(160)
+  presentationText                String?                    @db.VarChar(200)
+  reportedGtin                    String?                    @db.VarChar(128)
+  normalizedReportedGtin          String?                    @db.VarChar(14)
+  missingFromLatestCompleteListAt DateTime?                  @db.Timestamptz(3)
+  version                         Int                        @default(1)
+  createdAt                       DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt                       DateTime                   @updatedAt @db.Timestamptz(3)
+  archivedAt                      DateTime?                  @db.Timestamptz(3)
+  organization                    Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supplier                        Supplier                   @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  importRows                      SupplierCatalogImportRow[]
+
+  @@unique([organizationId, supplierId, supplierCode])
+  @@unique([organizationId, supplierId, id])
+  @@index([organizationId, supplierId, archivedAt, supplierCode, id])
+  @@index([organizationId, normalizedReportedGtin])
+}
+
+// Inspección temporal: celdas de texto acotadas, nunca el archivo original.
+model SupplierCatalogUpload {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  supplierId     String       @db.Uuid
+  actorUserId    String       @db.Uuid
+  membershipId   String       @db.Uuid
+  sessionId      String       @db.Uuid
+  fileName       String       @db.VarChar(200)
+  contentHash    String       @db.Char(64)
+  format         String       @db.VarChar(4)
+  sheets         Json
+  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
+  expiresAt      DateTime     @db.Timestamptz(3)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supplier       Supplier     @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  membership     Membership   @relation(fields: [organizationId, membershipId, actorUserId], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  session        Session      @relation(fields: [sessionId, actorUserId], references: [id, userId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([organizationId, actorUserId, expiresAt])
+  @@index([expiresAt])
+}
+
+model SupplierCatalogImport {
+  id                  String                      @id @default(uuid()) @db.Uuid
+  organizationId      String                      @db.Uuid
+  supplierId          String                      @db.Uuid
+  actorUserId         String                      @db.Uuid
+  membershipId        String                      @db.Uuid
+  sessionId           String                      @db.Uuid
+  fileName            String                      @db.VarChar(200)
+  contentHash         String                      @db.Char(64)
+  format              String                      @db.VarChar(4)
+  sheetName           String                      @db.VarChar(31)
+  headerRow           Int
+  mapping             Json
+  mode                SupplierCatalogImportMode
+  status              SupplierCatalogImportStatus @default(PREVIEW)
+  previewHash         String                      @db.Char(64)
+  catalogHash         String                      @db.Char(64)
+  summary             Json
+  createdAt           DateTime                    @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime                    @updatedAt @db.Timestamptz(3)
+  expiresAt           DateTime                    @db.Timestamptz(3)
+  committedAt         DateTime?                   @db.Timestamptz(3)
+  excludedInvalidRows Boolean                     @default(false)
+  organization        Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supplier            Supplier                    @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  membership          Membership                  @relation(fields: [organizationId, membershipId, actorUserId], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  session             Session                     @relation(fields: [sessionId, actorUserId], references: [id, userId], onDelete: Restrict, onUpdate: Restrict)
+  rows                SupplierCatalogImportRow[]
+
+  @@unique([organizationId, supplierId, id])
+  @@index([organizationId, supplierId, createdAt, id])
+  @@index([organizationId, status, expiresAt])
+}
+
+model SupplierCatalogImportRow {
+  id             String                    @id @default(uuid()) @db.Uuid
+  organizationId String                    @db.Uuid
+  supplierId     String                    @db.Uuid
+  importId       String                    @db.Uuid
+  rowNumber      Int
+  outcome        SupplierCatalogRowOutcome
+  itemId         String?                   @db.Uuid
+  supplierCode   String?                   @db.VarChar(128)
+  // Solo cinco campos mapeados válidos, o null para errores/vacías.
+  data           Json?
+  messages       Json
+  import         SupplierCatalogImport     @relation(fields: [organizationId, supplierId, importId], references: [organizationId, supplierId, id], onDelete: Restrict, onUpdate: Restrict)
+  item           SupplierCatalogItem?      @relation(fields: [organizationId, supplierId, itemId], references: [organizationId, supplierId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, importId, rowNumber])
+  @@index([organizationId, importId, outcome, rowNumber])
+  @@index([organizationId, supplierId, itemId])
 }

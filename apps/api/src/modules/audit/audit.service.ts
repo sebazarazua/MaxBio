@@ -12,7 +12,20 @@ interface AuditInput {
   resourceId?: string | null;
   result: 'SUCCESS' | 'FAILURE';
   requestId: string;
-  metadata?: { reason?: 'INVALID_CREDENTIALS'; count?: number };
+  metadata?: {
+    reason?: 'INVALID_CREDENTIALS';
+    count?: number;
+    supplierId?: string;
+    importId?: string;
+    mode?: 'PARTIAL' | 'COMPLETE';
+    created?: number;
+    updated?: number;
+    unchanged?: number;
+    ignored?: number;
+    errors?: number;
+    conflicts?: number;
+    missing?: number;
+  };
 }
 
 @Injectable()
@@ -27,6 +40,30 @@ export class AuditService {
       if (!Number.isSafeInteger(event.metadata.count) || event.metadata.count < 0)
         throw new Error('Invalid audit count');
       metadata.count = event.metadata.count;
+    }
+    if (event.action === 'SUPPLIER_CATALOG_IMPORTED') {
+      for (const key of ['supplierId', 'importId'] as const) {
+        const value = event.metadata?.[key];
+        if (!value || !/^[0-9a-f-]{36}$/i.test(value)) throw new Error('Invalid audit resource');
+        metadata[key] = value;
+      }
+      for (const key of [
+        'created',
+        'updated',
+        'unchanged',
+        'ignored',
+        'errors',
+        'conflicts',
+        'missing',
+      ] as const) {
+        const value = event.metadata?.[key];
+        if (value === undefined || !Number.isSafeInteger(value) || value < 0)
+          throw new Error('Invalid audit count');
+        metadata[key] = value;
+      }
+      if (event.metadata?.mode !== 'PARTIAL' && event.metadata?.mode !== 'COMPLETE')
+        throw new Error('Invalid audit mode');
+      metadata.mode = event.metadata.mode;
     }
     return tx.auditEvent.create({
       data: {

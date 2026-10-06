@@ -1,5 +1,7 @@
 # Arquitectura de MaxBio
 
+Catalog incluye desde el 6 de octubre de 2026 el [catálogo de referencia de proveedores](supplier-catalog.md), separado de Product e Inventory, con importación CSV/XLSX confirmada y tenant-scoped.
+
 MaxBio se organiza como **monolito modular**: una API desplegable y una web desplegable, con PostgreSQL compartido por los módulos de la API. La separación de procesos web/API no implica microservicios de negocio.
 
 ## Dependencias y flujo actual
