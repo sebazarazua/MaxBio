@@ -16,6 +16,10 @@ export const catalogMappingFields = {
   brandText: 'marca',
   presentationText: 'presentación',
   reportedGtin: 'GTIN / EAN / UPC informado',
+  alternateSupplierCode: 'código alternativo',
+  price: 'precio',
+  currency: 'moneda',
+  vatRate: 'IVA declarado (%)',
 } as const;
 const column = z
   .number()
@@ -29,6 +33,10 @@ export const catalogColumnMappingSchema = z
     brandText: column.nullable(),
     presentationText: column.nullable(),
     reportedGtin: column.nullable(),
+    alternateSupplierCode: column.nullable().default(null),
+    price: column.nullable().default(null),
+    currency: column.nullable().default(null),
+    vatRate: column.nullable().default(null),
   })
   .strict()
   .refine((mapping) => {
@@ -36,6 +44,25 @@ export const catalogColumnMappingSchema = z
     return columns.length === new Set(columns).size;
   }, 'Elegí una columna diferente para cada campo.');
 export const catalogImportModeSchema = z.enum(['PARTIAL', 'COMPLETE']);
+export const catalogCommercialOptionsSchema = z
+  .object({
+    defaultCurrency: z
+      .string()
+      .regex(/^[A-Z]{3}$/)
+      .nullable()
+      .default(null),
+    currencyConfirmed: z.boolean().default(false),
+    priceIncludesVat: z.enum(['YES', 'NO', 'UNKNOWN']).default('UNKNOWN'),
+    decimalSeparator: z.enum(['AUTO', 'COMMA', 'DOT']).default('AUTO'),
+  })
+  .strict();
+export const catalogAnalysisInputSchema = z
+  .object({
+    uploadId: z.uuid(),
+    sheet: z.string().min(1).max(31),
+    headerRow: z.number().int().min(1).max(20),
+  })
+  .strict();
 export const catalogPreviewInputSchema = z
   .object({
     uploadId: z.uuid(),
@@ -43,6 +70,20 @@ export const catalogPreviewInputSchema = z
     headerRow: z.number().int().min(1).max(20),
     mapping: catalogColumnMappingSchema,
     mode: catalogImportModeSchema,
+    commercial: catalogCommercialOptionsSchema.default(() =>
+      catalogCommercialOptionsSchema.parse({}),
+    ),
+    saveProfile: z.boolean().default(false),
+    excludedRowNumbers: z
+      .array(
+        z
+          .number()
+          .int()
+          .min(2)
+          .max(supplierCatalogLimits.rows + 20),
+      )
+      .max(supplierCatalogLimits.rows)
+      .default([]),
   })
   .strict();
 export const catalogCommitInputSchema = z
@@ -58,6 +99,34 @@ const suggestion = z
     brandText: column.nullable(),
     presentationText: column.nullable(),
     reportedGtin: column.nullable(),
+    alternateSupplierCode: column.nullable(),
+    price: column.nullable(),
+    currency: column.nullable(),
+    vatRate: column.nullable(),
+  })
+  .strict();
+export const catalogSheetInspectionSchema = z
+  .object({
+    name: z.string(),
+    rowCount: z.number().int().nonnegative(),
+    headerRow: z.number().int().positive(),
+    headers: z.array(z.string()),
+    sample: z.array(z.array(z.string())),
+    suggestedMapping: suggestion,
+    confidence: z.record(
+      z.enum(
+        Object.keys(catalogMappingFields) as [
+          keyof typeof catalogMappingFields,
+          ...Array<keyof typeof catalogMappingFields>,
+        ],
+      ),
+      z.enum(['HIGH', 'REVIEW', 'MISSING']),
+    ),
+    tableConfidence: z.enum(['HIGH', 'REVIEW']),
+    fingerprint: z.string(),
+    profileApplied: z.boolean(),
+    commercial: catalogCommercialOptionsSchema,
+    warnings: z.array(z.string()),
   })
   .strict();
 export const catalogInspectionSchema = z
@@ -67,18 +136,9 @@ export const catalogInspectionSchema = z
     contentHash: z.string(),
     format: z.enum(['CSV', 'XLSX']),
     expiresAt: z.iso.datetime(),
-    sheets: z.array(
-      z
-        .object({
-          name: z.string(),
-          rowCount: z.number().int().nonnegative(),
-          headerRow: z.number().int().positive(),
-          headers: z.array(z.string()),
-          sample: z.array(z.array(z.string())),
-          suggestedMapping: suggestion,
-        })
-        .strict(),
-    ),
+    sheets: z.array(catalogSheetInspectionSchema),
+    suggestedSheet: z.string().nullable(),
+    warnings: z.array(z.string()),
   })
   .strict();
 export const supplierCatalogDataSchema = z
@@ -89,6 +149,23 @@ export const supplierCatalogDataSchema = z
     presentationText: z.string().max(200).nullable(),
     reportedGtin: z.string().max(128).nullable(),
     normalizedReportedGtin: z.string().max(14).nullable(),
+    alternateSupplierCode: z.string().max(128).nullable().default(null),
+    price: z
+      .string()
+      .regex(/^(0|[1-9][0-9]{0,13})(\.[0-9]{1,18})?$/)
+      .nullable()
+      .default(null),
+    currency: z
+      .string()
+      .regex(/^[A-Z]{3}$/)
+      .nullable()
+      .default(null),
+    vatRate: z
+      .string()
+      .regex(/^(0|[1-9][0-9]{0,2})(\.[0-9]{1,4})?$/)
+      .nullable()
+      .default(null),
+    priceIncludesVat: z.enum(['YES', 'NO', 'UNKNOWN']).default('UNKNOWN'),
   })
   .strict();
 export const catalogRowOutcomeSchema = z.enum([
@@ -188,12 +265,16 @@ export const catalogImportSchema = z
     expiresAt: z.iso.datetime(),
     committedAt: z.iso.datetime().nullable(),
     excludedInvalidRows: z.boolean(),
+    commercial: catalogCommercialOptionsSchema,
+    saveProfile: z.boolean(),
+    formatFingerprint: z.string().nullable(),
   })
   .strict();
 export const catalogImportListSchema = z
   .object({ items: z.array(catalogImportSchema), ...pageFields })
   .strict();
 export type CatalogColumnMapping = z.infer<typeof catalogColumnMappingSchema>;
+export type CatalogColumnMappingInput = z.input<typeof catalogColumnMappingSchema>;
 export type CatalogPreviewInput = z.infer<typeof catalogPreviewInputSchema>;
 export type CatalogCommitInput = z.infer<typeof catalogCommitInputSchema>;
 export type SupplierCatalogData = z.infer<typeof supplierCatalogDataSchema>;
@@ -204,10 +285,36 @@ export type CatalogInspection = z.infer<typeof catalogInspectionSchema>;
 export type CatalogImportView = z.infer<typeof catalogImportSchema>;
 export type CatalogImportRowView = z.infer<typeof catalogImportRowSchema>;
 export type SupplierCatalogItemView = z.infer<typeof supplierCatalogItemSchema>;
+export type CatalogCommercialOptions = z.infer<typeof catalogCommercialOptionsSchema>;
+export type CatalogAnalysisInput = z.infer<typeof catalogAnalysisInputSchema>;
+export type CatalogSheetInspection = z.infer<typeof catalogSheetInspectionSchema>;
+export const catalogProfileListSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          id: z.uuid(),
+          fingerprint: z.string(),
+          sheetName: z.string(),
+          headerRow: z.number(),
+          headers: z.array(z.string()),
+          mapping: catalogColumnMappingSchema,
+          commercial: catalogCommercialOptionsSchema,
+          updatedAt: z.iso.datetime(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export const catalogProfileResetSchema = z
+  .object({ deleted: z.number().int().nonnegative() })
+  .strict();
 
 export function supplierCatalogRouteContract(path: string, method: string) {
   const id = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}';
   if (method === 'GET') {
+    if (new RegExp(`^suppliers/${id}/catalog-import-profiles$`).test(path))
+      return { response: catalogProfileListSchema };
     if (path === 'supplier-catalog-items')
       return { response: supplierCatalogListSchema, query: supplierCatalogQuerySchema };
     if (new RegExp(`^suppliers/${id}/catalog-items$`).test(path))
@@ -222,6 +329,10 @@ export function supplierCatalogRouteContract(path: string, method: string) {
       return { response: catalogImportListSchema, query: catalogListQuerySchema };
   }
   if (method === 'POST') {
+    if (new RegExp(`^suppliers/${id}/catalog-imports/analyze$`).test(path))
+      return { response: catalogSheetInspectionSchema, body: catalogAnalysisInputSchema };
+    if (new RegExp(`^suppliers/${id}/catalog-import-profiles/reset$`).test(path))
+      return { response: catalogProfileResetSchema, body: z.object({}).strict() };
     if (new RegExp(`^suppliers/${id}/catalog-imports/preview$`).test(path))
       return { response: catalogImportSchema, body: catalogPreviewInputSchema };
     if (new RegExp(`^supplier-catalog-imports/${id}/commit$`).test(path))

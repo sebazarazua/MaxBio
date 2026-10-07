@@ -33,7 +33,7 @@ Abrir <http://localhost:3000>. Iniciar sesión con el administrador propio. Las 
 
 ## Usar el catálogo
 
-En la ficha de **Proveedores**, abrí **Catálogo**. ADMIN puede elegir **Importar lista**, cargar CSV/XLSX, elegir hoja/columnas, revisar y confirmar. OPERATOR consulta referencias e historia. La búsqueda transversal está en **Listas de proveedores**. Importar una lista no crea Products, identificadores, asociaciones ni stock.
+En la ficha de **Proveedores**, abrí **Catálogo**. ADMIN puede elegir **Importar lista**, cargar CSV/XLSX y **Analizar**. MaxBio propone hoja, encabezado y columnas con confianza visible; podés corregirlas, confirmar moneda/semántica de IVA y revisar antes de importar. Conserva precios exactos e historial comercial y permite recordar formatos por proveedor. Fórmulas ignoradas no rechazan toda la lista; nunca se ejecutan fórmulas/macros ni se abren enlaces. OPERATOR consulta referencias e historia. La búsqueda transversal está en **Listas de proveedores**. Importar una lista no crea Products, identificadores, asociaciones ni stock. Ver [importador V2](docs/architecture/supplier-catalog-v2.md) y [verificación](docs/architecture/supplier-catalog-v2-verification.md).
 
 **Identificar producto** admite scanner HID USB/Bluetooth o código manual + Enter. ADMIN y OPERATOR pueden resolver, buscar una referencia, comparar productos existentes o crear uno básico y confirmar explícitamente. Guarda identificador y `SupplierCatalogItem → SupplierProduct → Product` en una transacción auditable e idempotente. El mismo código vuelve a reconocer el producto. GTIN exige checksum; externos necesitan proveedor explícito. Las listas tienen filtros de asociación. Ver [identificación/scanner](docs/architecture/product-identification.md).
 

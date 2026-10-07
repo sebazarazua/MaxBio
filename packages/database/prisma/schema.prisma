@@ -15,38 +15,39 @@ enum MembershipRole {
 }
 
 model Organization {
-  id                     String                   @id @default(uuid()) @db.Uuid
-  name                   String                   @db.VarChar(160)
-  slug                   String                   @unique @db.VarChar(80)
-  createdAt              DateTime                 @default(now()) @db.Timestamptz(3)
-  updatedAt              DateTime                 @updatedAt @db.Timestamptz(3)
-  archivedAt             DateTime?                @db.Timestamptz(3)
-  memberships            Membership[]
-  auditEvents            AuditEvent[]
-  products               Product[]
-  productIdentifiers     ProductIdentifier[]
-  suppliers              Supplier[]
-  supplierProducts       SupplierProduct[]
-  brands                 Brand[]
-  categories             Category[]
-  supplierCatalogItems   SupplierCatalogItem[]
-  supplierCatalogImports SupplierCatalogImport[]
-  supplierCatalogUploads SupplierCatalogUpload[]
-  scanIdentifiers        SupplierScanIdentifier[]
-  identifications        CatalogIdentification[]
-  inventoryLocations     InventoryLocation[]
-  inventoryPolicies      ProductInventoryPolicy[]
-  inventoryLots          InventoryLot[]
-  inventorySerials       InventorySerial[]
-  inventoryScopes        InventoryStockScope[]
-  inventoryBalances      InventoryBalance[]
-  inventoryReceipts      InventoryReceipt[]
-  inventoryReceiptLines  InventoryReceiptLine[]
-  inventoryCounts        InventoryCountSession[]
-  inventoryCountScopes   InventoryCountScope[]
-  inventoryCountLines    InventoryCountLine[]
-  inventoryMovements     InventoryMovement[]
-  inventoryMovementLines InventoryMovementLine[]
+  id                      String                         @id @default(uuid()) @db.Uuid
+  name                    String                         @db.VarChar(160)
+  slug                    String                         @unique @db.VarChar(80)
+  createdAt               DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime                       @updatedAt @db.Timestamptz(3)
+  archivedAt              DateTime?                      @db.Timestamptz(3)
+  memberships             Membership[]
+  auditEvents             AuditEvent[]
+  products                Product[]
+  productIdentifiers      ProductIdentifier[]
+  suppliers               Supplier[]
+  supplierProducts        SupplierProduct[]
+  brands                  Brand[]
+  categories              Category[]
+  supplierCatalogItems    SupplierCatalogItem[]
+  supplierCatalogImports  SupplierCatalogImport[]
+  supplierCatalogUploads  SupplierCatalogUpload[]
+  supplierCatalogProfiles SupplierCatalogImportProfile[]
+  scanIdentifiers         SupplierScanIdentifier[]
+  identifications         CatalogIdentification[]
+  inventoryLocations      InventoryLocation[]
+  inventoryPolicies       ProductInventoryPolicy[]
+  inventoryLots           InventoryLot[]
+  inventorySerials        InventorySerial[]
+  inventoryScopes         InventoryStockScope[]
+  inventoryBalances       InventoryBalance[]
+  inventoryReceipts       InventoryReceipt[]
+  inventoryReceiptLines   InventoryReceiptLine[]
+  inventoryCounts         InventoryCountSession[]
+  inventoryCountScopes    InventoryCountScope[]
+  inventoryCountLines     InventoryCountLine[]
+  inventoryMovements      InventoryMovement[]
+  inventoryMovementLines  InventoryMovementLine[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -208,22 +209,23 @@ model ProductIdentifier {
 }
 
 model Supplier {
-  id                String                  @id @default(uuid()) @db.Uuid
-  organizationId    String                  @db.Uuid
-  name              String                  @db.VarChar(200)
-  legalName         String?                 @db.VarChar(200)
-  contactName       String?                 @db.VarChar(160)
-  email             String?                 @db.VarChar(254)
-  phone             String?                 @db.VarChar(50)
-  version           Int                     @default(1)
-  createdAt         DateTime                @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime                @updatedAt @db.Timestamptz(3)
-  archivedAt        DateTime?               @db.Timestamptz(3)
-  organization      Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  id                String                         @id @default(uuid()) @db.Uuid
+  organizationId    String                         @db.Uuid
+  name              String                         @db.VarChar(200)
+  legalName         String?                        @db.VarChar(200)
+  contactName       String?                        @db.VarChar(160)
+  email             String?                        @db.VarChar(254)
+  phone             String?                        @db.VarChar(50)
+  version           Int                            @default(1)
+  createdAt         DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                       @updatedAt @db.Timestamptz(3)
+  archivedAt        DateTime?                      @db.Timestamptz(3)
+  organization      Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   supplierProducts  SupplierProduct[]
   catalogItems      SupplierCatalogItem[]
   catalogImports    SupplierCatalogImport[]
   catalogUploads    SupplierCatalogUpload[]
+  catalogProfiles   SupplierCatalogImportProfile[]
   inventoryReceipts InventoryReceipt[]
 
   @@unique([organizationId, id])
@@ -320,6 +322,11 @@ model SupplierCatalogItem {
   presentationText                String?                    @db.VarChar(200)
   reportedGtin                    String?                    @db.VarChar(128)
   normalizedReportedGtin          String?                    @db.VarChar(14)
+  alternateSupplierCode           String?                    @db.VarChar(128)
+  price                           Decimal?                   @db.Decimal(32, 18)
+  currency                        String?                    @db.VarChar(3)
+  vatRate                         Decimal?                   @db.Decimal(7, 4)
+  priceIncludesVat                String                     @default("UNKNOWN") @db.VarChar(7)
   missingFromLatestCompleteListAt DateTime?                  @db.Timestamptz(3)
   version                         Int                        @default(1)
   createdAt                       DateTime                   @default(now()) @db.Timestamptz(3)
@@ -415,6 +422,10 @@ model SupplierCatalogImport {
   sheetName           String                      @db.VarChar(31)
   headerRow           Int
   mapping             Json
+  commercial          Json                        @default("{}")
+  saveProfile         Boolean                     @default(false)
+  formatFingerprint   String?                     @db.Char(64)
+  formatHeaders       Json                        @default("[]")
   mode                SupplierCatalogImportMode
   status              SupplierCatalogImportStatus @default(PREVIEW)
   previewHash         String                      @db.Char(64)
@@ -445,7 +456,7 @@ model SupplierCatalogImportRow {
   outcome        SupplierCatalogRowOutcome
   itemId         String?                   @db.Uuid
   supplierCode   String?                   @db.VarChar(128)
-  // Solo cinco campos mapeados vÃ¡lidos, o null para errores/vacÃ­as.
+  // Snapshot canónico de datos comerciales válidos, o null para errores/vacías.
   data           Json?
   messages       Json
   import         SupplierCatalogImport     @relation(fields: [organizationId, supplierId, importId], references: [organizationId, supplierId, id], onDelete: Restrict, onUpdate: Restrict)
@@ -783,4 +794,23 @@ model InventoryMovementLine {
   @@index([organizationId, productId, movementId, id])
   @@index([organizationId, lotId, movementId])
   @@index([organizationId, serialId, movementId])
+}
+
+// Confirmed structural hints only; never the file or arbitrary row content.
+model SupplierCatalogImportProfile {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  supplierId     String       @db.Uuid
+  fingerprint    String       @db.Char(64)
+  sheetName      String       @db.VarChar(31)
+  headerRow      Int
+  headers        Json
+  mapping        Json
+  commercial     Json
+  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  supplier       Supplier     @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, supplierId, fingerprint])
 }

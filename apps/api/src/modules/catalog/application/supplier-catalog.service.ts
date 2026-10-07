@@ -11,6 +11,8 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@maxbio/database';
 import {
   catalogImportSummarySchema,
+  catalogCommercialOptionsSchema,
+  type CatalogAnalysisInput,
   catalogColumnMappingSchema,
   supplierCatalogDataSchema,
   supplierCatalogLimits,
@@ -28,13 +30,14 @@ import { parseCatalogFile } from '../domain/catalog-file.js';
 import { purgeExpiredCatalogReviews } from './catalog-review-retention.js';
 import {
   digest,
-  inspectSheet,
   planImport,
   catalogFingerprint,
   validateReference,
   type CatalogSheet,
   type PlannedRow,
 } from '../domain/catalog-import.js';
+import { inspectSheet, suggestSheet, formatFingerprint } from '../domain/catalog-detection.js';
+import type { CatalogImportProfile } from '../domain/catalog-table.js';
 
 const supplierSelect = { id: true, name: true, archivedAt: true } as const;
 const importInclude = {
@@ -52,6 +55,8 @@ export const itemView = (row: ItemRecord) => {
   void _scope;
   return {
     ...view,
+    price: row.price?.toFixed() ?? null,
+    vatRate: row.vatRate?.toFixed() ?? null,
     associationStatus: row.supplierProductId ? ('ASSOCIATED' as const) : ('UNASSOCIATED' as const),
   };
 };
@@ -63,6 +68,7 @@ function importView(row: ImportRecord) {
     sessionId: _session,
     catalogHash: _hash,
     membership,
+    formatHeaders: _headers,
     ...view
   } = row;
   void _scope;
@@ -70,9 +76,11 @@ function importView(row: ImportRecord) {
   void _member;
   void _session;
   void _hash;
+  void _headers;
   return {
     ...view,
     mapping: catalogColumnMappingSchema.parse(row.mapping),
+    commercial: catalogCommercialOptionsSchema.parse(row.commercial),
     summary: catalogImportSummarySchema.parse(row.summary),
     actor: membership.user,
   };
@@ -115,6 +123,10 @@ function previewDigest(
     mode: string;
     catalogHash: string;
     summary: unknown;
+    commercial: unknown;
+    saveProfile: boolean;
+    formatFingerprint: string | null;
+    formatHeaders: unknown;
   },
   rows: PlannedRow[],
 ) {
@@ -129,6 +141,10 @@ function previewDigest(
     mode: row.mode,
     catalogHash: row.catalogHash,
     summary: row.summary,
+    commercial: row.commercial,
+    saveProfile: row.saveProfile,
+    formatFingerprint: row.formatFingerprint,
+    formatHeaders: row.formatHeaders,
     rows,
   });
 }
@@ -217,6 +233,7 @@ export class SupplierCatalogService {
         ? {
             OR: [
               { supplierCode: search(query.q) },
+              { alternateSupplierCode: search(query.q) },
               { description: search(query.q) },
               { brandText: search(query.q) },
               { presentationText: search(query.q) },
@@ -254,6 +271,7 @@ export class SupplierCatalogService {
     await this.authorize(context);
     await this.supplier(context, supplierId, this.database.client, true);
     return this.translated(async () => {
+      const profiles = await this.profiles(context, supplierId);
       const parsed = await parseCatalogFile(file.buffer, file.originalname, file.mimetype);
       await this.cleanup(context);
       const live = await this.database.client.supplierCatalogUpload.count({
@@ -279,15 +297,102 @@ export class SupplierCatalogService {
           expiresAt,
         },
       });
+      const sheets = parsed.sheets.map((sheet) => inspectSheet(sheet, undefined, profiles));
       return {
         uploadId: row.id,
         fileName: row.fileName,
         contentHash: row.contentHash,
         format: row.format,
         expiresAt,
-        sheets: parsed.sheets.map(inspectSheet),
+        sheets,
+        suggestedSheet: suggestSheet(sheets, profiles),
+        warnings: parsed.warnings,
       };
     });
+  }
+  private async profiles(
+    context: RequestActorContext,
+    supplierId: string,
+  ): Promise<CatalogImportProfile[]> {
+    const records = await this.database.client.supplierCatalogImportProfile.findMany({
+      where: { organizationId: context.organizationId, supplierId },
+      orderBy: { updatedAt: 'desc' },
+      take: 20,
+    });
+    return records.map((record) => ({
+      fingerprint: record.fingerprint,
+      sheetName: record.sheetName,
+      headerRow: record.headerRow,
+      headers: record.headers as string[],
+      mapping: catalogColumnMappingSchema.parse(record.mapping),
+      commercial: catalogCommercialOptionsSchema.parse(record.commercial),
+    }));
+  }
+  async listProfiles(context: RequestActorContext, supplierId: string) {
+    await this.authorize(context);
+    await this.supplier(context, supplierId);
+    const items = await this.database.client.supplierCatalogImportProfile.findMany({
+      where: { organizationId: context.organizationId, supplierId },
+      orderBy: { updatedAt: 'desc' },
+    });
+    return {
+      items: items.map(
+        ({ organizationId: _scope, supplierId: _supplier, createdAt: _created, ...row }) => {
+          void _scope;
+          void _supplier;
+          void _created;
+          return {
+            ...row,
+            mapping: catalogColumnMappingSchema.parse(row.mapping),
+            commercial: catalogCommercialOptionsSchema.parse(row.commercial),
+          };
+        },
+      ),
+    };
+  }
+  async resetProfiles(context: RequestActorContext, supplierId: string) {
+    await this.authorize(context);
+    await this.supplier(context, supplierId);
+    return this.database.client.$transaction(async (tx) => {
+      await this.authorize(context, tx);
+      await tx.$queryRaw`SELECT "id" FROM "Supplier" WHERE "organizationId"=${context.organizationId}::uuid AND "id"=${supplierId}::uuid FOR UPDATE`;
+      const result = await tx.supplierCatalogImportProfile.deleteMany({
+        where: { organizationId: context.organizationId, supplierId },
+      });
+      await this.audit.success(
+        context,
+        'SUPPLIER_CATALOG_PROFILES_RESET',
+        'Supplier',
+        supplierId,
+        tx,
+      );
+      return { deleted: result.count };
+    });
+  }
+  private async upload(context: RequestActorContext, supplierId: string, uploadId: string) {
+    const row = await this.database.client.supplierCatalogUpload.findFirst({
+      where: {
+        id: uploadId,
+        organizationId: context.organizationId,
+        supplierId,
+        actorUserId: context.userId,
+        sessionId: context.sessionId,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (!row) throw new NotFoundException('La revisión del archivo venció. Volvé a elegirlo.');
+    return row;
+  }
+  async analyze(context: RequestActorContext, supplierId: string, input: CatalogAnalysisInput) {
+    await this.authorize(context);
+    await this.supplier(context, supplierId, this.database.client, true);
+    const upload = await this.upload(context, supplierId, input.uploadId);
+    const table = (upload.sheets as unknown as CatalogSheet[]).find(
+      (table) => table.name === input.sheet,
+    );
+    if (!table || input.headerRow > table.rows.length)
+      throw new BadRequestException('Elegí una hoja y una fila que existan en el archivo.');
+    return inspectSheet(table, input.headerRow, await this.profiles(context, supplierId));
   }
   // Invocable por mantenimiento; sin timer ni infraestructura de jobs.
   async cleanup(context: RequestActorContext) {
@@ -298,17 +403,7 @@ export class SupplierCatalogService {
     await this.authorize(context);
     return this.translated(async () => {
       const supplier = await this.supplier(context, supplierId, this.database.client, true);
-      const upload = await this.database.client.supplierCatalogUpload.findFirst({
-        where: {
-          id: input.uploadId,
-          organizationId: context.organizationId,
-          supplierId,
-          actorUserId: context.userId,
-          sessionId: context.sessionId,
-          expiresAt: { gt: new Date() },
-        },
-      });
-      if (!upload) throw new NotFoundException('La revisión del archivo venció. Volvé a elegirlo.');
+      const upload = await this.upload(context, supplierId, input.uploadId);
       const sheet = (upload.sheets as unknown as CatalogSheet[]).find(
         (sheet) => sheet.name === input.sheet,
       );
@@ -316,7 +411,21 @@ export class SupplierCatalogService {
       const existing = await this.database.client.supplierCatalogItem.findMany({
         where: { organizationId: context.organizationId, supplierId },
       });
-      const plan = planImport(sheet, input.headerRow, input.mapping, existing, input.mode);
+      const records = existing.map((record) => ({
+        ...record,
+        price: record.price?.toFixed() ?? null,
+        vatRate: record.vatRate?.toFixed() ?? null,
+        priceIncludesVat: record.priceIncludesVat as 'YES' | 'NO' | 'UNKNOWN',
+      }));
+      const plan = planImport(
+        sheet,
+        input.headerRow,
+        input.mapping,
+        records,
+        input.mode,
+        input.commercial,
+        input.excludedRowNumbers,
+      );
       const data = {
         organizationId: context.organizationId,
         supplierId,
@@ -330,7 +439,19 @@ export class SupplierCatalogService {
         headerRow: input.headerRow,
         mapping: input.mapping,
         mode: input.mode,
-        catalogHash: catalogFingerprint(existing, supplier.version),
+        catalogHash: catalogFingerprint(records, supplier.version),
+        commercial: input.commercial,
+        saveProfile: input.saveProfile,
+        formatHeaders: Array.from(
+          { length: Math.max(0, ...sheet.rows.map((row) => row.length)) },
+          (_, column) => sheet.rows[input.headerRow - 1]?.[column] ?? '',
+        ),
+        formatFingerprint: formatFingerprint(
+          Array.from(
+            { length: Math.max(0, ...sheet.rows.map((row) => row.length)) },
+            (_, column) => sheet.rows[input.headerRow - 1]?.[column] ?? '',
+          ),
+        ),
         summary: plan.summary,
         expiresAt: upload.expiresAt,
       };
@@ -485,7 +606,17 @@ export class SupplierCatalogService {
           const existing = await tx.supplierCatalogItem.findMany({
             where: { organizationId: context.organizationId, supplierId: preview.supplierId },
           });
-          if (catalogFingerprint(existing, supplier.version) !== preview.catalogHash)
+          if (
+            catalogFingerprint(
+              existing.map((record) => ({
+                ...record,
+                price: record.price?.toFixed() ?? null,
+                vatRate: record.vatRate?.toFixed() ?? null,
+                priceIncludesVat: record.priceIncludesVat as 'YES' | 'NO' | 'UNKNOWN',
+              })),
+              supplier.version,
+            ) !== preview.catalogHash
+          )
             throw new ConflictException(
               'El catálogo cambió desde la vista previa. Generá y revisá una nueva antes de confirmar.',
             );
@@ -495,11 +626,11 @@ export class SupplierCatalogService {
             const batch = changes.slice(offset, offset + 500);
             const data = JSON.stringify(batch);
             const written =
-              await tx.$executeRaw`INSERT INTO "SupplierCatalogItem" AS i ("id","organizationId","supplierId","supplierCode","description","brandText","presentationText","reportedGtin","normalizedReportedGtin","updatedAt")
-              SELECT r.id::uuid,${context.organizationId}::uuid,${preview.supplierId}::uuid,r."supplierCode",r.description,r."brandText",r."presentationText",r."reportedGtin",r."normalizedReportedGtin",CURRENT_TIMESTAMP
-              FROM jsonb_to_recordset(${data}::jsonb) AS r(id text,"supplierCode" text,description text,"brandText" text,"presentationText" text,"reportedGtin" text,"normalizedReportedGtin" text)
+              await tx.$executeRaw`INSERT INTO "SupplierCatalogItem" AS i ("id","organizationId","supplierId","supplierCode","description","brandText","presentationText","reportedGtin","normalizedReportedGtin","alternateSupplierCode","price","currency","vatRate","priceIncludesVat","updatedAt")
+              SELECT r.id::uuid,${context.organizationId}::uuid,${preview.supplierId}::uuid,r."supplierCode",r.description,r."brandText",r."presentationText",r."reportedGtin",r."normalizedReportedGtin",r."alternateSupplierCode",r.price,r.currency,r."vatRate",r."priceIncludesVat",CURRENT_TIMESTAMP
+              FROM jsonb_to_recordset(${data}::jsonb) AS r(id text,"supplierCode" text,description text,"brandText" text,"presentationText" text,"reportedGtin" text,"normalizedReportedGtin" text,"alternateSupplierCode" text,price numeric,currency text,"vatRate" numeric,"priceIncludesVat" text)
               ON CONFLICT ("organizationId","supplierId","supplierCode") DO UPDATE SET
-                "description"=EXCLUDED."description","brandText"=EXCLUDED."brandText","presentationText"=EXCLUDED."presentationText","reportedGtin"=EXCLUDED."reportedGtin","normalizedReportedGtin"=EXCLUDED."normalizedReportedGtin","version"=i."version"+1,"updatedAt"=CURRENT_TIMESTAMP
+                "description"=EXCLUDED."description","brandText"=EXCLUDED."brandText","presentationText"=EXCLUDED."presentationText","reportedGtin"=EXCLUDED."reportedGtin","normalizedReportedGtin"=EXCLUDED."normalizedReportedGtin","alternateSupplierCode"=EXCLUDED."alternateSupplierCode","price"=EXCLUDED."price","currency"=EXCLUDED."currency","vatRate"=EXCLUDED."vatRate","priceIncludesVat"=EXCLUDED."priceIncludesVat","version"=i."version"+1,"updatedAt"=CURRENT_TIMESTAMP
               WHERE i.id=EXCLUDED.id AND i."archivedAt" IS NULL`;
             if (written !== batch.length)
               throw new ConflictException(
@@ -535,6 +666,45 @@ export class SupplierCatalogService {
             await tx.$executeRaw`UPDATE "SupplierCatalogImportRow" AS r SET "itemId"=v."itemId"::uuid
           FROM jsonb_to_recordset(${links}::jsonb) AS v(id text,"itemId" text)
           WHERE r."organizationId"=${context.organizationId}::uuid AND r."importId"=${id}::uuid AND r.id=v.id::uuid`;
+          }
+          if (preview.saveProfile && preview.formatFingerprint) {
+            const profile = {
+              sheetName: preview.sheetName,
+              headerRow: preview.headerRow,
+              headers: preview.formatHeaders as Prisma.InputJsonValue,
+              mapping: preview.mapping as Prisma.InputJsonValue,
+              commercial: catalogCommercialOptionsSchema.parse(preview.commercial),
+            };
+            await tx.supplierCatalogImportProfile.upsert({
+              where: {
+                organizationId_supplierId_fingerprint: {
+                  organizationId: context.organizationId,
+                  supplierId: preview.supplierId,
+                  fingerprint: preview.formatFingerprint,
+                },
+              },
+              create: {
+                organizationId: context.organizationId,
+                supplierId: preview.supplierId,
+                fingerprint: preview.formatFingerprint,
+                ...profile,
+              },
+              update: profile,
+            });
+            const excess = await tx.supplierCatalogImportProfile.findMany({
+              where: { organizationId: context.organizationId, supplierId: preview.supplierId },
+              orderBy: { updatedAt: 'desc' },
+              skip: 20,
+              select: { id: true },
+            });
+            if (excess.length)
+              await tx.supplierCatalogImportProfile.deleteMany({
+                where: {
+                  organizationId: context.organizationId,
+                  supplierId: preview.supplierId,
+                  id: { in: excess.map((row) => row.id) },
+                },
+              });
           }
           const committed = await tx.supplierCatalogImport.update({
             where: { id, organizationId: context.organizationId },

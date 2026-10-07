@@ -1,5 +1,7 @@
 # Catálogo de referencia de proveedores
 
+El importador vigente es [V2: detección, perfiles y datos comerciales](supplier-catalog-v2.md), implementado el 7/10/2026. La [verificación V2](supplier-catalog-v2-verification.md) registra comandos y la prueba con el Excel original. Este documento conserva las invariantes del flujo inicial; V2 amplía sus campos y política de fórmulas/enlaces.
+
 Implementado el 6 de octubre de 2026 dentro del módulo Catalog existente. Evidencia de esta notebook en [verification.md](verification.md), separada de la histórica.
 
 ## Invariante y alcance
@@ -14,10 +16,10 @@ El segundo incremento agrega la relación nullable con SupplierProduct y un reci
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | SupplierCatalogItem      | Referencia estable por organización/proveedor/código; descripción, marca/presentación declaradas, GTIN informado/normalizado, versión, fechas, archivado y ausencia de última lista completa.        |
 | SupplierCatalogImport    | PREVIEW inmutable o COMMITTED; actor/pertenencia/sesión, proveedor, nombre seguro, SHA-256 del contenido, formato/hoja/encabezado, columnas, modalidad, resumen, hashes, vencimiento y confirmación. |
-| SupplierCatalogImportRow | Número original de fila, resultado, itemId cuando corresponde, código válido acotado, snapshot de cinco campos elegidos/GTIN normalizado y mensajes.                                                 |
+| SupplierCatalogImportRow | Número original de fila, resultado, itemId cuando corresponde, código válido acotado, snapshot de campos mapeados/GTIN normalizado y comerciales y mensajes.                                         |
 | SupplierCatalogUpload    | Inspección temporal: celdas de texto acotadas para cambiar hoja/columnas sin reenviar el archivo. Nunca se persiste el binario original.                                                             |
 
-Columnas desconocidas existen solamente en el staging temporal; no pasan al historial confirmado ni a auditoría. No se importan precios, costo, IVA, moneda, stock ni condiciones. Snapshots pequeños permiten explicar una fila aunque cambie la referencia. Se conserva el snapshot de duplicados para mostrar qué se ignoró; no se copia la fila completa. Errores con campos inválidos conservan número, código si cabe y mensajes, sin textos excesivos. No hay event sourcing.
+Columnas desconocidas existen solamente en el staging temporal; no pasan al historial confirmado ni a auditoría. V2 agrega precio, IVA, moneda y código alternativo exclusivamente comerciales. Snapshots pequeños permiten explicar una fila aunque cambie la referencia. Se conserva el snapshot de duplicados para mostrar qué se ignoró; no se copia la fila completa. Errores con campos inválidos conservan número, código si cabe y mensajes, sin textos excesivos. No hay event sourcing.
 
 ## Integridad y tenant
 
@@ -36,7 +38,7 @@ Migración nueva `20261006120000_supplier_catalog`: SQL generado con Prisma Migr
 
 ## Archivo → preview → confirmación
 
-ADMIN elige archivo; inspect autoriza y valida proveedor, parsea sin transacción comercial, conserva celdas temporales y devuelve hojas, veinte primeras filas, encabezado detectado y sugerencias corregibles. Se elige hoja, encabezado (1–20), cinco columnas diferentes y modalidad. Preview valida/compara fuera de transacción y persiste plan/filas en una transacción breve de staging. No modifica referencias.
+ADMIN elige archivo; inspect autoriza y valida proveedor, parsea sin transacción comercial, conserva celdas temporales y devuelve hojas, veinte primeras filas, encabezado detectado y sugerencias corregibles. Se elige hoja, encabezado (1–20), columnas diferentes, opciones comerciales y modalidad. Preview valida/compara fuera de transacción y persiste plan/filas en una transacción breve de staging. No modifica referencias.
 
 UI muestra proveedor, archivo, hoja, columnas, cantidades y filas paginadas. Commit acepta solamente `previewHash` y `excludeInvalidRows`; no acepta archivo ni nuevas filas. Hash canónico (claves ordenadas, estable ante JSONB) incluye proveedor/archivo/hoja/columnas/modalidad, fingerprint del catálogo, resumen y observaciones. Se revalidan datos/hashes antes de abrir la transacción.
 
@@ -68,11 +70,11 @@ GTIN: conserva texto trimmeado; normaliza a 14 si cumple longitud/checksum exist
 
 ## CSV/XLSX y límites
 
-CSV UTF-8 con/sin BOM, comas/punto y coma/tabulación sugeridos por primera línea, comillas estándar, columnas variables y filas vacías; sin casts numéricos. Listas con títulos que utilizan otro separador deben guardarse como CSV uniforme. UTF-16/Windows-1252 no se admiten inicialmente; error pide UTF-8.
+CSV UTF-8 con/sin BOM, comas/punto y coma/tabulación sugeridos por las primeras cuarenta líneas, comillas estándar, columnas variables y filas vacías; sin casts numéricos. UTF-16/Windows-1252 no se admiten inicialmente; error pide UTF-8. V2 detecta encabezados después de títulos y valida límites durante el parseo.
 
 XLSX: firma ZIP/OOXML, múltiples hojas elegibles, lexemas numéricos como strings sin IEEE-754. Para ceros iniciales los códigos deben venir almacenados como **Texto** en Excel, como indica la UI: no se reconstruye formato visual/precisión ya perdida por Excel. Fechas son texto ISO sin inferencias comerciales.
 
-ZIP preflight secuencial yauzl valida tamaños declarados/reales, entradas duplicadas/protegidas y paths. SAX decodifica atributos antes de validar coordenadas/dimensiones/filas: también rechaza `A&#49;000000`, prefijos de fórmula y TargetMode externo codificado. DTD, entidades externas, fórmulas, hyperlinks, macros, binarios incrustados/externalLinks se rechazan; no se ejecutan ni se sigue ninguna URL.
+ZIP preflight secuencial yauzl valida tamaños declarados/reales, entradas duplicadas/protegidas y paths. SAX decodifica atributos antes de validar coordenadas/dimensiones/filas: también rechaza `A&#49;000000`. DTD, entidades externas, XML malformado, macros y binarios incrustados se rechazan. V2 anota fórmulas sin ejecutarlas; columnas ignoradas no invalidan el archivo, resultados guardados se advierten y datos usados sin resultado bloquean la fila. Hyperlinks/externalLinks/TargetMode externo se advierten sin abrir, resolver ni actualizar URLs.
 
 | Límite                                     | Valor                                    |
 | ------------------------------------------ | ---------------------------------------- |
@@ -118,18 +120,18 @@ Ficha con Datos/Catálogo, Importar lista solo ADMIN/proveedor activo, búsqueda
 
 Revisados registro npm, documentación primaria, mantenimiento, engines/licencia/peso y audit. Cuatro dependencias MIT solamente en API, sin framework de importación:
 
-| Dependencia            | Necesidad y evidencia npm al 6/10/2026                                                                                                              |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| read-excel-file 9.3.10 | Lector XLSX especializado; no calcula fórmulas (además se rechazan). Node >=18, 2.474.410 bytes unpacked, actualizado 10/8/2026.                    |
-| csv-parse 7.0.3        | CSV real/comillas/BOM/max_record_size. 1.610.302 bytes unpacked, actualizado 25/9/2026, probado Node 22.18.                                         |
-| yauzl 3.4.0            | ZIP secuencial/validateEntrySizes antes del lector. Node >=12, 109.901 bytes, actualizado 7/6/2026.                                                 |
-| saxen 11.2.0           | Validación XML y atributos decodificados; ya transitoria del lector, declarada por uso directo. Node >=20.12, 163.579 bytes, actualizado 21/9/2026. |
+| Dependencia            | Necesidad y evidencia npm al 6/10/2026                                                                                                                   |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| read-excel-file 9.3.10 | Lector XLSX especializado; no calcula fórmulas; V2 lee resultados guardados con advertencia. Node >=18, 2.474.410 bytes unpacked, actualizado 10/8/2026. |
+| csv-parse 7.0.3        | CSV real/comillas/BOM/max_record_size. 1.610.302 bytes unpacked, actualizado 25/9/2026, probado Node 22.18.                                              |
+| yauzl 3.4.0            | ZIP secuencial/validateEntrySizes antes del lector. Node >=12, 109.901 bytes, actualizado 7/6/2026.                                                      |
+| saxen 11.2.0           | Validación XML y atributos decodificados; ya transitoria del lector, declarada por uso directo. Node >=20.12, 163.579 bytes, actualizado 21/9/2026.      |
 
 Tipos dev @types/multer 2.3.0 y @types/yauzl 3.4.0; saxen sin tipos publicados requiere declarar la superficie usada en src/types/saxen.d.ts. Pesos unpacked no son bundle web. Audit informó avisos preexistentes de Prisma (deepmerge-ts/mysql2), sin nuevos en parsers; se documentan sin actualizar Prisma fuera de alcance.
 
 Fuentes primarias: [read-excel-file](https://github.com/catamphetamine/read-excel-file), [csv-parse](https://csv.js.org/parse/options/), [yauzl](https://github.com/thejoshwolfe/yauzl), [saxen](https://github.com/nikku/saxen).
 
-Asociación explícita, HID y Product básico desde identificación están implementados en el segundo incremento. Diferidos parser GS1 completo, namespace universal EXTERNAL_BARCODE, Inventory/Stock/Lot/Series/movimientos, documentos y economía. Siguiente paso: probar listas y lectores reales; no se inicia Inventory.
+Identificación explícita, HID, Product básico e Inventory V1 están implementados. Importar listas permanece separado de la existencia física. Parser GS1 completo, documentos comerciales, ventas y economía siguen diferidos. Ver [Inventory](inventory.md) y [el importador V2](supplier-catalog-v2.md).
 
 ## Asociación confirmada
 

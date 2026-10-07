@@ -22,6 +22,7 @@ import {
   catalogPreviewInputSchema,
   catalogCommitInputSchema,
   catalogImportRowsQuerySchema,
+  catalogAnalysisInputSchema,
   supplierCatalogLimits,
 } from '@maxbio/contracts';
 import type { AuthenticatedRequest } from '../../../common/auth/request-context.js';
@@ -95,6 +96,37 @@ export class SupplierCatalogController {
   ) {
     if (!file) throw new BadRequestException('Elegí un archivo .csv o .xlsx de hasta 10 MiB.');
     return this.catalog.inspect(actor(request), id, file);
+  }
+  @Roles('ADMIN')
+  @Post('suppliers/:id/catalog-imports/analyze')
+  @HttpCode(200)
+  analyze(
+    @Req() request: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() body: unknown,
+  ) {
+    return this.catalog.analyze(
+      actor(request),
+      id,
+      parseCatalogInput(catalogAnalysisInputSchema, body),
+    );
+  }
+  @Roles('ADMIN')
+  @Get('suppliers/:id/catalog-import-profiles')
+  profiles(@Req() request: AuthenticatedRequest, @Param('id', uuid) id: string) {
+    return this.catalog.listProfiles(actor(request), id);
+  }
+  @Roles('ADMIN')
+  @Post('suppliers/:id/catalog-import-profiles/reset')
+  @HttpCode(200)
+  resetProfiles(
+    @Req() request: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() body: unknown,
+  ) {
+    if (!body || typeof body !== 'object' || Object.keys(body).length)
+      throw new BadRequestException('No se aceptan campos adicionales.');
+    return this.catalog.resetProfiles(actor(request), id);
   }
   @Roles('ADMIN')
   @Post('suppliers/:id/catalog-imports/preview')

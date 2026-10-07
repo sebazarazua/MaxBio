@@ -1,8 +1,11 @@
 'use client';
 import Link from 'next/link';
-import { useState, type FormEvent } from 'react';
+import { useState, useRef, type FormEvent } from 'react';
 import {
   catalogInspectionSchema,
+  catalogSheetInspectionSchema,
+  catalogProfileResetSchema,
+  type CatalogCommercialOptions,
   catalogImportSchema,
   catalogImportRowsSchema,
   catalogImportListSchema,
@@ -152,6 +155,11 @@ export function ReferenceCatalog({
                       <small className="muted">{item.presentationText || '—'}</small>
                     </td>
                     <td>
+                      {item.price !== null && (
+                        <small>
+                          {item.currency ?? 'Moneda desconocida'} {item.price}
+                        </small>
+                      )}
                       <ReferenceAssociation item={item} />
                       {item.missingFromLatestCompleteListAt && (
                         <small className="muted">No aparece en la última lista completa</small>
@@ -198,6 +206,20 @@ export function ReferenceDetail({ id }: { id: string }) {
           {[
             ['Proveedor', item.supplier.name],
             ['Código del proveedor', item.supplierCode],
+            ['Código alternativo', item.alternateSupplierCode],
+            [
+              'Precio declarado',
+              item.price === null ? null : `${item.currency ?? 'Moneda desconocida'} ${item.price}`,
+            ],
+            ['IVA declarado (%)', item.vatRate],
+            [
+              'Precio incluye IVA',
+              item.priceIncludesVat === 'YES'
+                ? 'Sí'
+                : item.priceIncludesVat === 'NO'
+                  ? 'No'
+                  : 'Desconocido',
+            ],
             ['Marca declarada', item.brandText],
             ['Presentación declarada', item.presentationText],
             ['GTIN informado', item.reportedGtin],
@@ -265,11 +287,25 @@ export function CatalogImport({
     brandText: null,
     presentationText: null,
     reportedGtin: null,
+    alternateSupplierCode: null,
+    price: null,
+    currency: null,
+    vatRate: null,
   });
+  const [commercial, setCommercial] = useState<CatalogCommercialOptions>({
+    defaultCurrency: 'ARS',
+    currencyConfirmed: false,
+    priceIncludesVat: 'UNKNOWN',
+    decimalSeparator: 'AUTO',
+  });
+  const [saveProfile, setSaveProfile] = useState(true);
+  const [profileReset, setProfileReset] = useState(false);
+  const analysisSequence = useRef(0);
   const [mode, setMode] = useState<'PARTIAL' | 'COMPLETE'>('PARTIAL');
   const [preview, setPreview] = useState<CatalogImportView | null>(null);
   const [result, setResult] = useState<CatalogImportView | null>(null);
   const [exclude, setExclude] = useState(false);
+  const [excludedRows, setExcludedRows] = useState('');
   const [localError, setLocalError] = useState('');
   const sheet = inspection?.sheets.find((sheet) => sheet.name === sheetName);
   const headers = sheet?.sample[headerRow - 1] ?? [];
@@ -284,18 +320,79 @@ export function CatalogImport({
     const inspected = await mutation.run(() => uploadFile(supplier.id, file));
     if (inspected) {
       setInspection(inspected);
-      const first = inspected.sheets[0]!;
-      setSheetName(first.name);
+      const first =
+        inspected.sheets.find((sheet) => sheet.name === inspected.suggestedSheet) ??
+        inspected.sheets[0]!;
+      setSheetName(inspected.suggestedSheet ?? (inspected.sheets.length === 1 ? first.name : ''));
       setHeaderRow(first.headerRow);
       setMapping(first.suggestedMapping);
+      setCommercial({
+        ...first.commercial,
+        defaultCurrency: first.commercial.defaultCurrency ?? 'ARS',
+      });
+      setProfileReset(false);
       setPreview(null);
       setResult(null);
+      setExcludedRows('');
+    }
+  }
+  async function analyze(sheetName: string, headerRow: number) {
+    if (!inspection) return;
+    const sequence = ++analysisSequence.current;
+    const analyzed = await mutation.run(() =>
+      catalogFetch(
+        `suppliers/${supplier.id}/catalog-imports/analyze`,
+        catalogSheetInspectionSchema,
+        { method: 'POST', body: { uploadId: inspection.uploadId, sheet: sheetName, headerRow } },
+      ),
+    );
+    if (analyzed && sequence === analysisSequence.current) {
+      setInspection(
+        (current) =>
+          current && {
+            ...current,
+            sheets: current.sheets.map((sheet) =>
+              sheet.name === analyzed.name ? analyzed : sheet,
+            ),
+          },
+      );
+      setMapping(analyzed.suggestedMapping);
+      setCommercial({
+        ...analyzed.commercial,
+        defaultCurrency: analyzed.commercial.defaultCurrency ?? 'ARS',
+      });
+    }
+  }
+  async function resetProfile() {
+    const response = await mutation.run(async () => {
+      await catalogFetch(
+        `suppliers/${supplier.id}/catalog-import-profiles/reset`,
+        catalogProfileResetSchema,
+        { method: 'POST', body: {} },
+      );
+      return true;
+    });
+    if (response) {
+      setProfileReset(true);
+      if (sheet) await analyze(sheet.name, headerRow);
     }
   }
   async function review(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLocalError('');
     if (!inspection) return;
+    if (!sheetName) {
+      setLocalError('Elegí y revisá la hoja que contiene la lista.');
+      return;
+    }
+    if (
+      mapping.price !== null &&
+      mapping.currency === null &&
+      (!commercial.currencyConfirmed || !commercial.defaultCurrency)
+    ) {
+      setLocalError('Confirmá o cambiá la moneda para los precios.');
+      return;
+    }
     if (mapping.supplierCode === null || mapping.description === null) {
       setLocalError(
         mapping.supplierCode === null
@@ -309,6 +406,18 @@ export function CatalogImport({
       setLocalError('Elegí una columna diferente para cada campo.');
       return;
     }
+    const excludedRowNumbers = excludedRows.trim()
+      ? excludedRows.split(',').map((row) => Number(row.trim()))
+      : [];
+    if (
+      excludedRowNumbers.some(
+        (row) =>
+          !Number.isInteger(row) || row <= headerRow || row > (sheet?.rowCount ?? 0) + headerRow,
+      )
+    ) {
+      setLocalError('Indicá filas de datos que existan, separadas por comas.');
+      return;
+    }
     const reviewed = await mutation.run(() =>
       catalogFetch(`suppliers/${supplier.id}/catalog-imports/preview`, catalogImportSchema, {
         method: 'POST',
@@ -318,6 +427,9 @@ export function CatalogImport({
           headerRow,
           mapping: columns.data,
           mode,
+          commercial,
+          saveProfile,
+          excludedRowNumbers,
         },
       }),
     );
@@ -349,7 +461,7 @@ export function CatalogImport({
           : preview
             ? '3. REVISAR · 4. CONFIRMAR'
             : inspection
-              ? '2. COLUMNAS'
+              ? '2. INFORMACIÓN DETECTADA'
               : '1. ARCHIVO'}
       </p>
       <h3>Importar lista · {supplier.name}</h3>
@@ -392,6 +504,34 @@ export function CatalogImport({
             <p>
               <strong>Archivo:</strong> {inspection.fileName}
             </p>
+            {inspection.warnings.map((warning) => (
+              <p className="catalog-notice" key={warning}>
+                {warning}
+              </p>
+            ))}
+            <p role="status">
+              {inspection.suggestedSheet
+                ? `Creemos que los productos están en: ${inspection.suggestedSheet}. Revisá la propuesta.`
+                : 'Revisá la hoja y el encabezado: no pudimos elegirlos con suficiente confianza.'}
+            </p>
+            {sheet?.profileApplied && (
+              <p className="catalog-notice">
+                Usamos el formato que confirmaste antes para este proveedor. Revisalo antes de
+                continuar.
+              </p>
+            )}
+            {sheet?.tableConfidence === 'REVIEW' && (
+              <p className="catalog-notice">
+                Revisá la interpretación de la tabla y el encabezado antes de continuar.
+              </p>
+            )}
+            {sheet?.warnings
+              .filter((warning) => !inspection.warnings.includes(warning))
+              .map((warning) => (
+                <p key={warning} className="catalog-notice">
+                  {warning}
+                </p>
+              ))}
             <div className="form-grid">
               <Field label="Hoja">
                 <select
@@ -400,11 +540,20 @@ export function CatalogImport({
                     const selected = inspection.sheets.find(
                       (sheet) => sheet.name === event.target.value,
                     )!;
+                    if (!selected) {
+                      setSheetName('');
+                      return;
+                    }
                     setSheetName(selected.name);
                     setHeaderRow(selected.headerRow);
                     setMapping(selected.suggestedMapping);
+                    setCommercial({
+                      ...selected.commercial,
+                      defaultCurrency: selected.commercial.defaultCurrency ?? 'ARS',
+                    });
                   }}
                 >
+                  <option value="">Elegí una hoja</option>
                   {inspection.sheets.map((sheet) => (
                     <option key={sheet.name}>{sheet.name}</option>
                   ))}
@@ -419,7 +568,12 @@ export function CatalogImport({
                   min={1}
                   max={Math.min(20, sheet?.sample.length || 1)}
                   value={headerRow}
-                  onChange={(event) => setHeaderRow(Number(event.target.value))}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    setHeaderRow(value);
+                    if (sheetName && value >= 1 && value <= Math.min(20, sheet?.sample.length || 1))
+                      void analyze(sheetName, value);
+                  }}
                 />
               </Field>
             </div>
@@ -427,11 +581,22 @@ export function CatalogImport({
               {Object.entries(catalogMappingFields).map(([key, label]) => (
                 <Field
                   key={key}
-                  label={`¿Qué columna contiene ${key === 'description' || key === 'brandText' || key === 'presentationText' ? 'la' : 'el'} ${label}?`}
+                  label={label}
                   help={
                     key === 'supplierCode' || key === 'description'
-                      ? 'Obligatorio'
-                      : 'Opcional. Si no la elegís, conservamos el dato anterior.'
+                      ? 'Obligatorio · ' +
+                        (sheet?.confidence[key as keyof MappingDraft] === 'HIGH'
+                          ? '✓ Detectado'
+                          : sheet?.confidence[key as keyof MappingDraft] === 'REVIEW'
+                            ? '⚠ Revisar'
+                            : '? No encontrado')
+                      : 'Opcional · ' +
+                        (sheet?.confidence[key as keyof MappingDraft] === 'HIGH'
+                          ? '✓ Detectado'
+                          : sheet?.confidence[key as keyof MappingDraft] === 'REVIEW'
+                            ? '⚠ Revisar'
+                            : '? No encontrado') +
+                        '. Si lo ignorás, conservamos el dato anterior.'
                   }
                 >
                   <select
@@ -444,7 +609,11 @@ export function CatalogImport({
                     }
                     required={key === 'supplierCode' || key === 'description'}
                   >
-                    <option value="">Elegí una columna</option>
+                    <option value="">
+                      {key === 'supplierCode' || key === 'description'
+                        ? 'Elegí una columna'
+                        : 'No importar este campo'}
+                    </option>
                     {Array.from({ length: sheet?.headers.length ?? 0 }, (_, index) => (
                       <option key={index} value={index}>
                         {index + 1}. {headers[index] || `Columna ${index + 1}`}
@@ -454,11 +623,100 @@ export function CatalogImport({
                 </Field>
               ))}
             </div>
+            <div className="form-grid">
+              <Field
+                label="Moneda para precios sin moneda en el archivo"
+                help="ARS es una propuesta. El símbolo $ no determina la moneda."
+              >
+                <input
+                  value={commercial.defaultCurrency ?? ''}
+                  maxLength={3}
+                  pattern="[A-Z]{3}"
+                  onChange={(event) =>
+                    setCommercial((current) => ({
+                      ...current,
+                      defaultCurrency: event.target.value.toUpperCase() || null,
+                      currencyConfirmed: false,
+                    }))
+                  }
+                />
+              </Field>
+              <Field label="El precio informado">
+                <select
+                  value={commercial.priceIncludesVat}
+                  onChange={(event) =>
+                    setCommercial((current) => ({
+                      ...current,
+                      priceIncludesVat: event.target
+                        .value as CatalogCommercialOptions['priceIncludesVat'],
+                    }))
+                  }
+                >
+                  <option value="UNKNOWN">No lo sé</option>
+                  <option value="YES">Incluye IVA</option>
+                  <option value="NO">No incluye IVA</option>
+                </select>
+              </Field>
+              <Field
+                label="Separador decimal"
+                help="Elegilo si números como 1.234 son ambiguos. Los números de Excel conservan su valor almacenado."
+              >
+                <select
+                  value={commercial.decimalSeparator}
+                  onChange={(event) =>
+                    setCommercial((current) => ({
+                      ...current,
+                      decimalSeparator: event.target
+                        .value as CatalogCommercialOptions['decimalSeparator'],
+                    }))
+                  }
+                >
+                  <option value="AUTO">Detectar; revisar si es ambiguo</option>
+                  <option value="COMMA">Coma: 1.234,56</option>
+                  <option value="DOT">Punto: 1,234.56</option>
+                </select>
+              </Field>
+            </div>
+            <label className="check-field">
+              <input
+                type="checkbox"
+                checked={commercial.currencyConfirmed}
+                onChange={(event) =>
+                  setCommercial((current) => ({
+                    ...current,
+                    currencyConfirmed: event.target.checked,
+                  }))
+                }
+              />{' '}
+              Confirmo usar {commercial.defaultCurrency || 'la moneda indicada'} cuando la lista no
+              indica moneda.
+            </label>
+            <label className="check-field">
+              <input
+                type="checkbox"
+                checked={saveProfile}
+                onChange={(event) => setSaveProfile(event.target.checked)}
+              />{' '}
+              Recordar este formato y la información comercial confirmada para próximas listas.
+            </label>
+            <button type="button" className="secondary-button" onClick={() => void resetProfile()}>
+              Olvidar formatos guardados de este proveedor
+            </button>
+            {profileReset && <p role="status">Formatos guardados eliminados.</p>}
             <Field label="Cómo usar esta lista">
               <select value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}>
                 <option value="PARTIAL">Actualizar artículos incluidos</option>
                 <option value="COMPLETE">Esta es la lista completa</option>
               </select>
+            </Field>
+            <Field
+              label="Filas para ignorar (opcional)"
+              help="Si encontrás títulos, notas o subtotales en la vista previa, indicá sus números de fila separados por comas, por ejemplo 17, 25. Se conservará constancia de que las ignoraste."
+            >
+              <input
+                value={excludedRows}
+                onChange={(event) => setExcludedRows(event.target.value)}
+              />
             </Field>
             <p className="muted">
               {mode === 'COMPLETE'
@@ -466,19 +724,21 @@ export function CatalogImport({
                 : 'Las referencias que no aparezcan conservan su información.'}
             </p>
             <details>
-              <summary>Ver primeras filas del archivo</summary>
+              <summary>Ver muestra junto al encabezado</summary>
               <div className="reference-table-scroll">
                 <table className="reference-table">
                   <caption>Primeras filas de {sheetName}</caption>
                   <tbody>
-                    {sheet?.sample.slice(0, 8).map((row, index) => (
-                      <tr key={index}>
-                        <th scope="row">{index + 1}</th>
-                        {row.map((cell, column) => (
-                          <td key={column}>{cell}</td>
-                        ))}
-                      </tr>
-                    ))}
+                    {sheet?.sample
+                      .slice(Math.max(0, headerRow - 1), Math.max(8, headerRow + 3))
+                      .map((row, index) => (
+                        <tr key={index}>
+                          <th scope="row">{index + headerRow}</th>
+                          {row.map((cell, column) => (
+                            <td key={column}>{cell}</td>
+                          ))}
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
@@ -561,6 +821,20 @@ function ImportSummary({ value }: { value: CatalogImportView }) {
           ['Proveedor', value.supplier.name],
           ['Archivo', value.fileName],
           ['Hoja', value.sheetName],
+          [
+            'Moneda para precios sin moneda',
+            value.commercial.currencyConfirmed
+              ? (value.commercial.defaultCurrency ?? 'Sin especificar')
+              : 'Sin confirmar',
+          ],
+          [
+            'Precio incluye IVA',
+            value.commercial.priceIncludesVat === 'YES'
+              ? 'Sí'
+              : value.commercial.priceIncludesVat === 'NO'
+                ? 'No'
+                : 'Desconocido',
+          ],
           ['Modalidad', value.mode === 'COMPLETE' ? 'Lista completa' : 'Actualizar incluidos'],
           ['Filas', summary.total],
           ['Nuevas referencias', summary.created],
@@ -570,7 +844,7 @@ function ImportSummary({ value }: { value: CatalogImportView }) {
           ['Vacías / ignoradas', summary.empty],
           ['Errores', summary.errors],
           ['Conflictos', summary.conflicts],
-          ['Advertencias GTIN', summary.warnings],
+          ['Filas con advertencias', summary.warnings],
           ['Ausentes de lista completa', summary.missing],
         ].map(([label, content]) => (
           <div key={label}>
@@ -657,6 +931,22 @@ function ImportRows({ id }: { id: string }) {
                       <p>{row.data?.description}</p>
                     </td>
                     <td>
+                      {row.data?.price !== null && row.data?.price !== undefined && (
+                        <small>
+                          Precio: {row.data.currency ?? 'Moneda desconocida'} {row.data.price} ·{' '}
+                          {row.data.priceIncludesVat === 'YES'
+                            ? 'Incluye IVA'
+                            : row.data.priceIncludesVat === 'NO'
+                              ? 'No incluye IVA'
+                              : 'IVA incluido: desconocido'}
+                        </small>
+                      )}
+                      {row.data?.vatRate !== null && row.data?.vatRate !== undefined && (
+                        <small>IVA: {row.data.vatRate}%</small>
+                      )}
+                      {row.data?.alternateSupplierCode && (
+                        <small>Alternativo: {row.data.alternateSupplierCode}</small>
+                      )}
                       {row.data?.brandText || '—'}
                       <small>{row.data?.presentationText}</small>
                       <small>{row.data?.reportedGtin && `GTIN: ${row.data.reportedGtin}`}</small>

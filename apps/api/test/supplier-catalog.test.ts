@@ -84,6 +84,10 @@ test('XLSX válido y múltiples hojas, encabezados detectados y elección indepe
     brandText: 2,
     presentationText: null,
     reportedGtin: 3,
+    alternateSupplierCode: null,
+    price: null,
+    currency: null,
+    vatRate: null,
   });
 });
 test('mapeo por índice, encabezados repetidos y título previo', () => {
@@ -245,25 +249,14 @@ test('límites de archivo, filas, columnas y celdas, formato/MIME/contenido inv�
     10000,
   );
 });
-test('XLSX rechaza fórmulas, macros, enlaces, entidades XML, expansión y celdas dispersas', async () => {
+test('XLSX rechaza macros, entidades XML, expansi\u00f3n y celdas dispersas', async () => {
   for (const extra of [
-    {
-      'xl/worksheets/sheet1.xml':
-        '<worksheet><sheetData><row r="1"><c r="A1"><f>1+1</f><v>2</v></c></row></sheetData></worksheet>',
-    },
     { 'xl/vbaProject.bin': 'macro' },
-    { 'xl/externalLinks/externalLink1.xml': '<x/>' },
-    { 'xl/_rels/sheet.xml.rels': '<Relationship TargetMode="External"/>' },
     { 'xl/sharedStrings.xml': '<!DOCTYPE x [<!ENTITY x SYSTEM "file:///etc/passwd">]>' },
     { 'xl/worksheets/sheet1.xml': '<worksheet><row r="1"><c r="A10000000"/></row></worksheet>' },
     { 'xl/worksheets/sheet1.xml': '<worksheet><dimension ref="A1:XFD1048576"/></worksheet>' },
     { 'xl/worksheets/sheet1.xml': '<worksheet><row r="1000000"/></worksheet>' },
     { 'xl/worksheets/sheet1.xml': '<worksheet><row r="1"><c r="A&#49;000000"/></row></worksheet>' },
-    {
-      'xl/worksheets/sheet1.xml':
-        '<worksheet><row r="1"><c r="A1"><x-y:f xmlns:x-y="urn:test">1+1</x-y:f></c></row></worksheet>',
-    },
-    { 'xl/_rels/sheet.xml.rels': '<Relationship TargetMode="Exter&#110;al"/>' },
   ] as Record<string, string>[])
     await assert.rejects(
       parseCatalogFile(

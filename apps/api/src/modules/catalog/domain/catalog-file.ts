@@ -5,6 +5,7 @@ import { fromBuffer, type Entry } from 'yauzl';
 import { posix } from 'node:path';
 import { supplierCatalogLimits as limits } from '@maxbio/contracts';
 import type { CatalogSheet } from './catalog-import.js';
+import type { SupplierCatalogExtractor } from './catalog-table.js';
 import { CatalogRuleError } from './identifiers.js';
 import { validateXlsxXml, type XlsxXmlMetadata } from './catalog-xlsx-xml.js';
 
@@ -70,7 +71,15 @@ export function validateXlsxArchive(buffer: Buffer): Promise<XlsxXmlMetadata> {
         let entries = 0;
         let done = false;
         const names = new Set<string>();
-        const metadata: XlsxXmlMetadata = { sheets: [], relationships: {}, rowCounts: {} };
+        const metadata: XlsxXmlMetadata = {
+          sheets: [],
+          relationships: {},
+          rowCounts: {},
+          cellStates: {},
+          numericCells: {},
+          percentageStyles: [],
+          warnings: [],
+        };
         const fail = (cause: unknown) => {
           if (done) return;
           done = true;
@@ -104,10 +113,10 @@ export function validateXlsxArchive(buffer: Buffer): Promise<XlsxXmlMetadata> {
             return;
           }
           names.add(entry.fileName);
-          if (/vba|externallinks|embeddings|\.bin$/i.test(entry.fileName)) {
+          if (/vba|embeddings|\.bin$/i.test(entry.fileName)) {
             fail(
               new CatalogRuleError(
-                'No se admiten macros, archivos incrustados ni enlaces externos.',
+                'No se admiten macros ni archivos incrustados. Usá una lista .xlsx sin macros.',
               ),
             );
             return;
@@ -184,11 +193,15 @@ export async function parseCatalogFile(buffer: Buffer, originalName: string, mim
     try {
       const source = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
       if (source.includes('\u0000')) throw new Error();
-      const line = source.split(/\r?\n/).find((line) => line.trim()) ?? '';
-      const outsideQuotes = line.replace(/"(?:[^"]|"")*"/g, '');
+      const outsideQuotes = source
+        .split(/\r?\n/)
+        .slice(0, 40)
+        .map((line) => line.replace(/"(?:[^"]|"")*"/g, ''))
+        .join('\n');
       const delimiter = [',', ';', '\t'].sort(
         (a, b) => outsideQuotes.split(b).length - outsideQuotes.split(a).length,
       )[0]!;
+      let records = 0;
       const rows = parse(source, {
         delimiter,
         bom: true,
@@ -196,9 +209,21 @@ export async function parseCatalogFile(buffer: Buffer, originalName: string, mim
         relax_column_count: true,
         skip_empty_lines: false,
         max_record_size: 400000,
+        on_record: (row: string[]) => {
+          if (
+            ++records > limits.rows + 20 ||
+            row.length > limits.columns ||
+            row.some((cell) => cell.length > limits.cellCharacters)
+          )
+            throw new CatalogRuleError(
+              'El CSV supera 10.000 filas, 100 columnas o 4.000 caracteres por celda.',
+            );
+          return row;
+        },
       }) as string[][];
       sheets = [{ name: 'CSV', rows }];
-    } catch {
+    } catch (error) {
+      if (error instanceof CatalogRuleError) throw error;
       throw new CatalogRuleError(
         'No pudimos leer el CSV. Usá UTF-8, comas, punto y coma o tabulaciones, y revisá las comillas.',
       );
@@ -224,6 +249,24 @@ export async function parseCatalogFile(buffer: Buffer, originalName: string, mim
           ? posix.normalize(target.startsWith('/') ? target.slice(1) : 'xl/' + target)
           : '';
         const rowCount = metadata.rowCounts[path] ?? sheet.rows.length;
+        sheet.cellStates = metadata.cellStates[path] ?? {};
+        sheet.numericCells = (metadata.numericCells[path] ?? []).map((cell) => cell.key);
+        sheet.percentageCells = (metadata.numericCells[path] ?? [])
+          .filter(
+            (cell) =>
+              cell.style !== undefined && metadata.percentageStyles.includes(Number(cell.style)),
+          )
+          .map((cell) => cell.key);
+        sheet.warnings = [...metadata.warnings];
+        if (Object.keys(sheet.cellStates).length)
+          sheet.warnings.push(
+            'Hay celdas calculadas. Solo leemos resultados guardados; pueden estar desactualizados. Los datos sin resultado disponible requieren revisión.',
+          );
+        for (const [key, state] of Object.entries(sheet.cellStates)) {
+          const [row, column] = key.split(':').map(Number);
+          if (state === 'STORED_RESULT' && !sheet.rows[row! - 1]?.[column!]?.trim())
+            sheet.cellStates[key] = 'UNAVAILABLE';
+        }
         // El lector recorta vacías finales; preservarlas para contabilizar y conservar números reales.
         while (sheet.rows.length < rowCount) sheet.rows.push([]);
       }
@@ -237,5 +280,20 @@ export async function parseCatalogFile(buffer: Buffer, originalName: string, mim
     format: extension === 'csv' ? ('CSV' as const) : ('XLSX' as const),
     contentHash: createHash('sha256').update(buffer).digest('hex'),
     sheets,
+    warnings: [...new Set(sheets.flatMap((sheet) => sheet.warnings ?? []))],
   };
+}
+
+// The dispatch owns file metadata; each adapter implements the same neutral boundary.
+export class CsvSupplierCatalogExtractor implements SupplierCatalogExtractor {
+  async extract(buffer: Buffer) {
+    const parsed = await parseCatalogFile(buffer, 'lista.csv', 'text/csv');
+    return { tables: parsed.sheets, warnings: parsed.warnings };
+  }
+}
+export class XlsxSupplierCatalogExtractor implements SupplierCatalogExtractor {
+  async extract(buffer: Buffer) {
+    const parsed = await parseCatalogFile(buffer, 'lista.xlsx', 'application/octet-stream');
+    return { tables: parsed.sheets, warnings: parsed.warnings };
+  }
 }
