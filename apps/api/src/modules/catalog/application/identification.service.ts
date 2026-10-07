@@ -19,6 +19,7 @@ import type { RequestActorContext } from '../../../common/auth/request-context.j
 import { AuditService } from '../../audit/audit.service.js';
 import { parseScan } from '../domain/catalog-scan.js';
 import { productInclude, productView } from './catalog.service.js';
+import { searchTokens, textContains } from '../domain/catalog-search.js';
 import { itemInclude, itemView } from './supplier-catalog.service.js';
 
 @Injectable()
@@ -44,16 +45,12 @@ export class IdentificationService {
         ...(query.includeArchived ? {} : { archivedAt: null, supplier: { archivedAt: null } }),
       },
       ...(query.includeArchived ? {} : { archivedAt: null }),
-      ...(query.q
-        ? {
-            OR: [
-              { value: { contains: query.q, mode: 'insensitive' } },
-              {
-                supplierProduct: { supplier: { name: { contains: query.q, mode: 'insensitive' } } },
-              },
-            ],
-          }
-        : {}),
+      AND: searchTokens(query.q).map((token) => ({
+        OR: [
+          { value: textContains(token) },
+          { supplierProduct: { supplier: { searchText: textContains(token) } } },
+        ],
+      })),
     };
     const [rows, total] = await Promise.all([
       this.database.client.supplierScanIdentifier.findMany({

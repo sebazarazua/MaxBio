@@ -20,6 +20,10 @@ import { configureApp } from '../src/configure-app.js';
 import { DatabaseService } from '../src/infrastructure/database/database.service.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
 import { IdentificationService } from '../src/modules/catalog/application/identification.service.js';
+import {
+  catalogPrefix,
+  referenceCode,
+} from '../src/modules/catalog/domain/catalog-reference-code.js';
 import { tokenVerifier } from '../src/modules/identity/identity.service.js';
 import type { RequestActorContext } from '../src/common/auth/request-context.js';
 
@@ -61,16 +65,37 @@ async function reference(
   org = orgs[0]!,
   normalizedReportedGtin?: string,
 ) {
-  return client.supplierCatalogItem.create({
-    data: {
-      organizationId: org,
-      supplierId,
-      supplierCode: code,
-      description: 'Bota Walker corta',
-      brandText: 'Marca externa',
-      presentationText: 'Caja Walker',
-      ...(normalizedReportedGtin ? { reportedGtin: gtin, normalizedReportedGtin } : {}),
-    },
+  return client.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Organization" WHERE id=${org}::uuid FOR UPDATE`;
+    const supplier = await tx.supplier.findUniqueOrThrow({ where: { id: supplierId } });
+    const used = new Set(
+      (
+        await tx.supplier.findMany({
+          where: { organizationId: org },
+          select: { catalogPrefix: true },
+        })
+      ).map((item) => item.catalogPrefix),
+    );
+    let ordinal = 1;
+    while (used.has(catalogPrefix(ordinal))) ordinal++;
+    const prefix = supplier.catalogPrefix ?? catalogPrefix(ordinal);
+    await tx.supplier.update({
+      where: { id: supplierId },
+      data: { catalogPrefix: prefix, catalogNextSequence: { increment: 1 } },
+    });
+    return tx.supplierCatalogItem.create({
+      data: {
+        organizationId: org!,
+        supplierId,
+        supplierCode: code,
+        description: 'Walker corta declarada ' + code,
+        brandText: 'Marca externa',
+        presentationText: 'Caja Walker',
+        referenceSequence: supplier.catalogNextSequence,
+        internalReferenceCode: referenceCode(prefix, supplier.catalogNextSequence),
+        ...(normalizedReportedGtin ? { reportedGtin: gtin, normalizedReportedGtin } : {}),
+      },
+    });
   });
 }
 function command(
@@ -202,6 +227,7 @@ after(async () => {
   await client.product.deleteMany({ where });
   await client.brand.deleteMany({ where });
   await client.category.deleteMany({ where });
+  await client.supplierCatalogImportProfile.deleteMany({ where });
   await client.supplier.deleteMany({ where });
   await client.session.deleteMany({ where: { userId: { in: users } } });
   await client.membership.deleteMany({ where });
@@ -576,19 +602,7 @@ test('importar y reimportar conserva vínculo explícito y nunca crea Product', 
         await request(
           `suppliers/${supplierB}/catalog-imports/preview`,
           'POST',
-          {
-            uploadId: inspection.uploadId,
-            sheet: 'CSV',
-            headerRow: 1,
-            mapping: {
-              supplierCode: 0,
-              description: 1,
-              brandText: null,
-              presentationText: null,
-              reportedGtin: null,
-            },
-            mode: 'PARTIAL',
-          },
+          { uploadId: inspection.uploadId, mode: 'PARTIAL' },
           contexts[1],
         ),
         201,

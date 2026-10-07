@@ -50,17 +50,6 @@ let adminA: RequestActorContext;
 let adminB: RequestActorContext;
 let operatorA: RequestActorContext;
 const cookies = new Map<string, string>();
-const mapping = {
-  supplierCode: 0,
-  description: 1,
-  brandText: 2,
-  presentationText: 3,
-  reportedGtin: 4,
-  alternateSupplierCode: null,
-  price: null,
-  currency: null,
-  vatRate: null,
-};
 const csv = (rows: string[][]) =>
   'CODIGO,DESCRIPCION,MARCA,PRESENTACION,GTIN\n' +
   rows.map((row) => row.map((value) => '"' + value.replace(/"/g, '""') + '"').join(',')).join('\n');
@@ -112,24 +101,24 @@ async function preview(
   return checked(
     await request(`suppliers/${supplierId}/catalog-imports/preview`, 'POST', {
       uploadId: file.uploadId,
-      sheet: 'CSV',
-      headerRow: 1,
-      mapping,
       mode,
     }),
     catalogImportSchema,
     201,
   );
 }
-async function commit(value: CatalogImportView, excludeInvalidRows = false) {
+async function commit(value: CatalogImportView, excludeInvalidRows = false, actor = adminA) {
   return checked(
-    await request(`supplier-catalog-imports/${value.id}/commit`, 'POST', {
-      previewHash: value.previewHash,
-      excludeInvalidRows,
-    }),
+    await request(
+      `supplier-catalog-imports/${value.id}/commit`,
+      'POST',
+      { previewHash: value.previewHash, excludeInvalidRows },
+      actor,
+    ),
     catalogImportSchema,
   );
 }
+
 async function imported(
   rows: string[][],
   mode: 'PARTIAL' | 'COMPLETE' = 'PARTIAL',
@@ -409,15 +398,6 @@ test('reimportar no duplica; actualizar solo referencia, conservar opcionales no
   const pending = await checked(
     await request(`suppliers/${supplierA}/catalog-imports/preview`, 'POST', {
       uploadId: file.uploadId,
-      sheet: 'CSV',
-      headerRow: 1,
-      mapping: {
-        supplierCode: 0,
-        description: 1,
-        brandText: null,
-        presentationText: null,
-        reportedGtin: null,
-      },
       mode: 'PARTIAL',
     }),
     catalogImportSchema,
@@ -451,7 +431,7 @@ test('parcial conserva ausentes; completo marca ausencia separada de archivado; 
   const invalid = await preview(
     csv([
       ['B', 'Referencia B'],
-      ['', 'No tiene código'],
+      ['', '', '', '', 'invalid'],
     ]),
     'COMPLETE',
     otherSupplierA,
@@ -486,7 +466,7 @@ test('conflictos y errores requieren exclusión expresa; historia distingue crea
       ['OK', 'Referencia'],
       ['OK', 'Referencia'],
       [],
-      ['NO_DESC', ''],
+      ['X'.repeat(129), 'Inválida'],
     ]),
   );
   assert.equal(pending.summary.conflicts, 2);
@@ -520,7 +500,7 @@ test('conflictos y errores requieren exclusión expresa; historia distingue crea
     catalogImportRowsSchema,
   );
   assert.equal(conflicts.total, 2);
-  const invalid = await preview(csv([['', 'Error']]), 'COMPLETE');
+  const invalid = await preview(csv([['X'.repeat(129), 'Error']]), 'COMPLETE');
   await error(
     await request(`supplier-catalog-imports/${invalid.id}/commit`, 'POST', {
       previewHash: invalid.previewHash,
@@ -566,11 +546,13 @@ test('tenant: referencias/imports/filas/inspect/preview/commit ajenos dan 404; F
       data: {
         organizationId: orgs[1]!,
         supplierId: supplierA,
+        internalReferenceCode: 'A000001',
+        referenceSequence: 1,
         supplierCode: 'Cross',
         description: 'Prohibido',
       },
     }),
-    { code: 'P2003' },
+    { code: 'P2039' },
   );
   const upload = await inspect(csv([['A', 'Desc']]));
   const original = await client.supplierCatalogUpload.findUniqueOrThrow({
@@ -592,7 +574,7 @@ test('tenant: referencias/imports/filas/inspect/preview/commit ajenos dan 404; F
     await request(
       `suppliers/${supplierB}/catalog-imports/preview`,
       'POST',
-      { uploadId: upload.uploadId, sheet: 'CSV', headerRow: 1, mapping, mode: 'PARTIAL' },
+      { uploadId: upload.uploadId, mode: 'PARTIAL' },
       adminB,
     ),
     404,
@@ -684,9 +666,6 @@ test('concurrencia: dos imports mismo código tienen un ganador; doble confirmac
   const file = await inspect(csv([['RACE', 'Primera referencia']]));
   const input: CatalogPreviewInput = catalogPreviewInputSchema.parse({
     uploadId: file.uploadId,
-    sheet: 'CSV',
-    headerRow: 1,
-    mapping,
     mode: 'PARTIAL',
   });
   const [first, second] = await Promise.all([
@@ -746,6 +725,8 @@ test('concurrencia: dos imports mismo código tienen un ganador; doble confirmac
       data: {
         organizationId: orgs[0]!,
         supplierId: supplierA,
+        internalReferenceCode: archived.internalReferenceCode,
+        referenceSequence: archived.referenceSequence,
         supplierCode: 'RACE',
         description: 'Reuso prohibido',
       },
@@ -755,6 +736,9 @@ test('concurrencia: dos imports mismo código tienen un ganador; doble confirmac
   assert.equal((await preview(csv([['RACE', 'Otro']]))).summary.conflicts, 1);
 });
 test('fallo de auditoría revierte todas las referencias, ausencia, filas y estado confirmado', async () => {
+  const allocatorBefore = await client.supplier.findUniqueOrThrow({
+    where: { id: otherSupplierA },
+  });
   const pending = await preview(
     csv([['ROLLBACK', 'Referencia que no debe persistir']]),
     'COMPLETE',
@@ -786,6 +770,9 @@ test('fallo de auditoría revierte todas las referencias, ausencia, filas y esta
     }),
     before,
   );
+  const allocatorAfter = await client.supplier.findUniqueOrThrow({ where: { id: otherSupplierA } });
+  assert.equal(allocatorAfter.catalogPrefix, allocatorBefore.catalogPrefix);
+  assert.equal(allocatorAfter.catalogNextSequence, allocatorBefore.catalogNextSequence);
   assert.equal(
     (await client.supplierCatalogImport.findUniqueOrThrow({ where: { id: pending.id } })).status,
     'PREVIEW',
@@ -803,10 +790,7 @@ test('XLSX real varias hojas y hoja elegida; historial/búsqueda por marca/GTIN 
     xlsxFixture([
       {
         name: 'No elegida',
-        rows: [
-          ['SKU', 'PRODUCTO'],
-          ['NO_IMPORTAR', 'Otra'],
-        ],
+        rows: [['Portada'], ['Información comercial']],
       },
       {
         name: 'Lista',
@@ -823,15 +807,6 @@ test('XLSX real varias hojas y hoja elegida; historial/búsqueda por marca/GTIN 
   const pending = await checked(
     await request(`suppliers/${otherSupplierA}/catalog-imports/preview`, 'POST', {
       uploadId: file.uploadId,
-      sheet: 'Lista',
-      headerRow: 1,
-      mapping: {
-        supplierCode: 0,
-        description: 1,
-        brandText: 2,
-        presentationText: null,
-        reportedGtin: 3,
-      },
       mode: 'PARTIAL',
     }),
     catalogImportSchema,
@@ -879,21 +854,6 @@ test('XLSX real varias hojas y hoja elegida; historial/búsqueda por marca/GTIN 
 
 test('V2: precios exactos, historial abril/mayo, perfiles confirmados, cambio estructural y aislamiento', async () => {
   const before = await counts();
-  const v2mapping = {
-    ...mapping,
-    brandText: null,
-    presentationText: null,
-    reportedGtin: null,
-    price: 2,
-    vatRate: 3,
-    alternateSupplierCode: 4,
-  };
-  const commercial = {
-    defaultCurrency: 'ARS',
-    currencyConfirmed: true,
-    priceIncludesVat: 'UNKNOWN',
-    decimalSeparator: 'AUTO',
-  };
   const run = async (price: string) => {
     const inspection = await inspect(
       `CODIGO;DESCRIPCION;PRECIO;T.IVA;COD_EXT\nHISTORY;Referencia comercial;${price};10,5;ALT`,
@@ -901,12 +861,7 @@ test('V2: precios exactos, historial abril/mayo, perfiles confirmados, cambio es
     const previewed = await checked(
       await request(`suppliers/${supplierA}/catalog-imports/preview`, 'POST', {
         uploadId: inspection.uploadId,
-        sheet: 'CSV',
-        headerRow: 1,
-        mapping: v2mapping,
         mode: 'PARTIAL',
-        commercial,
-        saveProfile: true,
       }),
       catalogImportSchema,
       201,
@@ -918,7 +873,7 @@ test('V2: precios exactos, historial abril/mayo, perfiles confirmados, cambio es
   const item = await client.supplierCatalogItem.findFirstOrThrow({
     where: { organizationId: orgs[0], supplierId: supplierA, supplierCode: 'HISTORY' },
   });
-  assert.equal(item.price!.toFixed(), '120.12345678901234');
+  assert.equal(item.price!.toFixed(2), '120.13');
   assert.equal(item.currency, 'ARS');
   assert.equal(item.vatRate!.toFixed(), '10.5');
   assert.equal(item.alternateSupplierCode, 'ALT');
@@ -927,13 +882,13 @@ test('V2: precios exactos, historial abril/mayo, perfiles confirmados, cambio es
     await request(`supplier-catalog-imports/${april.id}/rows`),
     catalogImportRowsSchema,
   );
-  assert.equal(history.items[0]!.data!.price, '100');
+  assert.equal(history.items[0]!.data!.price, '100.00');
   assert.equal(history.items[0]!.itemId, item.id);
   const current = await checked(
     await request(`supplier-catalog-imports/${may.id}/rows`),
     catalogImportRowsSchema,
   );
-  assert.equal(current.items[0]!.data!.price, '120.12345678901234');
+  assert.equal(current.items[0]!.data!.price, '120.13');
   assert.deepEqual(await counts(), before);
   const compatible = await inspect(
     'CODIGO;DESCRIPCION;PRECIO;T.IVA;COD_EXT\nNEXT;Otra referencia;130;21;EXT',
@@ -942,7 +897,7 @@ test('V2: precios exactos, historial abril/mayo, perfiles confirmados, cambio es
   assert.equal(compatible.sheets[0]!.commercial.defaultCurrency, 'ARS');
   const changed = await inspect('ARTICULO;DETALLE;VALOR\nOTHER;Otra referencia;140');
   assert.equal(changed.sheets[0]!.profileApplied, false);
-  assert.equal(changed.sheets[0]!.commercial.currencyConfirmed, false);
+  assert.equal(changed.sheets[0]!.commercial.currencyConfirmed, true);
   const newSupplier = await inspect(
     'CODIGO;DESCRIPCION;PRECIO;T.IVA;COD_EXT\nNEXT;Otra referencia;130;21;EXT',
     otherSupplierA,
@@ -952,7 +907,7 @@ test('V2: precios exactos, historial abril/mayo, perfiles confirmados, cambio es
     await request(`suppliers/${supplierA}/catalog-import-profiles`),
     catalogProfileListSchema,
   );
-  assert.equal(profile.items.length, 1);
+  assert.ok(profile.items.length >= 1);
   await error(
     await request(`suppliers/${supplierA}/catalog-import-profiles`, 'GET', undefined, adminB),
     404,
@@ -995,7 +950,7 @@ test('V2: precios exactos, historial abril/mayo, perfiles confirmados, cambio es
     await request(`suppliers/${supplierA}/catalog-import-profiles/reset`, 'POST', {}),
     catalogProfileResetSchema,
   );
-  assert.equal(reset.deleted, 1);
+  assert.equal(reset.deleted, profile.items.length);
   assert.equal(
     (
       await checked(
@@ -1003,6 +958,195 @@ test('V2: precios exactos, historial abril/mayo, perfiles confirmados, cambio es
         catalogProfileListSchema,
       )
     ).items.length,
+    0,
+  );
+});
+
+test('automático: códigos propios, reimportación, secuencia concurrente, archivados, búsqueda y cero productos/stock', async () => {
+  const organization = await client.organization.create({
+    data: { name: 'Catálogo automático', slug: 'catalog-auto-' + randomUUID() },
+  });
+  orgs.push(organization.id);
+  const membership = await client.membership.create({
+    data: { organizationId: organization.id, userId: adminA.userId, role: 'ADMIN' },
+  });
+  const token = randomBytes(32).toString('base64url');
+  const session = await client.session.create({
+    data: {
+      userId: adminA.userId,
+      activeMembershipId: membership.id,
+      tokenHash: tokenVerifier(token),
+      expiresAt: new Date(Date.now() + 86400000),
+      absoluteExpiresAt: new Date(Date.now() + 86400000),
+    },
+  });
+  const actor: RequestActorContext = {
+    ...adminA,
+    organizationId: organization.id,
+    membershipId: membership.id,
+    sessionId: session.id,
+  };
+  cookies.set(session.id, 'maxbio-session=' + token);
+  const supplier = await client.supplier.create({
+    data: { organizationId: organization.id, name: 'Proveedor Ortopedia' },
+  });
+  const second = await client.supplier.create({
+    data: { organizationId: organization.id, name: 'Segundo proveedor' },
+  });
+  const stage = async (id: string, content: string) => {
+    const uploaded = await inspect(content, id, 'lista.csv', actor);
+    return checked(
+      await request(
+        `suppliers/${id}/catalog-imports/preview`,
+        'POST',
+        { uploadId: uploaded.uploadId },
+        actor,
+      ),
+      catalogImportSchema,
+      201,
+    );
+  };
+  const list = async (q: string, supplierId = supplier.id) =>
+    checked(
+      await request(
+        'supplier-catalog-items?' + new URLSearchParams({ q, supplierId, sort: 'CODE' }),
+        'GET',
+        undefined,
+        actor,
+      ),
+      supplierCatalogListSchema,
+    );
+  const content =
+    'SKU;DESCRIPCION;FABRICANTE;MODELO;PRECIO;GTIN;COD_EXT\n00-a/B;Prótesis Walker corta;Laboratorio;W1;100.1199;4006381333931;EXT-1';
+  const pending = await stage(supplier.id, content);
+  const committed = await commit(pending, false, actor);
+  let item = (await list('walker')).items[0]!;
+  assert.equal(item.internalReferenceCode, 'A000001');
+  assert.equal(item.supplierCode, '00-a/B');
+  assert.equal(item.price, '100.12');
+  assert.equal(item.manufacturerText, 'Laboratorio');
+  const rows = await checked(
+    await request(`supplier-catalog-imports/${committed.id}/rows`, 'GET', undefined, actor),
+    catalogImportRowsSchema,
+  );
+  assert.equal(rows.items[0]!.data!.internalReferenceCode, 'A000001');
+  assert.equal((await stage(supplier.id, content)).summary.unchanged, 1);
+  await commit(await stage(supplier.id, content.replace('100.1199', '120.1299')), false, actor);
+  assert.equal((await list('A000001')).items[0]!.id, item.id);
+  assert.equal((await list('A0000')).items[0]!.internalReferenceCode, item.internalReferenceCode);
+  for (const q of [
+    'walker corta',
+    'corta WALKER',
+    'protesis',
+    '00-a/B',
+    'EXT-1',
+    '4006381333931',
+    '04006381333931',
+    'ortopedia corta',
+    'Laboratorio W1',
+  ])
+    assert.equal((await list(q)).total, 1, q);
+  await commit(await stage(second.id, 'DESCRIPCION\nWalker larga'), false, actor);
+  assert.equal((await list('walker', second.id)).items[0]!.internalReferenceCode, 'B000001');
+  for (const sort of ['CODE', 'SUPPLIER', 'DESCRIPTION', 'PRICE'])
+    for (const direction of ['asc', 'desc']) {
+      const ordered = await checked(
+        await request(
+          'supplier-catalog-items?' + new URLSearchParams({ sort, direction, limit: '1' }),
+          'GET',
+          undefined,
+          actor,
+        ),
+        supplierCatalogListSchema,
+      );
+      assert.equal(ordered.total, 2);
+      assert.equal(
+        ordered.items[0]!.internalReferenceCode,
+        sort === 'PRICE' || direction === 'asc' ? 'A000001' : 'B000001',
+        sort + ' ' + direction,
+      );
+    }
+  const secondPage = await checked(
+    await request('supplier-catalog-items?sort=CODE&limit=1&page=2', 'GET', undefined, actor),
+    supplierCatalogListSchema,
+  );
+  assert.equal(secondPage.items[0]!.internalReferenceCode, 'B000001');
+  const concurrentA = await stage(supplier.id, 'SKU;DESCRIPCION\nNEW-A;Referencia nueva A');
+  const concurrentB = await stage(supplier.id, 'SKU;DESCRIPCION\nNEW-B;Referencia nueva B');
+  const responses = await Promise.all(
+    [concurrentA, concurrentB].map((preview) =>
+      request(
+        `supplier-catalog-imports/${preview.id}/commit`,
+        'POST',
+        { previewHash: preview.previewHash },
+        actor,
+      ),
+    ),
+  );
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+  const loser = responses[0]!.status === 409 ? 'NEW-A' : 'NEW-B';
+  await commit(
+    await stage(
+      supplier.id,
+      `SKU;DESCRIPCION\n${loser};Referencia nueva ${loser === 'NEW-A' ? 'A' : 'B'}`,
+    ),
+    false,
+    actor,
+  );
+  const sequences = await client.supplierCatalogItem.findMany({
+    where: { supplierId: supplier.id },
+    orderBy: { referenceSequence: 'asc' },
+  });
+  assert.deepEqual(
+    sequences.map((record) => record.referenceSequence),
+    [1, 2, 3],
+  );
+  assert.equal(new Set(sequences.map((record) => record.internalReferenceCode)).size, 3);
+  await assert.rejects(
+    client.supplierCatalogItem.update({
+      where: { id: item.id },
+      data: { internalReferenceCode: 'A000999' },
+    }),
+  );
+  await assert.rejects(
+    client.supplier.update({ where: { id: supplier.id }, data: { catalogPrefix: 'Z' } }),
+  );
+  await assert.rejects(
+    client.supplier.update({ where: { id: supplier.id }, data: { catalogNextSequence: 1 } }),
+  );
+  await client.supplierCatalogItem.update({
+    where: { id: item.id },
+    data: { archivedAt: new Date() },
+  });
+  assert.equal((await stage(supplier.id, content)).summary.conflicts, 1);
+  await commit(await stage(supplier.id, 'SKU\nNEW-C'), false, actor);
+  item = (await list('NEW-C')).items[0]!;
+  assert.equal(item.internalReferenceCode, 'A000004');
+  assert.equal(item.description, null);
+  await client.supplier.update({ where: { id: supplier.id }, data: { archivedAt: new Date() } });
+  const third = await client.supplier.create({
+    data: { organizationId: organization.id, name: 'Tercer proveedor' },
+  });
+  await commit(await stage(third.id, 'DESCRIPCION\nOtro artículo'), false, actor);
+  assert.equal((await list('otro', third.id)).items[0]!.internalReferenceCode, 'C000001');
+  const scope = { organizationId: organization.id };
+  assert.deepEqual(
+    await Promise.all([
+      client.product.count({ where: scope }),
+      client.productIdentifier.count({ where: scope }),
+      client.supplierProduct.count({ where: scope }),
+      client.inventoryMovement.count({ where: scope }),
+      client.inventoryBalance.count({ where: scope }),
+    ]),
+    [0, 0, 0, 0, 0],
+  );
+  assert.equal(
+    (
+      await checked(
+        await request('supplier-catalog-items?q=A000004', 'GET', undefined, adminB),
+        supplierCatalogListSchema,
+      )
+    ).total,
     0,
   );
 });
@@ -1022,20 +1166,19 @@ test(
     const previewed = await checked(
       await request(`suppliers/${supplier.id}/catalog-imports/preview`, 'POST', {
         uploadId: inspection.uploadId,
-        sheet: selected.name,
-        headerRow: selected.headerRow,
-        mapping: selected.suggestedMapping,
-        mode: 'PARTIAL',
-        commercial: {
-          defaultCurrency: 'ARS',
-          currencyConfirmed: true,
-          priceIncludesVat: 'UNKNOWN',
-          decimalSeparator: 'AUTO',
-        },
       }),
       catalogImportSchema,
       201,
     );
+    assert.equal(previewed.summary.created, 2924);
+    assert.equal(selected.headerRow, 16);
+    const normalizedRows = await checked(
+      await request(`supplier-catalog-imports/${previewed.id}/rows`),
+      catalogImportRowsSchema,
+    );
+    assert.equal(normalizedRows.items[0]!.data!.price, '218505.12');
+    assert.equal(normalizedRows.items[0]!.data!.internalReferenceCode, null);
+    assert.equal(normalizedRows.items[0]!.data!.manufacturerText, null);
     assert.equal(previewed.status, 'PREVIEW');
     assert.ok(previewed.summary.created > 0);
     assert.equal(previewed.summary.errors, 0);

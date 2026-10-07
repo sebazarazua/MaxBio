@@ -16,6 +16,7 @@ import type { IntermediateTable } from './catalog-table.js';
 import { cellKey } from './catalog-table.js';
 import {
   commercialDecimal,
+  ceilingPrice,
   commercialCurrency,
   defaultCommercial,
   embeddedCurrency,
@@ -57,6 +58,10 @@ const maximum = {
   supplierCode: 128,
   description: 1000,
   brandText: 160,
+  manufacturerText: 200,
+  modelText: 160,
+  categoryText: 160,
+  unitText: 80,
   presentationText: 200,
   reportedGtin: 128,
   alternateSupplierCode: 128,
@@ -67,8 +72,6 @@ export function validateReference(fields: Omit<SupplierCatalogData, 'normalizedR
   for (const field of Object.keys(maximum)) {
     const value = fields[field as keyof typeof maximum];
     const label = catalogMappingFields[field as keyof typeof maximum];
-    if ((field === 'supplierCode' || field === 'description') && !value)
-      errors.push(`Falta ${label === 'descripción' ? 'la' : 'el'} ${label}.`);
     if (value && value.length > maximum[field as keyof typeof maximum])
       errors.push(
         `El campo ${label} admite hasta ${maximum[field as keyof typeof maximum]} caracteres.`,
@@ -93,14 +96,20 @@ export function validateReference(fields: Omit<SupplierCatalogData, 'normalizedR
       );
     }
   }
+  if (!fields.supplierCode && !fields.description && !normalizedReportedGtin)
+    errors.push('No hay datos suficientes para reconocer un artículo.');
   for (const [field, scale] of [
-    ['price', 18],
+    ['price', 2],
     ['vatRate', 4],
   ] as const) {
     const value = fields[field];
     if (value !== null) {
       try {
-        if (commercialDecimal(value, scale, 'DOT', true) !== value)
+        if (
+          (field === 'price'
+            ? ceilingPrice(value)
+            : commercialDecimal(value, scale, 'DOT', true)) !== value
+        )
           errors.push(`Revisá ${catalogMappingFields[field]}.`);
         if (
           field === 'vatRate' &&
@@ -117,11 +126,16 @@ export function validateReference(fields: Omit<SupplierCatalogData, 'normalizedR
   if (fields.currency !== null && !/^[A-Z]{3}$/.test(fields.currency))
     errors.push('Revisá la moneda declarada.');
   if (fields.price !== null && !fields.currency)
-    errors.push('Indicá y confirmá la moneda antes de importar precios.');
+    errors.push('No pudimos determinar la moneda del precio. Revisá las opciones de la lista.');
   return { data: { ...fields, normalizedReportedGtin }, errors, warnings };
 }
 export function referenceData(row: SupplierCatalogData): SupplierCatalogData {
   return {
+    internalReferenceCode: row.internalReferenceCode,
+    manufacturerText: row.manufacturerText,
+    modelText: row.modelText,
+    categoryText: row.categoryText,
+    unitText: row.unitText,
     supplierCode: row.supplierCode,
     description: row.description,
     brandText: row.brandText,
@@ -166,17 +180,37 @@ export function planImport(
     throw new CatalogRuleError('Elegí la fila que contiene los encabezados.');
   if (sheet.rows.length - headerRow > supplierCatalogLimits.rows)
     throw new CatalogRuleError('La lista admite hasta 10.000 filas de artículos.');
-  const byCode = new Map(existing.map((row) => [row.supplierCode, row]));
+  const indexBy = (key: keyof SupplierCatalogData) => {
+    const index = new Map<string, ReferenceRecord[]>();
+    for (const record of existing) {
+      const value = record[key];
+      if (value) index.set(value, [...(index.get(value) ?? []), record]);
+    }
+    return index;
+  };
+  const byCode = indexBy('supplierCode'),
+    byGtin = indexBy('normalizedReportedGtin'),
+    byAlternate = indexBy('alternateSupplierCode');
+  const fingerprint = (data: SupplierCatalogData) =>
+    digest([
+      data.description,
+      data.brandText,
+      data.manufacturerText,
+      data.modelText,
+      data.categoryText,
+      data.presentationText,
+      data.unitText,
+    ]);
+  const byDescription = new Map<string, ReferenceRecord[]>();
+  for (const record of existing)
+    if (record.description && record.description.length >= 8) {
+      const key = fingerprint(record);
+      byDescription.set(key, [...(byDescription.get(key) ?? []), record]);
+    }
+
   const excludedRows = new Set(excludedRowNumbers);
   const numericCells = new Set(sheet.numericCells ?? []);
   const percentageCells = new Set(sheet.percentageCells ?? []);
-  const sameDescription = new Map<string, ReferenceRecord[]>();
-  for (const item of existing) {
-    const key = normalizeHeader(item.description);
-    const group = sameDescription.get(key) ?? [];
-    group.push(item);
-    sameDescription.set(key, group);
-  }
   const groups = new Map<string, { row: PlannedRow; signature: string }[]>();
   const rows: PlannedRow[] = sheet.rows.slice(headerRow).map((cells, index) => {
     const row: PlannedRow = {
@@ -208,8 +242,12 @@ export function planImport(
       row.messages.push('Encabezado repetido: fila ignorada.');
       return row;
     }
-    const codeText = normalizeHeader(cells[mapping.supplierCode] ?? '');
-    const descriptionText = normalizeHeader(cells[mapping.description] ?? '');
+    const codeText = normalizeHeader(
+      mapping.supplierCode === null ? '' : (cells[mapping.supplierCode] ?? ''),
+    );
+    const descriptionText = normalizeHeader(
+      mapping.description === null ? '' : (cells[mapping.description] ?? ''),
+    );
     if (
       !codeText &&
       !descriptionText &&
@@ -232,9 +270,23 @@ export function planImport(
     }
     const text = (column: number | null) =>
       column === null ? null : cells[column]?.trim() || null;
+    if (
+      !codeText &&
+      /^(nota(?:s)?\b|observaciones?\b|condiciones?\b|vigencia\b|precios?\s+(?:con|sin)\s+iva\b)/i.test(
+        text(mapping.description) ?? '',
+      )
+    ) {
+      row.messages.push('Nota comercial explícita: fila ignorada.');
+      return row;
+    }
     const fields = {
-      supplierCode: text(mapping.supplierCode) ?? '',
-      description: text(mapping.description) ?? '',
+      internalReferenceCode: null as string | null,
+      supplierCode: text(mapping.supplierCode),
+      description: text(mapping.description),
+      manufacturerText: text(mapping.manufacturerText),
+      modelText: text(mapping.modelText),
+      categoryText: text(mapping.categoryText),
+      unitText: text(mapping.unitText),
       brandText: text(mapping.brandText),
       presentationText: text(mapping.presentationText),
       reportedGtin: text(mapping.reportedGtin),
@@ -251,7 +303,7 @@ export function planImport(
       const state = sheet.cellStates?.[cellKey(rowNumber, column)];
       if (state === 'UNAVAILABLE')
         cellErrors.push(
-          `No hay un valor guardado utilizable para ${catalogMappingFields[field as keyof CatalogColumnMapping]}. Revisá la fila o ignorá ese campo.`,
+          `No hay un valor guardado utilizable para ${catalogMappingFields[field as keyof CatalogColumnMapping]}. Revisá esa celda en el archivo.`,
         );
       if (state === 'STORED_RESULT')
         cellWarnings.push(
@@ -267,7 +319,9 @@ export function planImport(
         try {
           const key = cellKey(rowNumber, mapping[field]!);
           if (field === 'price' && (value.trim().endsWith('%') || percentageCells.has(key)))
-            throw new CatalogRuleError('Un porcentaje no es un precio. Revisá la columna elegida.');
+            throw new CatalogRuleError(
+              'Un porcentaje no es un precio. Revisá el valor en el archivo.',
+            );
           if (field === 'vatRate' && !numericCells.has(key) && /[A-Za-z$]/.test(value))
             throw new CatalogRuleError('Revisá el IVA declarado; debe ser una tasa porcentual.');
           let parsed = commercialDecimal(
@@ -287,7 +341,7 @@ export function planImport(
               true,
             );
           }
-          fields[field] = parsed;
+          fields[field] = field === 'price' ? ceilingPrice(parsed) : parsed;
         } catch (error) {
           cellErrors.push(`${catalogMappingFields[field]}: ${(error as Error).message}`);
         }
@@ -301,16 +355,38 @@ export function planImport(
           'La moneda del precio y la columna de moneda no coinciden. Revisá la fila.',
         );
       fields.currency = commercialCurrency(
-        fromColumn ??
-          fromPrice ??
-          (commercial.currencyConfirmed ? (commercial.defaultCurrency ?? '') : ''),
+        fromColumn ?? fromPrice ?? commercial.defaultCurrency ?? 'ARS',
       );
     } catch (error) {
       cellErrors.push((error as Error).message);
     }
-    const previous = byCode.get(fields.supplierCode);
+    const preliminary = validateReference(fields);
+    const tiers = [
+      fields.supplierCode ? (byCode.get(fields.supplierCode) ?? []) : [],
+      preliminary.data.normalizedReportedGtin
+        ? (byGtin.get(preliminary.data.normalizedReportedGtin) ?? [])
+        : [],
+      fields.alternateSupplierCode ? (byAlternate.get(fields.alternateSupplierCode) ?? []) : [],
+      !fields.supplierCode && fields.description && fields.description.length >= 8
+        ? (byDescription.get(fingerprint(preliminary.data)) ?? []).filter(
+            (item) => !item.supplierCode,
+          )
+        : [],
+    ];
+    const candidates = tiers.find((tier) => tier.length) ?? [];
+    const previous = candidates.length === 1 ? candidates[0] : undefined;
+    const incompatible =
+      candidates.length > 1 ||
+      (previous?.normalizedReportedGtin &&
+        preliminary.data.normalizedReportedGtin &&
+        previous.normalizedReportedGtin !== preliminary.data.normalizedReportedGtin) ||
+      (previous && tiers.slice(0, 3).some((tier) => tier.some((item) => item.id !== previous.id)));
     for (const field of [
       'brandText',
+      'manufacturerText',
+      'modelText',
+      'categoryText',
+      'unitText',
       'presentationText',
       'reportedGtin',
       'alternateSupplierCode',
@@ -320,64 +396,54 @@ export function planImport(
     ] as const)
       if (mapping[field] === null && previous && !(field === 'currency' && mapping.price !== null))
         fields[field] = previous[field];
+    if (previous) fields.internalReferenceCode = previous.internalReferenceCode;
     if (previous && mapping.price === null) fields.priceIncludesVat = previous.priceIncludesVat;
     const validated = validateReference(fields);
-    row.supplierCode = fields.supplierCode.length <= 128 ? fields.supplierCode || null : null;
     const errors = [...cellErrors, ...validated.errors];
-    const possible =
-      !previous && fields.description.length >= 12
-        ? (sameDescription.get(normalizeHeader(fields.description)) ?? [])
-        : [];
-    if (
-      possible.length === 1 &&
-      (fields.alternateSupplierCode === possible[0]!.supplierCode ||
-        (validated.data.normalizedReportedGtin &&
-          validated.data.normalizedReportedGtin === possible[0]!.normalizedReportedGtin))
-    ) {
-      row.outcome = 'CONFLICT';
-      row.messages.push(
-        `Posible cambio de código respecto de ${possible[0]!.supplierCode}. Revisá la identidad; no se unifican referencias automáticamente.`,
-      );
-    }
-    row.messages.push(...errors, ...validated.warnings, ...cellWarnings);
-    if (errors.length && (!fields.supplierCode || !fields.description))
-      row.messages.push('Puede ser un título, subtotal o nota. Revisá antes de excluir esta fila.');
+    row.supplierCode =
+      fields.supplierCode && fields.supplierCode.length <= 128 ? fields.supplierCode : null;
+    row.itemId = previous?.id ?? null;
     row.data = errors.length ? null : validated.data;
-    row.outcome = row.outcome === 'CONFLICT' ? 'CONFLICT' : errors.length ? 'ERROR' : 'CREATED';
-    if (row.supplierCode) {
-      const group = groups.get(row.supplierCode) ?? [];
-      group.push({ row, signature: digest(fields) });
-      groups.set(row.supplierCode, group);
-    }
-    return row;
-  });
-  for (const [code, group] of groups) {
-    const previous = byCode.get(code);
-    if (new Set(group.map((entry) => entry.signature)).size > 1 || previous?.archivedAt) {
-      for (const { row } of group) {
-        row.outcome = 'CONFLICT';
-        row.itemId = previous?.id ?? null;
-        row.messages.push(
-          previous?.archivedAt
-            ? `El código ${code} pertenece a una referencia archivada; no se reutiliza.`
-            : `El código ${code} aparece más de una vez con información diferente.`,
-        );
-      }
-      continue;
-    }
-    for (let index = 0; index < group.length; index++) {
-      const row = group[index]!.row;
-      if (!row.data || row.outcome === 'CONFLICT') continue;
-      row.itemId = previous?.id ?? null;
-      row.outcome =
-        index > 0
-          ? 'DUPLICATE'
+    row.messages.push(...errors, ...validated.warnings, ...cellWarnings);
+    row.outcome =
+      incompatible || previous?.archivedAt
+        ? 'CONFLICT'
+        : errors.length
+          ? 'ERROR'
           : !previous
             ? 'CREATED'
             : digest(referenceData(previous)) === digest(row.data)
               ? 'UNCHANGED'
               : 'UPDATED';
+    if (row.outcome === 'CONFLICT')
+      row.messages.push(
+        'La identidad es ambigua o está reservada por una referencia archivada. Requiere revisión.',
+      );
+    if (row.data) {
+      const key = previous
+        ? 'id:' + previous.id
+        : fields.supplierCode
+          ? 'code:' + fields.supplierCode
+          : validated.data.normalizedReportedGtin
+            ? 'gtin:' + validated.data.normalizedReportedGtin
+            : fields.alternateSupplierCode
+              ? 'alt:' + fields.alternateSupplierCode
+              : 'description:' + fingerprint(validated.data);
+      const group = groups.get(key) ?? [];
+      group.push({ row, signature: digest(row.data) });
+      groups.set(key, group);
     }
+    return row;
+  });
+  for (const group of groups.values()) {
+    if (new Set(group.map((entry) => entry.signature)).size > 1) {
+      for (const { row } of group) {
+        row.outcome = 'CONFLICT';
+        row.messages.push('La misma referencia aparece con información diferente.');
+      }
+    } else
+      for (const { row } of group.slice(1))
+        if (row.outcome !== 'CONFLICT') row.outcome = 'DUPLICATE';
   }
   const count = (outcome: PlannedRow['outcome']) =>
     rows.filter((row) => row.outcome === outcome).length;
@@ -389,7 +455,7 @@ export function planImport(
       .filter(
         (row) => row.data && ['CREATED', 'UPDATED', 'UNCHANGED', 'DUPLICATE'].includes(row.outcome),
       )
-      .map((row) => row.supplierCode),
+      .map((row) => row.itemId),
   );
   const summary: CatalogImportSummary = {
     total: rows.length,
@@ -405,7 +471,7 @@ export function planImport(
     ).length,
     missing:
       mode === 'COMPLETE' && !absencesSuppressed
-        ? existing.filter((row) => !row.archivedAt && !included.has(row.supplierCode)).length
+        ? existing.filter((row) => !row.archivedAt && !included.has(row.id)).length
         : 0,
     absencesSuppressed,
   };

@@ -188,6 +188,8 @@ model Product {
   @@index([organizationId, archivedAt, name, id])
   @@index([organizationId, brandId])
   @@index([organizationId, categoryId])
+  searchText String @default("") @db.Text
+  @@index([searchText(ops: raw("gin_trgm_ops"))],type:Gin)
 }
 
 model ProductIdentifier {
@@ -211,6 +213,8 @@ model ProductIdentifier {
 model Supplier {
   id                String                         @id @default(uuid()) @db.Uuid
   organizationId    String                         @db.Uuid
+  catalogPrefix     String?                        @db.VarChar(32)
+  catalogNextSequence Int                          @default(1)
   name              String                         @db.VarChar(200)
   legalName         String?                        @db.VarChar(200)
   contactName       String?                        @db.VarChar(160)
@@ -229,7 +233,10 @@ model Supplier {
   inventoryReceipts InventoryReceipt[]
 
   @@unique([organizationId, id])
+  @@unique([organizationId, catalogPrefix])
   @@index([organizationId, archivedAt, name, id])
+  searchText String @default("") @db.Text
+  @@index([searchText(ops: raw("gin_trgm_ops"))],type:Gin)
 }
 
 model SupplierProduct {
@@ -316,14 +323,20 @@ model SupplierCatalogItem {
   id                              String                     @id @default(uuid()) @db.Uuid
   organizationId                  String                     @db.Uuid
   supplierId                      String                     @db.Uuid
-  supplierCode                    String                     @db.VarChar(128)
-  description                     String                     @db.VarChar(1000)
+  internalReferenceCode           String                     @db.VarChar(38)
+  referenceSequence               Int
+  supplierCode                    String?                    @db.VarChar(128)
+  description                     String?                    @db.VarChar(1000)
   brandText                       String?                    @db.VarChar(160)
+  manufacturerText                String?                    @db.VarChar(200)
+  modelText                       String?                    @db.VarChar(160)
+  categoryText                    String?                    @db.VarChar(160)
+  unitText                        String?                    @db.VarChar(80)
   presentationText                String?                    @db.VarChar(200)
   reportedGtin                    String?                    @db.VarChar(128)
   normalizedReportedGtin          String?                    @db.VarChar(14)
   alternateSupplierCode           String?                    @db.VarChar(128)
-  price                           Decimal?                   @db.Decimal(32, 18)
+  price                           Decimal?                   @db.Decimal(17, 2)
   currency                        String?                    @db.VarChar(3)
   vatRate                         Decimal?                   @db.Decimal(7, 4)
   priceIncludesVat                String                     @default("UNKNOWN") @db.VarChar(7)
@@ -340,10 +353,17 @@ model SupplierCatalogItem {
   identifications                 CatalogIdentification[]
 
   @@unique([organizationId, supplierId, supplierCode])
+  @@unique([organizationId, internalReferenceCode])
+  // Prisma does not introspect B-tree operator classes; the migration sets varchar_pattern_ops.
+  @@index([organizationId, internalReferenceCode], map: "SupplierCatalogItem_reference_prefix_idx")
+  @@unique([organizationId, supplierId, referenceSequence],map:"SupplierCatalogItem_organizationId_supplierId_referenceSequence")
+  @@index([organizationId, supplierId, archivedAt, referenceSequence, id],map:"SupplierCatalogItem_organizationId_supplierId_archivedAt_refer_")
   @@unique([organizationId, supplierId, id])
   @@index([organizationId, supplierId, archivedAt, supplierCode, id])
   @@index([organizationId, normalizedReportedGtin])
   @@index([organizationId, supplierId, supplierProductId])
+  searchText String @default("") @db.Text
+  @@index([searchText(ops: raw("gin_trgm_ops"))],type:Gin)
 }
 
 // External physical codes have a supplier namespace, never a universal GTIN namespace.

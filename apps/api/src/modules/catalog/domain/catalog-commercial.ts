@@ -2,12 +2,12 @@ import type { CatalogCommercialOptions } from '@maxbio/contracts';
 import { CatalogRuleError } from './identifiers.js';
 
 export const defaultCommercial: CatalogCommercialOptions = {
-  defaultCurrency: null,
-  currencyConfirmed: false,
+  defaultCurrency: 'ARS',
+  currencyConfirmed: true,
   priceIncludesVat: 'UNKNOWN',
   decimalSeparator: 'AUTO',
 };
-// Work on strings only. Reject uncertain grouping/precision rather than guessing or rounding.
+// Parse decimal strings exactly; the separate ceilingPrice step normalizes prices.
 export function commercialDecimal(
   input: string,
   scale: number,
@@ -48,7 +48,7 @@ export function commercialDecimal(
         const mark = commas ? ',' : '.';
         if (value.split(mark).length !== 2 || value.split(mark)[1]!.length === 3)
           throw new CatalogRuleError(
-            'El separador decimal es ambiguo. Elegí coma o punto y revisá la vista previa.',
+            'El separador decimal es ambiguo. Revisá el número en el archivo.',
           );
         decimal = mark;
       }
@@ -94,4 +94,18 @@ export function commercialCurrency(value: string): string | null {
 export function embeddedCurrency(value: string | null): string | null {
   const match = /^(ARS|USD|EUR|US\$)\s*/i.exec(value?.trim() ?? '');
   return match ? (match[1]!.toUpperCase() === 'US$' ? 'USD' : match[1]!.toUpperCase()) : null;
+}
+
+// Integer cents and discarded digits: no binary floating point, no rounding half up.
+export function ceilingPrice(value: string): string {
+  if (!/^[0-9]+(?:\.[0-9]+)?$/.test(value))
+    throw new CatalogRuleError('El precio debe ser no negativo.');
+  const [whole, fraction = ''] = value.split('.');
+  const cents =
+    BigInt(whole!) * 100n +
+    BigInt(fraction.slice(0, 2).padEnd(2, '0')) +
+    (/[1-9]/.test(fraction.slice(2)) ? 1n : 0n);
+  if (cents >= 100000000000000000n)
+    throw new CatalogRuleError('El precio excede la precisión permitida.');
+  return `${cents / 100n}.${(cents % 100n).toString().padStart(2, '0')}`;
 }

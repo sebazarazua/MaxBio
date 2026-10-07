@@ -1,29 +1,25 @@
 'use client';
 import Link from 'next/link';
-import { useState, useRef, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import {
   catalogInspectionSchema,
-  catalogSheetInspectionSchema,
-  catalogProfileResetSchema,
-  type CatalogCommercialOptions,
   catalogImportSchema,
   catalogImportRowsSchema,
   catalogImportListSchema,
   supplierCatalogItemSchema,
   supplierCatalogListSchema,
-  catalogColumnMappingSchema,
-  catalogMappingFields,
   supplierCatalogLimits,
+  catalogMappingFields,
   apiErrorSchema,
   type CatalogInspection,
   type CatalogImportView,
-  type CatalogColumnMapping,
   type CatalogImportRowView,
   type SupplierCatalogItemView,
 } from '@maxbio/contracts';
 import { catalogFetch, CatalogHttpError } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
 import {
+  EntityChoice,
   Feedback,
   Field,
   Pagination,
@@ -67,13 +63,27 @@ export function ReferenceCatalog({
   const search = useSearch();
   const [revision, setRevision] = useState(0);
   const [importing, setImporting] = useState(false);
+  const [supplierFilter, setSupplierFilter] = useState<{
+    id: string;
+    name: string;
+    archivedAt: string | null;
+  } | null>(null);
+  const supplierId = supplierFilter?.id ?? '';
+
+  const [sort, setSort] = useState('CODE');
+  const [direction, setDirection] = useState('asc');
   const [association, setAssociation] = useState('ALL');
   const resource = useResource(
     (supplier ? `suppliers/${supplier.id}/catalog-items` : 'supplier-catalog-items') +
       '?' +
       search.query +
       '&association=' +
-      association,
+      association +
+      '&sort=' +
+      sort +
+      '&direction=' +
+      direction +
+      (supplierId ? '&supplierId=' + supplierId : ''),
     supplierCatalogListSchema,
   );
   return (
@@ -104,6 +114,45 @@ export function ReferenceCatalog({
         state={search}
         placeholder="Código, descripción, marca, presentación, GTIN o proveedor"
       />
+      {!supplier && (
+        <EntityChoice
+          kind="suppliers"
+          label="Proveedor"
+          value={supplierFilter}
+          change={(value) => {
+            setSupplierFilter(value);
+            search.setPage(1);
+          }}
+          allowCreate={false}
+          emptyLabel="Todos"
+        />
+      )}
+      <Field label="Ordenar por">
+        <select
+          value={sort}
+          onChange={(event) => {
+            setSort(event.target.value);
+            search.setPage(1);
+          }}
+        >
+          <option value="CODE">Código</option>
+          <option value="SUPPLIER">Proveedor</option>
+          <option value="DESCRIPTION">Nombre</option>
+          <option value="PRICE">Precio</option>
+        </select>
+      </Field>
+      <Field label="Orden">
+        <select
+          value={direction}
+          onChange={(event) => {
+            setDirection(event.target.value);
+            search.setPage(1);
+          }}
+        >
+          <option value="asc">Ascendente</option>
+          <option value="desc">Descendente</option>
+        </select>
+      </Field>
       <Field label="Asociación">
         <select
           value={association}
@@ -138,11 +187,12 @@ export function ReferenceCatalog({
                       <Link href={'/proveedores/' + item.supplierId}>{item.supplier.name}</Link>
                       <br />
                       <Link className="code" href={'/referencias/' + item.id}>
-                        {item.supplierCode}
+                        {item.internalReferenceCode}
                       </Link>
+                      <small>Código del proveedor: {item.supplierCode ?? '—'}</small>
                     </td>
                     <td>
-                      <Link href={'/referencias/' + item.id}>{item.description}</Link>
+                      <Link href={'/referencias/' + item.id}>{item.description ?? '—'}</Link>
                       {item.reportedGtin && (
                         <small className="muted">
                           GTIN informado: {item.reportedGtin}
@@ -156,9 +206,7 @@ export function ReferenceCatalog({
                     </td>
                     <td>
                       {item.price !== null && (
-                        <small>
-                          {item.currency ?? 'Moneda desconocida'} {item.price}
-                        </small>
+                        <small>{formatCatalogPrice(item.price, item.currency)}</small>
                       )}
                       <ReferenceAssociation item={item} />
                       {item.missingFromLatestCompleteListAt && (
@@ -193,7 +241,7 @@ export function ReferenceDetail({ id }: { id: string }) {
         ← {item.supplier.name}
       </Link>
       <p className="eyebrow">REFERENCIA DEL PROVEEDOR</p>
-      <h1>{item.description}</h1>
+      <h1>{item.description ?? item.internalReferenceCode}</h1>
       <ReferenceAssociation item={item} />
       <p className="catalog-notice">
         {item.supplierProduct
@@ -204,12 +252,13 @@ export function ReferenceDetail({ id }: { id: string }) {
       <section className="catalog-panel">
         <dl className="data-grid">
           {[
+            ['Código MaxBio', item.internalReferenceCode],
             ['Proveedor', item.supplier.name],
             ['Código del proveedor', item.supplierCode],
             ['Código alternativo', item.alternateSupplierCode],
             [
               'Precio declarado',
-              item.price === null ? null : `${item.currency ?? 'Moneda desconocida'} ${item.price}`,
+              item.price === null ? null : formatCatalogPrice(item.price, item.currency),
             ],
             ['IVA declarado (%)', item.vatRate],
             [
@@ -221,13 +270,17 @@ export function ReferenceDetail({ id }: { id: string }) {
                   : 'Desconocido',
             ],
             ['Marca declarada', item.brandText],
+            ['Fabricante', item.manufacturerText],
+            ['Modelo', item.modelText],
+            ['Categoría', item.categoryText],
+            ['Unidad', item.unitText],
             ['Presentación declarada', item.presentationText],
             ['GTIN informado', item.reportedGtin],
             ['GTIN normalizado', item.normalizedReportedGtin],
           ].map(([label, value]) => (
             <div key={label}>
               <dt>{label}</dt>
-              <dd>{value || 'Sin especificar'}</dd>
+              <dd>{value || '—'}</dd>
             </div>
           ))}
         </dl>
@@ -269,7 +322,15 @@ async function uploadFile(supplierId: string, file: File) {
   }
   return catalogInspectionSchema.parse(data);
 }
-type MappingDraft = Record<keyof CatalogColumnMapping, number | null>;
+export function formatCatalogPrice(
+  price: string | null | undefined,
+  currency: string | null | undefined,
+): string {
+  if (price === null || price === undefined) return '—';
+  const [whole, cents = '00'] = price.split('.');
+  const amount = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ',' + cents.padEnd(2, '0');
+  return (currency === 'ARS' ? '$' : (currency ?? '')) + ' ' + amount;
+}
 export function CatalogImport({
   supplier,
   done,
@@ -279,37 +340,26 @@ export function CatalogImport({
 }) {
   const mutation = useMutation();
   const [inspection, setInspection] = useState<CatalogInspection | null>(null);
-  const [sheetName, setSheetName] = useState('');
-  const [headerRow, setHeaderRow] = useState(1);
-  const [mapping, setMapping] = useState<MappingDraft>({
-    supplierCode: null,
-    description: null,
-    brandText: null,
-    presentationText: null,
-    reportedGtin: null,
-    alternateSupplierCode: null,
-    price: null,
-    currency: null,
-    vatRate: null,
-  });
-  const [commercial, setCommercial] = useState<CatalogCommercialOptions>({
-    defaultCurrency: 'ARS',
-    currencyConfirmed: false,
-    priceIncludesVat: 'UNKNOWN',
-    decimalSeparator: 'AUTO',
-  });
-  const [saveProfile, setSaveProfile] = useState(true);
-  const [profileReset, setProfileReset] = useState(false);
-  const analysisSequence = useRef(0);
-  const [mode, setMode] = useState<'PARTIAL' | 'COMPLETE'>('PARTIAL');
   const [preview, setPreview] = useState<CatalogImportView | null>(null);
   const [result, setResult] = useState<CatalogImportView | null>(null);
   const [exclude, setExclude] = useState(false);
-  const [excludedRows, setExcludedRows] = useState('');
+  const [mode, setMode] = useState<'PARTIAL' | 'COMPLETE'>('PARTIAL');
+  const [currency, setCurrency] = useState('ARS');
   const [localError, setLocalError] = useState('');
-  const sheet = inspection?.sheets.find((sheet) => sheet.name === sheetName);
-  const headers = sheet?.sample[headerRow - 1] ?? [];
-  async function inspect(event: FormEvent<HTMLFormElement>) {
+  async function review(uploadId: string, options = false) {
+    const reviewed = await mutation.run(() =>
+      catalogFetch(`suppliers/${supplier.id}/catalog-imports/preview`, catalogImportSchema, {
+        method: 'POST',
+        body: { uploadId, mode, ...(options ? { currency } : {}) },
+      }),
+    );
+    if (reviewed) {
+      setPreview(reviewed);
+      setCurrency(reviewed.commercial.defaultCurrency ?? 'ARS');
+      setExclude(false);
+    }
+  }
+  async function analyze(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLocalError('');
     const file = new FormData(event.currentTarget).get('file');
@@ -318,125 +368,10 @@ export function CatalogImport({
       return;
     }
     const inspected = await mutation.run(() => uploadFile(supplier.id, file));
-    if (inspected) {
-      setInspection(inspected);
-      const first =
-        inspected.sheets.find((sheet) => sheet.name === inspected.suggestedSheet) ??
-        inspected.sheets[0]!;
-      setSheetName(inspected.suggestedSheet ?? (inspected.sheets.length === 1 ? first.name : ''));
-      setHeaderRow(first.headerRow);
-      setMapping(first.suggestedMapping);
-      setCommercial({
-        ...first.commercial,
-        defaultCurrency: first.commercial.defaultCurrency ?? 'ARS',
-      });
-      setProfileReset(false);
-      setPreview(null);
-      setResult(null);
-      setExcludedRows('');
-    }
-  }
-  async function analyze(sheetName: string, headerRow: number) {
-    if (!inspection) return;
-    const sequence = ++analysisSequence.current;
-    const analyzed = await mutation.run(() =>
-      catalogFetch(
-        `suppliers/${supplier.id}/catalog-imports/analyze`,
-        catalogSheetInspectionSchema,
-        { method: 'POST', body: { uploadId: inspection.uploadId, sheet: sheetName, headerRow } },
-      ),
-    );
-    if (analyzed && sequence === analysisSequence.current) {
-      setInspection(
-        (current) =>
-          current && {
-            ...current,
-            sheets: current.sheets.map((sheet) =>
-              sheet.name === analyzed.name ? analyzed : sheet,
-            ),
-          },
-      );
-      setMapping(analyzed.suggestedMapping);
-      setCommercial({
-        ...analyzed.commercial,
-        defaultCurrency: analyzed.commercial.defaultCurrency ?? 'ARS',
-      });
-    }
-  }
-  async function resetProfile() {
-    const response = await mutation.run(async () => {
-      await catalogFetch(
-        `suppliers/${supplier.id}/catalog-import-profiles/reset`,
-        catalogProfileResetSchema,
-        { method: 'POST', body: {} },
-      );
-      return true;
-    });
-    if (response) {
-      setProfileReset(true);
-      if (sheet) await analyze(sheet.name, headerRow);
-    }
-  }
-  async function review(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setLocalError('');
-    if (!inspection) return;
-    if (!sheetName) {
-      setLocalError('Elegí y revisá la hoja que contiene la lista.');
-      return;
-    }
-    if (
-      mapping.price !== null &&
-      mapping.currency === null &&
-      (!commercial.currencyConfirmed || !commercial.defaultCurrency)
-    ) {
-      setLocalError('Confirmá o cambiá la moneda para los precios.');
-      return;
-    }
-    if (mapping.supplierCode === null || mapping.description === null) {
-      setLocalError(
-        mapping.supplierCode === null
-          ? 'Elegí qué columna contiene el código del proveedor.'
-          : 'Elegí qué columna contiene la descripción.',
-      );
-      return;
-    }
-    const columns = catalogColumnMappingSchema.safeParse(mapping);
-    if (!columns.success) {
-      setLocalError('Elegí una columna diferente para cada campo.');
-      return;
-    }
-    const excludedRowNumbers = excludedRows.trim()
-      ? excludedRows.split(',').map((row) => Number(row.trim()))
-      : [];
-    if (
-      excludedRowNumbers.some(
-        (row) =>
-          !Number.isInteger(row) || row <= headerRow || row > (sheet?.rowCount ?? 0) + headerRow,
-      )
-    ) {
-      setLocalError('Indicá filas de datos que existan, separadas por comas.');
-      return;
-    }
-    const reviewed = await mutation.run(() =>
-      catalogFetch(`suppliers/${supplier.id}/catalog-imports/preview`, catalogImportSchema, {
-        method: 'POST',
-        body: {
-          uploadId: inspection.uploadId,
-          sheet: sheetName,
-          headerRow,
-          mapping: columns.data,
-          mode,
-          commercial,
-          saveProfile,
-          excludedRowNumbers,
-        },
-      }),
-    );
-    if (reviewed) {
-      setPreview(reviewed);
-      setExclude(false);
-    }
+    if (!inspected) return;
+    setInspection(inspected);
+    setResult(null);
+    await review(inspected.uploadId);
   }
   async function confirm() {
     if (!preview) return;
@@ -448,322 +383,120 @@ export function CatalogImport({
     );
     if (committed) {
       setResult(committed);
-      setInspection(null);
-      setPreview(null);
       done();
     }
   }
   return (
-    <div className="catalog-import">
-      <p className="eyebrow">
-        {result
-          ? '5. RESULTADO'
-          : preview
-            ? '3. REVISAR · 4. CONFIRMAR'
-            : inspection
-              ? '2. INFORMACIÓN DETECTADA'
-              : '1. ARCHIVO'}
-      </p>
-      <h3>Importar lista · {supplier.name}</h3>
-      <p className="muted">
-        CSV o XLSX · hasta 10 MiB, 10.000 artículos y 100 columnas. Los códigos se conservan como
-        texto; en Excel, guardalos como Texto para conservar ceros iniciales.
-      </p>
-      <Feedback error={localError || mutation.error} />
+    <div className="catalog-panel">
+      <h3>Importar lista de {supplier.name}</h3>
+      {(mutation.error || localError) && (
+        <p className="catalog-error" role="alert">
+          {localError || mutation.error}
+        </p>
+      )}
       {result ? (
         <>
-          <p role="status">Importación confirmada. El catálogo ya está disponible.</p>
+          <p role="status">Importación confirmada.</p>
           <ImportSummary value={result} />
-          <Link className="secondary-button" href={'/referencias/importaciones/' + result.id}>
-            Ver resultado y filas
-          </Link>
+          <ImportRows key={result.id + 'committed'} id={result.id} />
           <button
             className="secondary-button"
             onClick={() => {
               setResult(null);
+              setPreview(null);
+              setInspection(null);
               mutation.clear();
             }}
           >
             Importar otra lista
           </button>
         </>
-      ) : !inspection ? (
-        <form onSubmit={(event) => void inspect(event)}>
+      ) : !preview ? (
+        <form onSubmit={(event) => void analyze(event)}>
           <fieldset disabled={mutation.busy}>
-            <Field label="Archivo">
+            <Field label="Archivo CSV o Excel">
               <input name="file" type="file" accept=".csv,.xlsx" required />
             </Field>
-            <button className="primary-button">
-              {mutation.busy ? 'Leyendo archivo…' : 'Leer archivo'}
-            </button>
-          </fieldset>
-        </form>
-      ) : !preview ? (
-        <form onSubmit={(event) => void review(event)}>
-          <fieldset disabled={mutation.busy}>
-            <p>
-              <strong>Archivo:</strong> {inspection.fileName}
-            </p>
-            {inspection.warnings.map((warning) => (
-              <p className="catalog-notice" key={warning}>
-                {warning}
-              </p>
-            ))}
-            <p role="status">
-              {inspection.suggestedSheet
-                ? `Creemos que los productos están en: ${inspection.suggestedSheet}. Revisá la propuesta.`
-                : 'Revisá la hoja y el encabezado: no pudimos elegirlos con suficiente confianza.'}
-            </p>
-            {sheet?.profileApplied && (
-              <p className="catalog-notice">
-                Usamos el formato que confirmaste antes para este proveedor. Revisalo antes de
-                continuar.
-              </p>
-            )}
-            {sheet?.tableConfidence === 'REVIEW' && (
-              <p className="catalog-notice">
-                Revisá la interpretación de la tabla y el encabezado antes de continuar.
-              </p>
-            )}
-            {sheet?.warnings
-              .filter((warning) => !inspection.warnings.includes(warning))
-              .map((warning) => (
-                <p key={warning} className="catalog-notice">
-                  {warning}
-                </p>
-              ))}
-            <div className="form-grid">
-              <Field label="Hoja">
-                <select
-                  value={sheetName}
-                  onChange={(event) => {
-                    const selected = inspection.sheets.find(
-                      (sheet) => sheet.name === event.target.value,
-                    )!;
-                    if (!selected) {
-                      setSheetName('');
-                      return;
-                    }
-                    setSheetName(selected.name);
-                    setHeaderRow(selected.headerRow);
-                    setMapping(selected.suggestedMapping);
-                    setCommercial({
-                      ...selected.commercial,
-                      defaultCurrency: selected.commercial.defaultCurrency ?? 'ARS',
-                    });
-                  }}
-                >
-                  <option value="">Elegí una hoja</option>
-                  {inspection.sheets.map((sheet) => (
-                    <option key={sheet.name}>{sheet.name}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field
-                label="Fila de encabezados"
-                help="Si la lista tiene un título arriba, elegí la fila con los nombres de las columnas."
-              >
-                <input
-                  type="number"
-                  min={1}
-                  max={Math.min(20, sheet?.sample.length || 1)}
-                  value={headerRow}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    setHeaderRow(value);
-                    if (sheetName && value >= 1 && value <= Math.min(20, sheet?.sample.length || 1))
-                      void analyze(sheetName, value);
-                  }}
-                />
-              </Field>
-            </div>
-            <div className="form-grid">
-              {Object.entries(catalogMappingFields).map(([key, label]) => (
-                <Field
-                  key={key}
-                  label={label}
-                  help={
-                    key === 'supplierCode' || key === 'description'
-                      ? 'Obligatorio · ' +
-                        (sheet?.confidence[key as keyof MappingDraft] === 'HIGH'
-                          ? '✓ Detectado'
-                          : sheet?.confidence[key as keyof MappingDraft] === 'REVIEW'
-                            ? '⚠ Revisar'
-                            : '? No encontrado')
-                      : 'Opcional · ' +
-                        (sheet?.confidence[key as keyof MappingDraft] === 'HIGH'
-                          ? '✓ Detectado'
-                          : sheet?.confidence[key as keyof MappingDraft] === 'REVIEW'
-                            ? '⚠ Revisar'
-                            : '? No encontrado') +
-                        '. Si lo ignorás, conservamos el dato anterior.'
-                  }
-                >
-                  <select
-                    value={mapping[key as keyof MappingDraft] ?? ''}
-                    onChange={(event) =>
-                      setMapping((current) => ({
-                        ...current,
-                        [key]: event.target.value === '' ? null : Number(event.target.value),
-                      }))
-                    }
-                    required={key === 'supplierCode' || key === 'description'}
-                  >
-                    <option value="">
-                      {key === 'supplierCode' || key === 'description'
-                        ? 'Elegí una columna'
-                        : 'No importar este campo'}
-                    </option>
-                    {Array.from({ length: sheet?.headers.length ?? 0 }, (_, index) => (
-                      <option key={index} value={index}>
-                        {index + 1}. {headers[index] || `Columna ${index + 1}`}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              ))}
-            </div>
-            <div className="form-grid">
-              <Field
-                label="Moneda para precios sin moneda en el archivo"
-                help="ARS es una propuesta. El símbolo $ no determina la moneda."
-              >
-                <input
-                  value={commercial.defaultCurrency ?? ''}
-                  maxLength={3}
-                  pattern="[A-Z]{3}"
-                  onChange={(event) =>
-                    setCommercial((current) => ({
-                      ...current,
-                      defaultCurrency: event.target.value.toUpperCase() || null,
-                      currencyConfirmed: false,
-                    }))
-                  }
-                />
-              </Field>
-              <Field label="El precio informado">
-                <select
-                  value={commercial.priceIncludesVat}
-                  onChange={(event) =>
-                    setCommercial((current) => ({
-                      ...current,
-                      priceIncludesVat: event.target
-                        .value as CatalogCommercialOptions['priceIncludesVat'],
-                    }))
-                  }
-                >
-                  <option value="UNKNOWN">No lo sé</option>
-                  <option value="YES">Incluye IVA</option>
-                  <option value="NO">No incluye IVA</option>
-                </select>
-              </Field>
-              <Field
-                label="Separador decimal"
-                help="Elegilo si números como 1.234 son ambiguos. Los números de Excel conservan su valor almacenado."
-              >
-                <select
-                  value={commercial.decimalSeparator}
-                  onChange={(event) =>
-                    setCommercial((current) => ({
-                      ...current,
-                      decimalSeparator: event.target
-                        .value as CatalogCommercialOptions['decimalSeparator'],
-                    }))
-                  }
-                >
-                  <option value="AUTO">Detectar; revisar si es ambiguo</option>
-                  <option value="COMMA">Coma: 1.234,56</option>
-                  <option value="DOT">Punto: 1,234.56</option>
-                </select>
-              </Field>
-            </div>
-            <label className="check-field">
-              <input
-                type="checkbox"
-                checked={commercial.currencyConfirmed}
-                onChange={(event) =>
-                  setCommercial((current) => ({
-                    ...current,
-                    currencyConfirmed: event.target.checked,
-                  }))
-                }
-              />{' '}
-              Confirmo usar {commercial.defaultCurrency || 'la moneda indicada'} cuando la lista no
-              indica moneda.
-            </label>
-            <label className="check-field">
-              <input
-                type="checkbox"
-                checked={saveProfile}
-                onChange={(event) => setSaveProfile(event.target.checked)}
-              />{' '}
-              Recordar este formato y la información comercial confirmada para próximas listas.
-            </label>
-            <button type="button" className="secondary-button" onClick={() => void resetProfile()}>
-              Olvidar formatos guardados de este proveedor
-            </button>
-            {profileReset && <p role="status">Formatos guardados eliminados.</p>}
-            <Field label="Cómo usar esta lista">
-              <select value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}>
-                <option value="PARTIAL">Actualizar artículos incluidos</option>
-                <option value="COMPLETE">Esta es la lista completa</option>
-              </select>
-            </Field>
-            <Field
-              label="Filas para ignorar (opcional)"
-              help="Si encontrás títulos, notas o subtotales en la vista previa, indicá sus números de fila separados por comas, por ejemplo 17, 25. Se conservará constancia de que las ignoraste."
-            >
-              <input
-                value={excludedRows}
-                onChange={(event) => setExcludedRows(event.target.value)}
-              />
-            </Field>
-            <p className="muted">
-              {mode === 'COMPLETE'
-                ? 'Las referencias que no aparezcan se indicarán como ausentes. No se eliminan. Si hay errores, no se marcarán ausencias.'
-                : 'Las referencias que no aparezcan conservan su información.'}
-            </p>
-            <details>
-              <summary>Ver muestra junto al encabezado</summary>
-              <div className="reference-table-scroll">
-                <table className="reference-table">
-                  <caption>Primeras filas de {sheetName}</caption>
-                  <tbody>
-                    {sheet?.sample
-                      .slice(Math.max(0, headerRow - 1), Math.max(8, headerRow + 3))
-                      .map((row, index) => (
-                        <tr key={index}>
-                          <th scope="row">{index + headerRow}</th>
-                          {row.map((cell, column) => (
-                            <td key={column}>{cell}</td>
-                          ))}
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </details>
-            <div className="actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => {
-                  setInspection(null);
-                  mutation.clear();
-                }}
-              >
-                Elegir otro archivo
-              </button>
-              <button className="primary-button">
-                {mutation.busy ? 'Validando…' : 'Revisar lista'}
-              </button>
-            </div>
+            <button className="primary-button">{mutation.busy ? 'Analizando…' : 'Analizar'}</button>
           </fieldset>
         </form>
       ) : (
         <>
+          <p role="status">
+            Encontramos{' '}
+            {preview.summary.created + preview.summary.updated + preview.summary.unchanged}{' '}
+            referencias.
+          </p>
           <ImportSummary value={preview} />
-          <ImportRows id={preview.id} />
+          <ImportRows key={preview.id} id={preview.id} />
+          {inspection && (
+            <details>
+              <summary>Opciones de lista</summary>
+              <Field label="Moneda para precios sin moneda">
+                <select
+                  value={currency}
+                  disabled={mutation.busy}
+                  onChange={(event) => setCurrency(event.target.value)}
+                >
+                  <option value="ARS">ARS</option>
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                  <option value="BRL">BRL</option>
+                  <option value="UYU">UYU</option>
+                  {!['ARS', 'USD', 'EUR', 'BRL', 'UYU'].includes(currency) && (
+                    <option value={currency}>{currency}</option>
+                  )}
+                </select>
+              </Field>
+              <Field label="Actualización">
+                <select
+                  value={mode}
+                  disabled={mutation.busy}
+                  onChange={(event) => setMode(event.target.value as 'PARTIAL' | 'COMPLETE')}
+                >
+                  <option value="PARTIAL">Actualizar los artículos incluidos</option>
+                  <option value="COMPLETE">Lista completa</option>
+                </select>
+              </Field>
+              <p className="muted">
+                Una lista completa marca como ausentes las referencias que no aparecen; conserva su
+                historia.
+              </p>
+              <button
+                className="secondary-button"
+                disabled={mutation.busy}
+                onClick={() => void review(inspection.uploadId, true)}
+              >
+                Actualizar vista previa
+              </button>
+            </details>
+          )}
+          {inspection && (
+            <details>
+              <summary>Detalles de análisis</summary>
+              <p>
+                Hoja: {preview.sheetName} · Encabezado: fila {preview.headerRow}
+              </p>
+              <p>
+                Campos reconocidos:{' '}
+                {Object.entries(preview.mapping)
+                  .filter(([, column]) => column !== null)
+                  .map(
+                    ([field]) => catalogMappingFields[field as keyof typeof catalogMappingFields],
+                  )
+                  .join(', ')}
+              </p>
+              <p>Interpretación de alta confianza; campos dudosos sin informar.</p>
+              {inspection.warnings.map((warning, index) => (
+                <p key={index}>{warning}</p>
+              ))}
+              {inspection.sheets
+                .find((sheet) => sheet.name === preview.sheetName)
+                ?.warnings.map((warning, index) => (
+                  <p key={index}>{warning}</p>
+                ))}
+            </details>
+          )}
           {(preview.summary.errors > 0 || preview.summary.conflicts > 0) && (
             <label className="check-field">
               <input
@@ -776,8 +509,8 @@ export function CatalogImport({
             </label>
           )}
           <p className="catalog-notice">
-            Al confirmar, se guardarán referencias del proveedor. No se crean productos de MaxBio ni
-            asociaciones.
+            Se guardarán referencias del proveedor. No se crean productos ni asociaciones ni
+            existencias.
           </p>
           <div className="actions">
             <button
@@ -785,10 +518,11 @@ export function CatalogImport({
               disabled={mutation.busy}
               onClick={() => {
                 setPreview(null);
+                setInspection(null);
                 mutation.clear();
               }}
             >
-              Volver a columnas
+              Elegir otro archivo
             </button>
             <button
               className="primary-button"
@@ -802,10 +536,14 @@ export function CatalogImport({
               {mutation.busy ? 'Importando…' : 'Confirmar importación'}
             </button>
           </div>
-          {mutation.conflict && (
-            <p className="catalog-notice">
-              Volvé a columnas y revisá la lista otra vez para generar una vista previa actualizada.
-            </p>
+          {mutation.conflict && inspection && (
+            <button
+              className="secondary-button"
+              disabled={mutation.busy}
+              onClick={() => void review(inspection.uploadId, true)}
+            >
+              Analizar de nuevo
+            </button>
           )}
         </>
       )}
@@ -815,62 +553,32 @@ export function CatalogImport({
 function ImportSummary({ value }: { value: CatalogImportView }) {
   const summary = value.summary;
   return (
-    <>
-      <dl className="data-grid">
-        {[
-          ['Proveedor', value.supplier.name],
-          ['Archivo', value.fileName],
-          ['Hoja', value.sheetName],
-          [
-            'Moneda para precios sin moneda',
-            value.commercial.currencyConfirmed
-              ? (value.commercial.defaultCurrency ?? 'Sin especificar')
-              : 'Sin confirmar',
-          ],
-          [
-            'Precio incluye IVA',
-            value.commercial.priceIncludesVat === 'YES'
-              ? 'Sí'
-              : value.commercial.priceIncludesVat === 'NO'
-                ? 'No'
-                : 'Desconocido',
-          ],
-          ['Modalidad', value.mode === 'COMPLETE' ? 'Lista completa' : 'Actualizar incluidos'],
-          ['Filas', summary.total],
-          ['Nuevas referencias', summary.created],
-          ['A actualizar', summary.updated],
-          ['Sin cambios', summary.unchanged],
-          ['Repetidas idénticas', summary.duplicates],
-          ['Vacías / ignoradas', summary.empty],
-          ['Errores', summary.errors],
-          ['Conflictos', summary.conflicts],
-          ['Filas con advertencias', summary.warnings],
-          ['Ausentes de lista completa', summary.missing],
-        ].map(([label, content]) => (
-          <div key={label}>
-            <dt>{label}</dt>
-            <dd>{content}</dd>
-          </div>
-        ))}
-      </dl>
-      <details>
-        <summary>Columnas elegidas</summary>
-        <ul>
-          {Object.entries(value.mapping).map(([field, column]) => (
-            <li key={field}>
-              {catalogMappingFields[field as keyof CatalogColumnMapping]}:{' '}
-              {column === null ? 'No elegida' : `columna ${column + 1}`}
-            </li>
-          ))}
-        </ul>
-      </details>
+    <dl className="data-grid">
+      {[
+        ['Proveedor', value.supplier.name],
+        ['Archivo', value.fileName],
+        ['Moneda para precios sin moneda', value.commercial.defaultCurrency ?? 'ARS'],
+        ['Nuevas referencias', summary.created],
+        ['A actualizar', summary.updated],
+        ['Sin cambios', summary.unchanged],
+        ['Repetidas', summary.duplicates],
+        ['Vacías / ignoradas', summary.empty],
+        ['Errores', summary.errors],
+        ['Conflictos', summary.conflicts],
+        ['Advertencias', summary.warnings],
+        ['Ausentes', summary.missing],
+      ].map(([label, content]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{content}</dd>
+        </div>
+      ))}
       {summary.absencesSuppressed && (
         <p className="catalog-notice">
-          No se marcarán ausencias: esta lista completa tiene errores, conflictos o no contiene
-          referencias válidas.
+          No se marcarán ausencias porque la lista requiere revisión.
         </p>
       )}
-    </>
+    </dl>
   );
 }
 const outcomeLabels: Record<CatalogImportRowView['outcome'], string> = {
@@ -916,41 +624,63 @@ function ImportRows({ id }: { id: string }) {
             <table className="reference-table">
               <thead>
                 <tr>
-                  <th scope="col">Fila</th>
-                  <th scope="col">Código / descripción</th>
-                  <th scope="col">Datos informados</th>
-                  <th scope="col">Resultado</th>
+                  {[
+                    'Fila',
+                    'Código MaxBio',
+                    'Código del proveedor',
+                    'Código alternativo del proveedor',
+                    'Descripción',
+                    'Marca',
+                    'Fabricante',
+                    'Modelo',
+                    'Categoría',
+                    'Presentación',
+                    'Unidad',
+                    'GTIN informado',
+                    'Precio',
+                    'Moneda',
+                    'IVA (%)',
+                    'Incluye IVA',
+                    'Resultado',
+                  ].map((label) => (
+                    <th key={label} scope="col">
+                      {label}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {resource.data.items.map((row) => (
                   <tr key={row.id}>
                     <td>{row.rowNumber}</td>
-                    <td>
-                      <strong className="code">{row.supplierCode || '—'}</strong>
-                      <p>{row.data?.description}</p>
+                    <td className="code">
+                      {row.data?.internalReferenceCode ??
+                        (row.outcome === 'CREATED' || row.outcome === 'DUPLICATE'
+                          ? 'Nueva referencia'
+                          : '—')}
                     </td>
-                    <td>
-                      {row.data?.price !== null && row.data?.price !== undefined && (
-                        <small>
-                          Precio: {row.data.currency ?? 'Moneda desconocida'} {row.data.price} ·{' '}
-                          {row.data.priceIncludesVat === 'YES'
-                            ? 'Incluye IVA'
-                            : row.data.priceIncludesVat === 'NO'
-                              ? 'No incluye IVA'
-                              : 'IVA incluido: desconocido'}
-                        </small>
-                      )}
-                      {row.data?.vatRate !== null && row.data?.vatRate !== undefined && (
-                        <small>IVA: {row.data.vatRate}%</small>
-                      )}
-                      {row.data?.alternateSupplierCode && (
-                        <small>Alternativo: {row.data.alternateSupplierCode}</small>
-                      )}
-                      {row.data?.brandText || '—'}
-                      <small>{row.data?.presentationText}</small>
-                      <small>{row.data?.reportedGtin && `GTIN: ${row.data.reportedGtin}`}</small>
-                    </td>
+                    {[
+                      row.supplierCode,
+                      row.data?.alternateSupplierCode,
+                      row.data?.description,
+                      row.data?.brandText,
+                      row.data?.manufacturerText,
+                      row.data?.modelText,
+                      row.data?.categoryText,
+                      row.data?.presentationText,
+                      row.data?.unitText,
+                      row.data?.reportedGtin,
+                      formatCatalogPrice(row.data?.price, row.data?.currency),
+                      row.data?.currency,
+                      row.data?.vatRate,
+                      row.data?.priceIncludesVat === 'YES'
+                        ? 'Sí'
+                        : row.data?.priceIncludesVat === 'NO'
+                          ? 'No'
+                          : '—',
+                    ].map((value, index) => (
+                      <td key={index}>{value ?? '—'}</td>
+                    ))}
                     <td>
                       {outcomeLabels[row.outcome]}
                       {row.messages.map((message, index) => (

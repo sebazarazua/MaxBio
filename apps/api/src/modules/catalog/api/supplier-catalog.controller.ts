@@ -33,19 +33,8 @@ const uuid = new ParseUUIDPipe({ version: '4' });
 export function parseCatalogInput<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
   if (!result.success) {
-    const missing = result.error.issues.find(
-      (issue) =>
-        issue.path[0] === 'mapping' &&
-        ['supplierCode', 'description'].includes(String(issue.path[1])),
-    );
-    if (missing)
-      throw new BadRequestException(
-        missing.path[1] === 'supplierCode'
-          ? 'Elegí qué columna contiene el código del proveedor.'
-          : 'Elegí qué columna contiene la descripción.',
-      );
     throw new BadRequestException(
-      'Revisá las columnas, los filtros y el tamaño de página (máximo 100). No se aceptan campos adicionales.',
+      'Revisá las opciones, los filtros y el tamaño de página (máximo 100). No se aceptan campos adicionales.',
     );
   }
   return result.data;

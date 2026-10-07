@@ -1,3 +1,4 @@
+import { searchTokens, textContains } from '../../catalog/domain/catalog-search.js';
 import {
   BadRequestException,
   ConflictException,
@@ -1140,7 +1141,6 @@ export class InventoryService {
   }
 
   private stockWhere(c: RequestActorContext, q: CatalogListQuery): Prisma.ProductWhereInput {
-    const text = { contains: q.q, mode: 'insensitive' as const };
     let canonical: string | undefined;
     try {
       canonical = normalizeIdentifier({ kind: 'GTIN', value: q.q }).normalizedValue;
@@ -1150,24 +1150,25 @@ export class InventoryService {
     return {
       organizationId: c.organizationId,
       ...(q.includeArchived ? {} : { archivedAt: null }),
-      ...(q.q
-        ? {
-            OR: [
-              { name: text },
-              { model: text },
-              {
-                identifiers: {
-                  some: {
-                    OR: [{ value: text }, ...(canonical ? [{ normalizedValue: canonical }] : [])],
-                  },
-                },
+      AND: searchTokens(q.q).map((token) => ({
+        OR: [
+          { searchText: textContains(token) },
+          {
+            identifiers: {
+              some: {
+                OR: [
+                  { value: textContains(token) },
+                  { normalizedValue: textContains(token) },
+                  ...(canonical ? [{ normalizedValue: canonical }] : []),
+                ],
               },
-              { supplierProducts: { some: { supplierCode: text } } },
-              { inventoryLots: { some: { lotNumber: text } } },
-              { inventorySerials: { some: { serialNumber: text } } },
-            ],
-          }
-        : {}),
+            },
+          },
+          { supplierProducts: { some: { supplierCode: textContains(token) } } },
+          { inventoryLots: { some: { lotNumber: textContains(token) } } },
+          { inventorySerials: { some: { serialNumber: textContains(token) } } },
+        ],
+      })),
     };
   }
   private async summary(tx: Tx, c: RequestActorContext, productId: string, day: string) {

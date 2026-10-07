@@ -37,6 +37,8 @@ import {
   type PlannedRow,
 } from '../domain/catalog-import.js';
 import { inspectSheet, suggestSheet, formatFingerprint } from '../domain/catalog-detection.js';
+import { searchTokens, textContains } from '../domain/catalog-search.js';
+import { catalogPrefix, referenceCode } from '../domain/catalog-reference-code.js';
 import type { CatalogImportProfile } from '../domain/catalog-table.js';
 
 const supplierSelect = { id: true, name: true, archivedAt: true } as const;
@@ -51,11 +53,12 @@ export const itemInclude = {
 } as const;
 type ItemRecord = Prisma.SupplierCatalogItemGetPayload<{ include: typeof itemInclude }>;
 export const itemView = (row: ItemRecord) => {
-  const { organizationId: _scope, ...view } = row;
+  const { organizationId: _scope, searchText: _search, ...view } = row;
+  void _search;
   void _scope;
   return {
     ...view,
-    price: row.price?.toFixed() ?? null,
+    price: row.price?.toFixed(2) ?? null,
     vatRate: row.vatRate?.toFixed() ?? null,
     associationStatus: row.supplierProductId ? ('ASSOCIATED' as const) : ('UNASSOCIATED' as const),
   };
@@ -229,26 +232,43 @@ export class SupplierCatalogService {
           ? { supplierProductId: null }
           : {}),
       ...(query.includeArchived ? {} : { archivedAt: null, supplier: { archivedAt: null } }),
-      ...(query.q
-        ? {
-            OR: [
-              { supplierCode: search(query.q) },
-              { alternateSupplierCode: search(query.q) },
-              { description: search(query.q) },
-              { brandText: search(query.q) },
-              { presentationText: search(query.q) },
-              { reportedGtin: search(query.q) },
-              { normalizedReportedGtin: search(query.q) },
-              { supplier: { name: search(query.q) } },
-            ],
-          }
-        : {}),
+      AND: searchTokens(query.q).map((token) =>
+        /^[a-z]+[0-9]{1,6}$/.test(token)
+          ? {
+              OR: [
+                { internalReferenceCode: { startsWith: token.toUpperCase() } },
+                { searchText: textContains(token) },
+              ],
+            }
+          : { searchText: textContains(token) },
+      ),
     };
     const [items, total] = await Promise.all([
       this.database.client.supplierCatalogItem.findMany({
         where,
         ...windowFor(query),
-        orderBy: [{ supplierCode: 'asc' }, { id: 'asc' }],
+        orderBy:
+          query.sort === 'PRICE'
+            ? [
+                { price: { sort: query.direction, nulls: 'last' } },
+                { internalReferenceCode: 'asc' },
+                { id: 'asc' },
+              ]
+            : query.sort === 'DESCRIPTION'
+              ? [
+                  { description: { sort: query.direction, nulls: 'last' } },
+                  { internalReferenceCode: 'asc' },
+                  { id: 'asc' },
+                ]
+              : query.sort === 'SUPPLIER'
+                ? [
+                    { supplier: { name: query.direction } },
+                    { internalReferenceCode: 'asc' },
+                    { id: 'asc' },
+                  ]
+                : supplierId || query.supplierId
+                  ? [{ referenceSequence: query.direction }, { id: 'asc' }]
+                  : [{ internalReferenceCode: query.direction }, { id: 'asc' }],
         include: itemInclude,
       }),
       this.database.client.supplierCatalogItem.count({ where }),
@@ -404,26 +424,39 @@ export class SupplierCatalogService {
     return this.translated(async () => {
       const supplier = await this.supplier(context, supplierId, this.database.client, true);
       const upload = await this.upload(context, supplierId, input.uploadId);
-      const sheet = (upload.sheets as unknown as CatalogSheet[]).find(
-        (sheet) => sheet.name === input.sheet,
-      );
-      if (!sheet) throw new BadRequestException('Elegí una hoja que exista en el archivo.');
+      const tables = upload.sheets as unknown as CatalogSheet[];
+      const profiles = await this.profiles(context, supplierId);
+      const inspections = tables.map((table) => inspectSheet(table, undefined, profiles));
+      const chosen = suggestSheet(inspections, profiles);
+      const analysis = inspections.find((item) => item.name === chosen);
+      if (!analysis || analysis.tableConfidence !== 'HIGH')
+        throw new BadRequestException(
+          'No pudimos interpretar esta lista con suficiente seguridad.',
+        );
+      const sheet = tables.find((table) => table.name === analysis.name)!;
+      const headerRow = analysis.headerRow;
+      const mapping = catalogColumnMappingSchema.parse(analysis.suggestedMapping);
+      const commercial = {
+        ...analysis.commercial,
+        defaultCurrency: input.currency ?? analysis.commercial.defaultCurrency ?? 'ARS',
+        currencyConfirmed: true,
+      };
       const existing = await this.database.client.supplierCatalogItem.findMany({
         where: { organizationId: context.organizationId, supplierId },
       });
       const records = existing.map((record) => ({
         ...record,
-        price: record.price?.toFixed() ?? null,
+        price: record.price?.toFixed(2) ?? null,
         vatRate: record.vatRate?.toFixed() ?? null,
         priceIncludesVat: record.priceIncludesVat as 'YES' | 'NO' | 'UNKNOWN',
       }));
       const plan = planImport(
         sheet,
-        input.headerRow,
-        input.mapping,
+        headerRow,
+        mapping,
         records,
         input.mode,
-        input.commercial,
+        commercial,
         input.excludedRowNumbers,
       );
       const data = {
@@ -436,20 +469,20 @@ export class SupplierCatalogService {
         contentHash: upload.contentHash,
         format: upload.format,
         sheetName: sheet.name,
-        headerRow: input.headerRow,
-        mapping: input.mapping,
+        headerRow,
+        mapping,
         mode: input.mode,
         catalogHash: catalogFingerprint(records, supplier.version),
-        commercial: input.commercial,
-        saveProfile: input.saveProfile,
+        commercial,
+        saveProfile: analysis.tableConfidence === 'HIGH',
         formatHeaders: Array.from(
           { length: Math.max(0, ...sheet.rows.map((row) => row.length)) },
-          (_, column) => sheet.rows[input.headerRow - 1]?.[column] ?? '',
+          (_, column) => sheet.rows[headerRow - 1]?.[column] ?? '',
         ),
         formatFingerprint: formatFingerprint(
           Array.from(
             { length: Math.max(0, ...sheet.rows.map((row) => row.length)) },
-            (_, column) => sheet.rows[input.headerRow - 1]?.[column] ?? '',
+            (_, column) => sheet.rows[headerRow - 1]?.[column] ?? '',
           ),
         ),
         summary: plan.summary,
@@ -572,9 +605,7 @@ export class SupplierCatalogService {
       (row) => row.data && ['CREATED', 'UPDATED', 'UNCHANGED'].includes(row.outcome),
     );
     if (!accepted.length)
-      throw new BadRequestException(
-        'No hay referencias válidas para importar. Revisá el archivo y las columnas.',
-      );
+      throw new BadRequestException('No hay referencias válidas para importar. Revisá el archivo.');
     for (const row of accepted) {
       const { normalizedReportedGtin: _gtin, ...fields } = row.data!;
       void _gtin;
@@ -584,19 +615,18 @@ export class SupplierCatalogService {
           'Los datos de la vista previa no son válidos. Volvé a revisar el archivo.',
         );
     }
-    const changes = accepted
-      .filter((row) => row.outcome !== 'UNCHANGED')
-      .map((row) => ({ ...row.data!, id: row.itemId ?? randomUUID(), outcome: row.outcome }));
-    const codes = accepted.map((row) => row.supplierCode!);
-    const itemIds = new Map(accepted.map((row) => [row.supplierCode!, row.itemId!]));
-    for (const item of changes) itemIds.set(item.supplierCode, item.id);
-    const rowLinks = observations
-      .filter((row) => ['CREATED', 'UPDATED', 'UNCHANGED', 'DUPLICATE'].includes(row.outcome))
-      .map((row) => ({ id: row.id, itemId: itemIds.get(row.supplierCode!)! }));
     return this.translated(() =>
       this.database.client.$transaction(
         async (tx) => {
           await this.authorize(context, tx);
+          const namespace = await tx.supplier.findFirst({
+            where: { organizationId: context.organizationId, id: preview.supplierId },
+            select: { catalogPrefix: true },
+          });
+          // Only first-time prefix allocation needs the tenant lock. Established
+          // catalogs serialize their sequences independently through Supplier.
+          if (!namespace?.catalogPrefix)
+            await tx.$queryRaw`SELECT "id" FROM "Organization" WHERE "id"=${context.organizationId}::uuid FOR UPDATE`;
           // Mismo lock que archivo/edición del proveedor; orden proveedor -> import.
           await tx.$queryRaw`SELECT "id" FROM "Supplier" WHERE "organizationId" = ${context.organizationId}::uuid AND "id" = ${preview.supplierId}::uuid FOR UPDATE`;
           const supplier = await this.supplier(context, preview.supplierId, tx, true);
@@ -610,7 +640,7 @@ export class SupplierCatalogService {
             catalogFingerprint(
               existing.map((record) => ({
                 ...record,
-                price: record.price?.toFixed() ?? null,
+                price: record.price?.toFixed(2) ?? null,
                 vatRate: record.vatRate?.toFixed() ?? null,
                 priceIncludesVat: record.priceIncludesVat as 'YES' | 'NO' | 'UNKNOWN',
               })),
@@ -620,18 +650,67 @@ export class SupplierCatalogService {
             throw new ConflictException(
               'El catálogo cambió desde la vista previa. Generá y revisá una nueva antes de confirmar.',
             );
-          // La unique resuelve cada escritura sin joins dependientes de estadísticas
-          // aún obsoletas. La identidad esperada debe coincidir; no reasignar códigos.
+          let prefix = supplier.catalogPrefix;
+          if (!prefix) {
+            const reserved = await tx.supplier.findMany({
+              where: { organizationId: context.organizationId, catalogPrefix: { not: null } },
+              select: { catalogPrefix: true },
+            });
+            const used = new Set(reserved.map((record) => record.catalogPrefix));
+            let ordinal = 1;
+            while (used.has(catalogPrefix(ordinal))) ordinal++;
+            prefix = catalogPrefix(ordinal);
+          }
+          let sequence = supplier.catalogNextSequence;
+          if (sequence + accepted.filter((row) => !row.itemId).length > 1000000)
+            throw new BadRequestException(
+              'Este catálogo alcanzó el límite de códigos disponibles.',
+            );
+          const existingById = new Map(existing.map((item) => [item.id, item]));
+          const changes = accepted
+            .filter((row) => row.outcome !== 'UNCHANGED')
+            .map((row) => {
+              const existingItem = row.itemId ? existingById.get(row.itemId) : undefined;
+              const ownSequence = existingItem?.referenceSequence ?? sequence++;
+              return {
+                ...row.data!,
+                id: row.itemId ?? randomUUID(),
+                referenceSequence: ownSequence,
+                internalReferenceCode:
+                  existingItem?.internalReferenceCode ?? referenceCode(prefix!, ownSequence),
+              };
+            });
+          await tx.supplier.update({
+            where: { id: supplier.id, organizationId: context.organizationId },
+            data: { catalogPrefix: prefix, catalogNextSequence: sequence },
+          });
+          const identities = new Map(accepted.map((row) => [digest(row.data), row.itemId]));
+          let changeIndex = 0;
+          for (const row of accepted)
+            if (row.outcome !== 'UNCHANGED')
+              identities.set(digest(row.data), changes[changeIndex++]!.id);
+          const ownCodes = new Map([
+            ...existing.map((item) => [item.id, item.internalReferenceCode] as const),
+            ...changes.map((item) => [item.id, item.internalReferenceCode] as const),
+          ]);
+          const rowLinks = observations
+            .filter((row) => ['CREATED', 'UPDATED', 'UNCHANGED', 'DUPLICATE'].includes(row.outcome))
+            .map((row) => ({
+              id: row.id,
+              itemId: identities.get(digest(planRow(row).data))!,
+              internalReferenceCode: ownCodes.get(identities.get(digest(planRow(row).data))!)!,
+            }));
+          const codes = Array.from(new Set(rowLinks.map((row) => row.itemId)));
           for (let offset = 0; offset < changes.length; offset += 500) {
             const batch = changes.slice(offset, offset + 500);
             const data = JSON.stringify(batch);
             const written =
-              await tx.$executeRaw`INSERT INTO "SupplierCatalogItem" AS i ("id","organizationId","supplierId","supplierCode","description","brandText","presentationText","reportedGtin","normalizedReportedGtin","alternateSupplierCode","price","currency","vatRate","priceIncludesVat","updatedAt")
-              SELECT r.id::uuid,${context.organizationId}::uuid,${preview.supplierId}::uuid,r."supplierCode",r.description,r."brandText",r."presentationText",r."reportedGtin",r."normalizedReportedGtin",r."alternateSupplierCode",r.price,r.currency,r."vatRate",r."priceIncludesVat",CURRENT_TIMESTAMP
-              FROM jsonb_to_recordset(${data}::jsonb) AS r(id text,"supplierCode" text,description text,"brandText" text,"presentationText" text,"reportedGtin" text,"normalizedReportedGtin" text,"alternateSupplierCode" text,price numeric,currency text,"vatRate" numeric,"priceIncludesVat" text)
-              ON CONFLICT ("organizationId","supplierId","supplierCode") DO UPDATE SET
-                "description"=EXCLUDED."description","brandText"=EXCLUDED."brandText","presentationText"=EXCLUDED."presentationText","reportedGtin"=EXCLUDED."reportedGtin","normalizedReportedGtin"=EXCLUDED."normalizedReportedGtin","alternateSupplierCode"=EXCLUDED."alternateSupplierCode","price"=EXCLUDED."price","currency"=EXCLUDED."currency","vatRate"=EXCLUDED."vatRate","priceIncludesVat"=EXCLUDED."priceIncludesVat","version"=i."version"+1,"updatedAt"=CURRENT_TIMESTAMP
-              WHERE i.id=EXCLUDED.id AND i."archivedAt" IS NULL`;
+              await tx.$executeRaw`INSERT INTO "SupplierCatalogItem" AS i ("id","organizationId","supplierId","internalReferenceCode","referenceSequence","supplierCode","description","brandText","manufacturerText","modelText","categoryText","unitText","presentationText","reportedGtin","normalizedReportedGtin","alternateSupplierCode","price","currency","vatRate","priceIncludesVat","updatedAt")
+              SELECT r.id::uuid,${context.organizationId}::uuid,${preview.supplierId}::uuid,r."internalReferenceCode",r."referenceSequence",r."supplierCode",r.description,r."brandText",r."manufacturerText",r."modelText",r."categoryText",r."unitText",r."presentationText",r."reportedGtin",r."normalizedReportedGtin",r."alternateSupplierCode",r.price,r.currency,r."vatRate",r."priceIncludesVat",CURRENT_TIMESTAMP
+              FROM jsonb_to_recordset(${data}::jsonb) AS r(id text,"internalReferenceCode" text,"referenceSequence" integer,"supplierCode" text,description text,"brandText" text,"manufacturerText" text,"modelText" text,"categoryText" text,"unitText" text,"presentationText" text,"reportedGtin" text,"normalizedReportedGtin" text,"alternateSupplierCode" text,price numeric,currency text,"vatRate" numeric,"priceIncludesVat" text)
+              ON CONFLICT ("id") DO UPDATE SET
+                "supplierCode"=EXCLUDED."supplierCode","description"=EXCLUDED."description","manufacturerText"=EXCLUDED."manufacturerText","modelText"=EXCLUDED."modelText","categoryText"=EXCLUDED."categoryText","unitText"=EXCLUDED."unitText","brandText"=EXCLUDED."brandText","presentationText"=EXCLUDED."presentationText","reportedGtin"=EXCLUDED."reportedGtin","normalizedReportedGtin"=EXCLUDED."normalizedReportedGtin","alternateSupplierCode"=EXCLUDED."alternateSupplierCode","price"=EXCLUDED."price","currency"=EXCLUDED."currency","vatRate"=EXCLUDED."vatRate","priceIncludesVat"=EXCLUDED."priceIncludesVat","version"=i."version"+1,"updatedAt"=CURRENT_TIMESTAMP
+              WHERE i.id=EXCLUDED.id AND i."organizationId"=EXCLUDED."organizationId" AND i."supplierId"=EXCLUDED."supplierId" AND i."archivedAt" IS NULL`;
             if (written !== batch.length)
               throw new ConflictException(
                 'Una referencia cambió durante la importación. Volvé a revisar la lista.',
@@ -644,7 +723,7 @@ export class SupplierCatalogService {
                 organizationId: context.organizationId,
                 supplierId: preview.supplierId,
                 archivedAt: null,
-                supplierCode: { notIn: codes },
+                id: { notIn: codes },
                 missingFromLatestCompleteListAt: null,
               },
               data: { missingFromLatestCompleteListAt: now, version: { increment: 1 } },
@@ -653,7 +732,7 @@ export class SupplierCatalogService {
               where: {
                 organizationId: context.organizationId,
                 supplierId: preview.supplierId,
-                supplierCode: { in: codes },
+                id: { in: codes },
                 missingFromLatestCompleteListAt: { not: null },
               },
               data: { missingFromLatestCompleteListAt: null, version: { increment: 1 } },
@@ -663,10 +742,11 @@ export class SupplierCatalogService {
           // cuyas estadísticas aún no describen las 10.000 filas nuevas.
           for (let offset = 0; offset < rowLinks.length; offset += 500) {
             const links = JSON.stringify(rowLinks.slice(offset, offset + 500));
-            await tx.$executeRaw`UPDATE "SupplierCatalogImportRow" AS r SET "itemId"=v."itemId"::uuid
-          FROM jsonb_to_recordset(${links}::jsonb) AS v(id text,"itemId" text)
+            await tx.$executeRaw`UPDATE "SupplierCatalogImportRow" AS r SET "itemId"=v."itemId"::uuid, data = r.data || jsonb_build_object('internalReferenceCode',v."internalReferenceCode")
+          FROM jsonb_to_recordset(${links}::jsonb) AS v(id text,"itemId" text,"internalReferenceCode" text)
           WHERE r."organizationId"=${context.organizationId}::uuid AND r."importId"=${id}::uuid AND r.id=v.id::uuid`;
           }
+
           if (preview.saveProfile && preview.formatFingerprint) {
             const profile = {
               sheetName: preview.sheetName,

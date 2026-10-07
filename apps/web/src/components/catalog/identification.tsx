@@ -89,11 +89,11 @@ function ReferenceSearch({
     <li key={item.id}>
       <div>
         <strong>
-          {item.supplier.name} · {item.supplierCode}
+          {item.internalReferenceCode} · {item.supplier.name} · Código del proveedor:{' '}
+          {item.supplierCode ?? '—'}
         </strong>
         <p>
-          {item.description} · {item.brandText || 'Sin marca declarada'} ·{' '}
-          {item.presentationText || 'Sin presentación declarada'}
+          {item.description ?? '—'} · {item.brandText ?? '—'} · {item.presentationText ?? '—'}
         </p>
         <ReferenceAssociation item={item} />
       </div>
@@ -108,7 +108,7 @@ function ReferenceSearch({
         )}
         onClick={() => select(item)}
       >
-        Seleccionar {item.supplierCode}
+        Seleccionar {item.internalReferenceCode}
       </button>
     </li>
   );
@@ -160,7 +160,7 @@ function AssociationForm({
   );
   const [mode, setMode] = useState<'EXISTING' | 'NEW'>('EXISTING');
   const [name, setName] = useState(
-    reference.description.length <= 200 ? reference.description : '',
+    reference.description && reference.description.length <= 200 ? reference.description : '',
   );
   const [presentation, setPresentation] = useState(reference.presentationText ?? '');
   const [unit, setUnit] = useState<UnitOfMeasure>('UNIT');
@@ -237,9 +237,10 @@ function AssociationForm({
       </h2>
       <p>
         <strong>
-          {reference.supplier.name} · {reference.supplierCode}
+          {reference.internalReferenceCode} · {reference.supplier.name} · Código del proveedor:{' '}
+          {reference.supplierCode ?? '—'}
         </strong>{' '}
-        — {reference.description}
+        — {reference.description ?? '—'}
       </p>
       <p>
         Marca declarada: {reference.brandText || 'Sin especificar'}. GTIN informado:{' '}

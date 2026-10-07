@@ -37,9 +37,23 @@ const aliases: Record<keyof CatalogColumnMapping, string[]> = {
   ],
   alternateSupplierCode: ['codext', 'codigoexterno', 'codigoalternativo', 'alternatecode'],
   brandText: ['marca', 'marcacomercial', 'brand'],
+  manufacturerText: ['fabricante', 'laboratorio', 'manufacturer'],
+  modelText: ['modelo', 'model'],
+  categoryText: ['categoria', 'rubro', 'familia', 'category'],
+  unitText: ['unidad', 'um', 'unidaddemedida', 'unit'],
   presentationText: ['presentacion', 'empaque', 'presentation', 'pack'],
   reportedGtin: ['gtin', 'ean', 'upc', 'codigodebarras', 'barcode'],
-  price: ['precio', 'punitario', 'preciounitario', 'neto', 'valor', 'price', 'unitprice'],
+  price: [
+    'precio',
+    'punitario',
+    'preciounitario',
+    'neto',
+    'valor',
+    'price',
+    'unitprice',
+    'precioconiva',
+    'preciosiniva',
+  ],
   vatRate: ['iva', 'tiva', 'alicuota', 'vatrate', 'vat'],
   currency: ['moneda', 'currency', 'divisa'],
 };
@@ -68,21 +82,9 @@ export function detectMapping(headers: string[], sample: string[][] = []) {
       const index = candidates[0]!;
       mapping[field] = index;
       used.add(index);
-      const values = sample.map((row) => row[index]?.trim() ?? '').filter(Boolean);
-      const consistent =
-        !values.length ||
-        values.filter((value) =>
-          field === 'price' || field === 'vatRate'
-            ? /^[\d.,\s$%]+$/.test(value)
-            : field === 'currency'
-              ? /^[A-Za-z]{3}$/.test(value)
-              : field === 'supplierCode'
-                ? value.length <= 128 && !/\s/.test(value)
-                : true,
-        ).length /
-          values.length >=
-          0.7;
-      confidence[field] = consistent ? 'HIGH' : 'REVIEW';
+      // A unique explicit heading identifies the column. Invalid cell values
+      // belong in row validation (especially negative prices), not silently null.
+      confidence[field] = 'HIGH';
     }
   }
   // Content may suggest essential fields for unknown headings, always requiring review.
@@ -115,7 +117,7 @@ export function detectMapping(headers: string[], sample: string[][] = []) {
 export const suggestMapping = (headers: string[]) => detectMapping(headers).mapping;
 export const formatFingerprint = (headers: string[]) =>
   createHash('sha256')
-    .update(JSON.stringify({ version: 2, headers: headers.map(normalizeHeader) }))
+    .update(JSON.stringify({ version: 3, headers: headers.map(normalizeHeader) }))
     .digest('hex');
 export function inspectSheet(
   table: IntermediateTable,
@@ -127,13 +129,15 @@ export function inspectSheet(
     const headers = Array.from({ length: width }, (_, column) => table.rows[index]?.[column] ?? '');
     const sample = table.rows.slice(index + 1, index + 21);
     const detected = detectMapping(headers, sample);
-    const required =
-      detected.mapping.supplierCode !== null && detected.mapping.description !== null;
+    const required = ['supplierCode', 'description', 'reportedGtin'].some(
+      (key) => detected.confidence[key as keyof CatalogColumnMapping] === 'HIGH',
+    );
     const consistent = required
-      ? sample.filter(
-          (row) =>
-            row[detected.mapping.supplierCode!]?.trim() &&
-            row[detected.mapping.description!]?.trim(),
+      ? sample.filter((row) =>
+          ['supplierCode', 'description', 'reportedGtin'].some((key) => {
+            const column = detected.mapping[key as keyof CatalogColumnMapping];
+            return column !== null && row[column]?.trim();
+          }),
         ).length
       : 0;
     const known = Object.values(detected.confidence).filter((value) => value === 'HIGH').length;
@@ -141,6 +145,7 @@ export function inspectSheet(
       index,
       headers,
       ...detected,
+      consistent,
       score: (required ? 10 : 0) + known * 3 + consistent / 20,
     };
   };
@@ -156,32 +161,54 @@ export function inspectSheet(
     candidates.some(
       (candidate) =>
         candidate.index !== selected.index &&
+        candidate.consistent > 0 &&
         candidate.score >= selected.score - 1 &&
-        candidate.mapping.supplierCode !== null &&
-        candidate.mapping.description !== null &&
+        ['supplierCode', 'description', 'reportedGtin'].some(
+          (key) => candidate.confidence[key as keyof CatalogColumnMapping] === 'HIGH',
+        ) &&
         formatFingerprint(candidate.headers) !== fingerprint,
     );
   const profile = profiles.find(
     (item) =>
       item.fingerprint === fingerprint &&
       item.headers.length === width &&
-      Object.values(item.mapping).every((column) => column === null || column < width),
+      Object.entries(item.mapping).every(
+        ([field, column]) =>
+          column === selected.mapping[field as keyof CatalogColumnMapping] &&
+          (column === null || column < width),
+      ),
   );
-  const mapping = profile?.mapping ?? selected.mapping;
-  const confidence = profile
-    ? (Object.fromEntries(
-        Object.entries(mapping).map(([key, index]) => [key, index === null ? 'MISSING' : 'HIGH']),
-      ) as CatalogSheetInspection['confidence'])
-    : selected.confidence;
+  const mapping = { ...(profile?.mapping ?? selected.mapping) };
+  const confidence = selected.confidence;
+  // An uncertain optional column is omitted, never delegated to the employee.
+  for (const key of Object.keys(mapping) as Array<keyof CatalogColumnMapping>)
+    if (confidence[key] !== 'HIGH') mapping[key] = null;
   const high =
     !competingTable &&
-    mapping.supplierCode !== null &&
-    mapping.description !== null &&
-    confidence.supplierCode === 'HIGH' &&
-    confidence.description === 'HIGH' &&
-    table.rows
-      .slice(selected.index + 1, selected.index + 21)
-      .some((row) => row[mapping.supplierCode!]?.trim() && row[mapping.description!]?.trim());
+    ['supplierCode', 'description', 'reportedGtin'].some(
+      (key) =>
+        mapping[key as keyof CatalogColumnMapping] !== null &&
+        confidence[key as keyof CatalogColumnMapping] === 'HIGH',
+    ) &&
+    table.rows.slice(selected.index + 1, selected.index + 21).some((row) =>
+      ['supplierCode', 'description', 'reportedGtin'].some((key) => {
+        const column = mapping[key as keyof CatalogColumnMapping];
+        return column !== null && row[column]?.trim();
+      }),
+    );
+  const declarations = [...table.rows.slice(0, selected.index).flat(), ...selected.headers]
+    .join(' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const withoutVat = /\bsin\s+iva\b/.test(declarations),
+    withVat = /\bcon\s+iva\b/.test(declarations);
+  const includes = withoutVat && !withVat ? 'NO' : withVat && !withoutVat ? 'YES' : 'UNKNOWN';
+  const currencies = (['ARS', 'USD', 'EUR', 'BRL', 'UYU'] as const).filter((code) =>
+    new RegExp(`\\b${code}\\b`, 'i').test(declarations),
+  );
+  if (/\bdolares\b|us\$/.test(declarations) && !currencies.includes('USD')) currencies.push('USD');
+  const declaredCurrency = currencies.length === 1 ? currencies[0] : null;
   return {
     name: table.name,
     rowCount: Math.max(0, table.rows.length - selected.index - 1),
@@ -193,11 +220,27 @@ export function inspectSheet(
     tableConfidence: high ? 'HIGH' : 'REVIEW',
     fingerprint,
     profileApplied: Boolean(profile),
-    commercial: profile?.commercial ?? { ...defaultCommercial },
+    commercial: {
+      ...(profile?.commercial ?? defaultCommercial),
+      defaultCurrency: declaredCurrency ?? 'ARS',
+      currencyConfirmed: true,
+      priceIncludesVat: includes,
+    },
     warnings: [
       ...(table.warnings ?? []),
+      ...Object.entries(confidence)
+        .filter(([, value]) => value === 'REVIEW')
+        .map(
+          ([field]) =>
+            `No se pudo reconocer ${catalogMappingFields[field as keyof CatalogColumnMapping]} con seguridad; queda sin informar.`,
+        ),
+      ...(withVat && withoutVat
+        ? ['Hay declaraciones contradictorias de IVA incluido; conservamos Desconocido.']
+        : []),
       ...(competingTable
-        ? ['Hay más de una tabla posible. Revisá el encabezado y las columnas antes de continuar.']
+        ? [
+            'Hay más de una tabla posible y no pudimos distinguir la lista con suficiente seguridad.',
+          ]
         : []),
     ],
   };

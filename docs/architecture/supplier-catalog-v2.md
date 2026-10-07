@@ -1,5 +1,7 @@
 # Importador de listas de proveedores V2
 
+> Documento histórico del incremento anterior. Para el comportamiento vigente (análisis automático, códigos propios y precios a centavos), ver [Importador automático](supplier-catalog-automatic.md) y [verificación actual](supplier-catalog-automatic-verification.md).
+
 Implementación del 7 de octubre de 2026 sobre el importador existente. Mantiene preview, confirmación atómica, roles, tenant, auditoría, asociaciones e idempotencia. No incorpora PDF, OCR, IA, compras ni cambios de Inventory.
 
 ## Arquitectura y frontera de extracción

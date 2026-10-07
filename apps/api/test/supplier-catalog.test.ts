@@ -82,6 +82,10 @@ test('XLSX válido y múltiples hojas, encabezados detectados y elección indepe
     supplierCode: 0,
     description: 1,
     brandText: 2,
+    manufacturerText: null,
+    modelText: null,
+    categoryText: null,
+    unitText: null,
     presentationText: null,
     reportedGtin: 3,
     alternateSupplierCode: null,
@@ -132,11 +136,11 @@ test('filas vacías, código/descripcion faltante, duplicados idénticos y contr
     ['DL2115', 'Segundo'],
   ]);
   assert.equal(result.summary.empty, 1);
-  assert.equal(result.summary.errors, 2);
-  assert.equal(result.summary.created, 1);
+  assert.equal(result.summary.errors, 0);
+  assert.equal(result.summary.created, 3);
   assert.equal(result.summary.duplicates, 1);
   assert.equal(result.summary.conflicts, 2);
-  assert.match(result.rows[5]!.messages.join(' '), /DL2115.*información diferente/);
+  assert.match(result.rows[5]!.messages.join(' '), /información diferente/);
   const invalidTwin = plan([row, [row[0]!, '']]);
   assert.equal(invalidTwin.summary.created, 0);
   assert.equal(invalidTwin.summary.conflicts, 2);
@@ -178,7 +182,7 @@ test('reimportación, actualización, parciales y completos seguros con errores'
   const incomplete = plan(
     [
       ['Otra', 'Descripción'],
-      ['', 'Error'],
+      ['', '', '', '', 'invalid'],
     ],
     [existing],
     'COMPLETE',
@@ -292,16 +296,9 @@ test('contratos estrictos, paginación máxima, sin organizationId, rutas explí
   assert.equal(supplierCatalogQuerySchema.safeParse({ limit: '101' }).success, false);
   assert.equal(supplierCatalogQuerySchema.parse({}).limit, 20);
   assert.equal(catalogColumnMappingSchema.safeParse({ ...mapping, description: 0 }).success, false);
-  assert.throws(
-    () =>
-      parseCatalogInput(catalogPreviewInputSchema, {
-        uploadId: randomUUID(),
-        sheet: 'Lista',
-        headerRow: 1,
-        mode: 'PARTIAL',
-        mapping: { ...mapping, supplierCode: null },
-      }),
-    /columna.*código/,
+  assert.equal(
+    parseCatalogInput(catalogPreviewInputSchema, { uploadId: randomUUID() }).mode,
+    'PARTIAL',
   );
   assert.equal(
     catalogCommitInputSchema.safeParse({

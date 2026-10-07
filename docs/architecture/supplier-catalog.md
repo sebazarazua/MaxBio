@@ -1,5 +1,7 @@
 # Catálogo de referencia de proveedores
 
+> Documento histórico del incremento anterior. Para el comportamiento vigente (análisis automático, códigos propios y precios a centavos), ver [Importador automático](supplier-catalog-automatic.md) y [verificación actual](supplier-catalog-automatic-verification.md).
+
 El importador vigente es [V2: detección, perfiles y datos comerciales](supplier-catalog-v2.md), implementado el 7/10/2026. La [verificación V2](supplier-catalog-v2-verification.md) registra comandos y la prueba con el Excel original. Este documento conserva las invariantes del flujo inicial; V2 amplía sus campos y política de fórmulas/enlaces.
 
 Implementado el 6 de octubre de 2026 dentro del módulo Catalog existente. Evidencia de esta notebook en [verification.md](verification.md), separada de la histórica.

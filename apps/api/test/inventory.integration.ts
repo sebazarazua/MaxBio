@@ -764,7 +764,13 @@ test('Stock busca código/GTIN/lote/serie; historia paginada conserva origen y u
       serialNumbers: ['search-serial'],
     }),
   );
-  for (const query of [code, 'search-lot', 'search-serial']) {
+  for (const query of [
+    code,
+    'search-lot',
+    'search-serial',
+    'inventario search-lot',
+    'search-serial inventario',
+  ]) {
     const list = inventoryStockListSchema.parse(
       await checked(await request('inventory/stock?q=' + encodeURIComponent(query))),
     );
@@ -793,19 +799,7 @@ test('importar CSV e identificar siguen creando cero stock y cero movimiento', a
       await request(
         `suppliers/${supplier}/catalog-imports/preview`,
         'POST',
-        {
-          uploadId: inspection.uploadId,
-          sheet: 'CSV',
-          headerRow: 1,
-          mapping: {
-            supplierCode: 0,
-            description: 1,
-            brandText: null,
-            presentationText: null,
-            reportedGtin: null,
-          },
-          mode: 'PARTIAL',
-        },
+        { uploadId: inspection.uploadId, mode: 'PARTIAL' },
         0,
       ),
       201,

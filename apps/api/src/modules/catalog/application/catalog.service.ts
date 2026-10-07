@@ -25,6 +25,8 @@ import { AuditService } from '../../audit/audit.service.js';
 import type { RequestActorContext } from '../../../common/auth/request-context.js';
 import { CatalogRuleError, normalizeIdentifier, normalizeName } from '../domain/identifiers.js';
 
+import { searchTokens, textContains } from '../domain/catalog-search.js';
+
 const classificationSelect = { id: true, name: true, archivedAt: true } as const;
 export const productInclude = {
   brand: { select: classificationSelect },
@@ -55,14 +57,28 @@ const pageResult = <T>(items: T[], total: number, query: CatalogListQuery) => ({
 });
 const textSearch = (q: string) => ({ contains: q, mode: 'insensitive' as const });
 export const productView = (row: ProductRecord) => {
-  const { organizationId: _organizationId, identifiers, ...view } = row;
+  const { organizationId: _organizationId, searchText: _search, identifiers, ...view } = row;
+  void _search;
   void _organizationId;
   return { ...view, internalCodes: identifiers.map((identifier) => identifier.value) };
 };
 function publicRow<T extends { organizationId: string }>(row: T) {
   const { organizationId: _organizationId, ...view } = row;
   void _organizationId;
-  return view;
+  const {
+    catalogPrefix: _prefix,
+    catalogNextSequence: _sequence,
+    searchText: _search,
+    ...publicView
+  } = view as typeof view & {
+    catalogPrefix?: unknown;
+    catalogNextSequence?: unknown;
+    searchText?: unknown;
+  };
+  void _prefix;
+  void _sequence;
+  void _search;
+  return publicView;
 }
 function namedView<T extends { organizationId: string; normalizedName: string }>(row: T) {
   const { normalizedName: _normalizedName, ...view } = publicRow(row);
@@ -118,6 +134,8 @@ export class CatalogService {
       if (error instanceof CatalogRuleError) throw new BadRequestException(error.message);
       if (typeof error === 'object' && error !== null && 'code' in error) {
         if (error.code === 'P2002') throw new ConflictException(duplicateMessage);
+        if (error.code === 'P2034')
+          throw new ConflictException('Otra operación modificó estos datos. Volvé a intentar.');
         if (error.code === 'P2003' || error.code === 'P2025') throw new NotFoundException();
       }
       throw error;
@@ -214,41 +232,40 @@ export class CatalogService {
             },
           }
         : {}),
-      ...(query.q
-        ? {
-            OR: [
-              { name: textSearch(query.q) },
-              { manufacturerName: textSearch(query.q) },
-              { model: textSearch(query.q) },
-              { brand: { name: textSearch(query.q) } },
-              {
-                identifiers: {
-                  some: {
-                    organizationId: context.organizationId,
-                    ...(query.includeArchived ? {} : { archivedAt: null }),
-                    OR: [
-                      { value: textSearch(query.q) },
-                      ...(canonicalGtin
-                        ? [{ kind: 'GTIN' as const, normalizedValue: canonicalGtin }]
-                        : []),
-                    ],
-                  },
-                },
+      AND: searchTokens(query.q).map((token) => ({
+        OR: [
+          { searchText: textContains(token) },
+          {
+            identifiers: {
+              some: {
+                organizationId: context.organizationId,
+                ...(query.includeArchived ? {} : { archivedAt: null }),
+                OR: [
+                  { value: textContains(token) },
+                  { normalizedValue: textContains(token) },
+                  ...(canonicalGtin
+                    ? [{ kind: 'GTIN' as const, normalizedValue: canonicalGtin }]
+                    : []),
+                ],
               },
-              {
-                supplierProducts: {
-                  some: {
-                    organizationId: context.organizationId,
-                    supplierCode: textSearch(query.q),
-                    ...(query.includeArchived
-                      ? {}
-                      : { archivedAt: null, supplier: { archivedAt: null } }),
-                  },
-                },
+            },
+          },
+          {
+            supplierProducts: {
+              some: {
+                organizationId: context.organizationId,
+                OR: [
+                  { supplierCode: textContains(token) },
+                  { supplier: { searchText: textContains(token) } },
+                ],
+                ...(query.includeArchived
+                  ? {}
+                  : { archivedAt: null, supplier: { archivedAt: null } }),
               },
-            ],
-          }
-        : {}),
+            },
+          },
+        ],
+      })),
     };
     const { rows, total } = await this.database.client.$transaction(
       async (tx) => {
@@ -529,16 +546,7 @@ export class CatalogService {
     const where: Prisma.SupplierWhereInput = {
       organizationId: context.organizationId,
       ...(query.includeArchived ? {} : { archivedAt: null }),
-      ...(query.q
-        ? {
-            OR: [
-              { name: textSearch(query.q) },
-              { legalName: textSearch(query.q) },
-              { contactName: textSearch(query.q) },
-              { email: textSearch(query.q) },
-            ],
-          }
-        : {}),
+      AND: searchTokens(query.q).map((token) => ({ searchText: textContains(token) })),
     };
     const { rows, total } = await this.database.client.$transaction(
       async (tx) => {
@@ -613,7 +621,7 @@ export class CatalogService {
     const where = {
       organizationId: context.organizationId,
       ...(query.includeArchived ? {} : { archivedAt: null }),
-      ...(query.q ? { name: textSearch(query.q) } : {}),
+      AND: searchTokens(query.q, false).map((token) => ({ name: textContains(token) })),
     };
     const args = { where, ...windowFor(query), orderBy: [...orderBy] };
     const { rows, total } = await this.database.client.$transaction(
@@ -715,15 +723,13 @@ export class CatalogService {
       ...(query.includeArchived
         ? {}
         : { archivedAt: null, product: { archivedAt: null }, supplier: { archivedAt: null } }),
-      ...(query.q
-        ? {
-            OR: [
-              { supplierCode: textSearch(query.q) },
-              { supplier: { name: textSearch(query.q) } },
-              { product: { name: textSearch(query.q) } },
-            ],
-          }
-        : {}),
+      AND: searchTokens(query.q).map((token) => ({
+        OR: [
+          { supplierCode: textContains(token) },
+          { supplier: { searchText: textContains(token) } },
+          { product: { searchText: textContains(token) } },
+        ],
+      })),
     };
     const { rows, total } = await this.database.client.$transaction(
       async (tx) => {

@@ -14,6 +14,10 @@ export const catalogMappingFields = {
   supplierCode: 'código del proveedor',
   description: 'descripción',
   brandText: 'marca',
+  manufacturerText: 'fabricante',
+  modelText: 'modelo',
+  categoryText: 'categoría',
+  unitText: 'unidad',
   presentationText: 'presentación',
   reportedGtin: 'GTIN / EAN / UPC informado',
   alternateSupplierCode: 'código alternativo',
@@ -28,9 +32,13 @@ const column = z
   .max(supplierCatalogLimits.columns - 1);
 export const catalogColumnMappingSchema = z
   .object({
-    supplierCode: column,
-    description: column,
+    supplierCode: column.nullable().default(null),
+    description: column.nullable().default(null),
     brandText: column.nullable(),
+    manufacturerText: column.nullable().default(null),
+    modelText: column.nullable().default(null),
+    categoryText: column.nullable().default(null),
+    unitText: column.nullable().default(null),
     presentationText: column.nullable(),
     reportedGtin: column.nullable(),
     alternateSupplierCode: column.nullable().default(null),
@@ -50,8 +58,8 @@ export const catalogCommercialOptionsSchema = z
       .string()
       .regex(/^[A-Z]{3}$/)
       .nullable()
-      .default(null),
-    currencyConfirmed: z.boolean().default(false),
+      .default('ARS'),
+    currencyConfirmed: z.boolean().default(true),
     priceIncludesVat: z.enum(['YES', 'NO', 'UNKNOWN']).default('UNKNOWN'),
     decimalSeparator: z.enum(['AUTO', 'COMMA', 'DOT']).default('AUTO'),
   })
@@ -66,14 +74,11 @@ export const catalogAnalysisInputSchema = z
 export const catalogPreviewInputSchema = z
   .object({
     uploadId: z.uuid(),
-    sheet: z.string().min(1).max(31),
-    headerRow: z.number().int().min(1).max(20),
-    mapping: catalogColumnMappingSchema,
-    mode: catalogImportModeSchema,
-    commercial: catalogCommercialOptionsSchema.default(() =>
-      catalogCommercialOptionsSchema.parse({}),
-    ),
-    saveProfile: z.boolean().default(false),
+    mode: catalogImportModeSchema.default('PARTIAL'),
+    currency: z
+      .string()
+      .regex(/^[A-Z]{3}$/)
+      .optional(),
     excludedRowNumbers: z
       .array(
         z
@@ -97,6 +102,10 @@ const suggestion = z
     supplierCode: column.nullable(),
     description: column.nullable(),
     brandText: column.nullable(),
+    manufacturerText: column.nullable().default(null),
+    modelText: column.nullable().default(null),
+    categoryText: column.nullable().default(null),
+    unitText: column.nullable().default(null),
     presentationText: column.nullable(),
     reportedGtin: column.nullable(),
     alternateSupplierCode: column.nullable(),
@@ -143,16 +152,25 @@ export const catalogInspectionSchema = z
   .strict();
 export const supplierCatalogDataSchema = z
   .object({
-    supplierCode: z.string().min(1).max(128),
-    description: z.string().min(1).max(1000),
+    internalReferenceCode: z
+      .string()
+      .regex(/^[A-Z]+[0-9]{6}$/)
+      .nullable()
+      .default(null),
+    supplierCode: z.string().min(1).max(128).nullable(),
+    description: z.string().min(1).max(1000).nullable(),
     brandText: z.string().max(160).nullable(),
+    manufacturerText: z.string().max(200).nullable().default(null),
+    modelText: z.string().max(160).nullable().default(null),
+    categoryText: z.string().max(160).nullable().default(null),
+    unitText: z.string().max(80).nullable().default(null),
     presentationText: z.string().max(200).nullable(),
     reportedGtin: z.string().max(128).nullable(),
     normalizedReportedGtin: z.string().max(14).nullable(),
     alternateSupplierCode: z.string().max(128).nullable().default(null),
     price: z
       .string()
-      .regex(/^(0|[1-9][0-9]{0,13})(\.[0-9]{1,18})?$/)
+      .regex(/^(0|[1-9][0-9]{0,14})\.[0-9]{2}$/)
       .nullable()
       .default(null),
     currency: z
@@ -198,6 +216,8 @@ const supplierBrief = z
 export const supplierCatalogItemSchema = supplierCatalogDataSchema
   .extend({
     id: z.uuid(),
+    internalReferenceCode: z.string().regex(/^[A-Z]+[0-9]{6}$/),
+    referenceSequence: z.number().int().positive(),
     supplierId: z.uuid(),
     supplier: supplierBrief,
     version: z.number().int().positive(),
@@ -225,6 +245,8 @@ export const supplierCatalogQuerySchema = catalogListQuerySchema
   .extend({
     supplierId: z.uuid().optional(),
     association: z.enum(['ALL', 'UNASSOCIATED', 'ASSOCIATED']).default('ALL'),
+    sort: z.enum(['CODE', 'SUPPLIER', 'DESCRIPTION', 'PRICE']).default('CODE'),
+    direction: z.enum(['asc', 'desc']).default('asc'),
   })
   .strict();
 export const catalogImportRowSchema = z

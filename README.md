@@ -33,7 +33,7 @@ Abrir <http://localhost:3000>. Iniciar sesión con el administrador propio. Las 
 
 ## Usar el catálogo
 
-En la ficha de **Proveedores**, abrí **Catálogo**. ADMIN puede elegir **Importar lista**, cargar CSV/XLSX y **Analizar**. MaxBio propone hoja, encabezado y columnas con confianza visible; podés corregirlas, confirmar moneda/semántica de IVA y revisar antes de importar. Conserva precios exactos e historial comercial y permite recordar formatos por proveedor. Fórmulas ignoradas no rechazan toda la lista; nunca se ejecutan fórmulas/macros ni se abren enlaces. OPERATOR consulta referencias e historia. La búsqueda transversal está en **Listas de proveedores**. Importar una lista no crea Products, identificadores, asociaciones ni stock. Ver [importador V2](docs/architecture/supplier-catalog-v2.md) y [verificación](docs/architecture/supplier-catalog-v2-verification.md).
+En la ficha de **Proveedores**, abrí **Catálogo**. ADMIN puede elegir **Importar lista**, cargar CSV/XLSX, **Analizar**, revisar el modelo normalizado y confirmar. MaxBio interpreta hoja, encabezados y columnas automáticamente; datos no informados se muestran «—». Asigna códigos propios estables (A000001), aplica techo a centavos y ARS por defecto, y aprende formatos al confirmar. OPERATOR consulta referencias e historia. **Listas de proveedores** permite buscar por palabras en cualquier orden, sin tildes, filtrar proveedor y ordenar por código/nombre/proveedor/precio. Importar no crea Products, identificadores, asociaciones ni stock, y nunca ejecuta fórmulas/macros ni abre enlaces. Ver [importador automático](docs/architecture/supplier-catalog-automatic.md) y [verificación](docs/architecture/supplier-catalog-automatic-verification.md).
 
 **Identificar producto** admite scanner HID USB/Bluetooth o código manual + Enter. ADMIN y OPERATOR pueden resolver, buscar una referencia, comparar productos existentes o crear uno básico y confirmar explícitamente. Guarda identificador y `SupplierCatalogItem → SupplierProduct → Product` en una transacción auditable e idempotente. El mismo código vuelve a reconocer el producto. GTIN exige checksum; externos necesitan proveedor explícito. Las listas tienen filtros de asociación. Ver [identificación/scanner](docs/architecture/product-identification.md).
 
@@ -146,7 +146,7 @@ pnpm test:database
 pnpm build
 ```
 
-`pnpm test` ejecuta pruebas HTTP, contratos, cantidades, reglas de identificadores y seguridad con el runner nativo de Node, sin PostgreSQL. `pnpm test:database` necesita una base de desarrollo/pruebas migrada: verifica Identity, Catalog e Inventory HTTP real, constraints, roles, tenant, concurrencia y rollback. Inventory crea y elimina una base propia para probar el ledger inmutable; el usuario PostgreSQL de pruebas necesita CREATE DATABASE. No ejecutar contra producción. Los fixtures anteriores se eliminan por UUID.
+`pnpm test` ejecuta pruebas HTTP, contratos, cantidades, reglas de identificadores y seguridad con el runner nativo de Node, sin PostgreSQL. `pnpm test:database` necesita una base de desarrollo/pruebas migrada: verifica Identity, Catalog e Inventory HTTP real, constraints, roles, tenant, concurrencia y rollback. Inventory y el backfill del catálogo crean y eliminan bases propias para probar el ledger inmutable; el usuario PostgreSQL de pruebas necesita CREATE DATABASE. No ejecutar contra producción. Los fixtures anteriores se eliminan por UUID.
 
 La evidencia del bootstrap y sus límites están en [verification.md](docs/architecture/verification.md).
 

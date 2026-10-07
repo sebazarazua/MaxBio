@@ -73,7 +73,8 @@ test('sinónimos, columnas reordenadas y extra, encabezado fila 5, selección de
     ],
   });
   assert.equal(ambiguous.confidence.supplierCode, 'REVIEW');
-  assert.equal(ambiguous.tableConfidence, 'REVIEW');
+  assert.equal(ambiguous.tableConfidence, 'HIGH');
+  assert.equal(ambiguous.suggestedMapping.supplierCode, null);
 });
 
 test('contenido propone columnas desconocidas para revisión humana, nunca confirma', () => {
@@ -85,8 +86,8 @@ test('contenido propone columnas desconocidas para revisión humana, nunca confi
       ['B-02', 'Bota walker larga'],
     ],
   });
-  assert.equal(value.suggestedMapping.supplierCode, 0);
-  assert.equal(value.suggestedMapping.description, 1);
+  assert.equal(value.suggestedMapping.supplierCode, null);
+  assert.equal(value.suggestedMapping.description, null);
   assert.equal(value.confidence.supplierCode, 'REVIEW');
   assert.equal(suggestSheet([value]), null);
 });
@@ -107,6 +108,12 @@ test('fingerprint estable ante precios/filas/nombre de archivo; perfil confirmad
   assert.equal(next.profileApplied, true);
   assert.deepEqual(next.commercial, commercial);
   assert.equal(next.fingerprint, first.fingerprint);
+  assert.equal(
+    inspectSheet(table([['B', 'Otro producto', '120', '10.5', 'Y']]), undefined, [
+      { ...profile, commercial: { ...commercial, defaultCurrency: 'USD' } },
+    ]).commercial.defaultCurrency,
+    'ARS',
+  );
   const changed = inspectSheet(
     {
       name: 'Nuevo',
@@ -119,7 +126,7 @@ test('fingerprint estable ante precios/filas/nombre de archivo; perfil confirmad
     [profile],
   );
   assert.equal(changed.profileApplied, false);
-  assert.equal(changed.commercial.currencyConfirmed, false);
+  assert.equal(changed.commercial.currencyConfirmed, true);
   assert.equal(changed.suggestedMapping.supplierCode, 0);
   assert.notEqual(formatFingerprint([...headers].reverse()), first.fingerprint);
 });
@@ -139,8 +146,8 @@ test('Decimal exacto, moneda explícita, IVA 0/10.5/21/null, alternativo y semá
     commercial,
   );
   assert.equal(result.summary.errors, 0);
-  assert.equal(result.rows[0]!.data!.price, '218505.11669999998');
-  assert.equal(result.rows[1]!.data!.price, '1234.56789');
+  assert.equal(result.rows[0]!.data!.price, '218505.12');
+  assert.equal(result.rows[1]!.data!.price, '1234.57');
   assert.equal(result.rows[0]!.data!.currency, 'ARS');
   assert.equal(result.rows[0]!.data!.alternateSupplierCode, 'EXT');
   assert.deepEqual(
@@ -150,8 +157,8 @@ test('Decimal exacto, moneda explícita, IVA 0/10.5/21/null, alternativo y semá
   assert.equal(result.rows[3]!.data!.price, null);
   assert.equal(result.rows[0]!.data!.priceIncludesVat, 'UNKNOWN');
   const unknown = planImport(table([['A', 'Producto', '100', '', '']]), 1, mapping, [], 'PARTIAL');
-  assert.equal(unknown.summary.errors, 1);
-  assert.match(unknown.rows[0]!.messages.join(' '), /moneda/);
+  assert.equal(unknown.summary.errors, 0);
+  assert.equal(unknown.rows[0]!.data!.currency, 'ARS');
   assert.throws(() => commercialDecimal('1.234', 18), /ambiguo/);
   assert.equal(commercialDecimal('1.234', 18, 'COMMA'), '1234');
   assert.equal(commercialDecimal('1.234', 18, 'DOT'), '1.234');
@@ -203,8 +210,8 @@ test('moneda en columna, precio null y vaciado explícito; reimport conserva opc
     commercial,
   );
   assert.equal(next.summary.updated, 1);
-  assert.equal(next.rows[0]!.data!.price, '120');
-  assert.equal(old.price, '100');
+  assert.equal(next.rows[0]!.data!.price, '120.00');
+  assert.equal(old.price, '100.00');
   const untouched = planImport(
     table([['A', 'Producto']]),
     1,
@@ -212,7 +219,7 @@ test('moneda en columna, precio null y vaciado explícito; reimport conserva opc
     [previous],
     'PARTIAL',
   );
-  assert.equal(untouched.rows[0]!.data!.price, '100');
+  assert.equal(untouched.rows[0]!.data!.price, '100.00');
   const blank = planImport(
     table([['A', 'Producto', '', '', '']]),
     1,
@@ -237,7 +244,7 @@ test('moneda en columna, precio null y vaciado explícito; reimport conserva opc
     'PARTIAL',
   );
   assert.equal(usd.rows[0]!.data!.currency, 'USD');
-  assert.equal(usd.rows[0]!.data!.price, '0');
+  assert.equal(usd.rows[0]!.data!.price, '0.00');
   const embedded = planImport(
     table([['B', 'Producto', 'USD 100', '21', '']]),
     1,
@@ -266,9 +273,9 @@ test('repetidos/vacíos/totales explícitos ignorados con evidencia; notas dudos
     commercial,
   );
   assert.equal(result.summary.created, 2);
-  assert.equal(result.summary.empty, 3);
-  assert.equal(result.summary.errors, 1);
-  assert.equal(result.summary.absencesSuppressed, true);
+  assert.equal(result.summary.empty, 4);
+  assert.equal(result.summary.errors, 0);
+  assert.equal(result.summary.absencesSuppressed, false);
   assert.match(result.rows[2]!.messages.join(' '), /Encabezado repetido/);
   assert.match(result.rows[3]!.messages.join(' '), /subtotal/);
   const manual = planImport(
@@ -324,7 +331,7 @@ test('fórmulas nunca ejecutadas: ignoradas, resultado guardado advertido, ausen
     const imported = planImport(parsed.sheets[0]!, 1, selected, [], 'PARTIAL', commercial);
     assert.equal(imported.summary.errors, errors);
     if (!errors) {
-      assert.equal(imported.rows[0]!.data!.price, '100.12345678901234');
+      assert.equal(imported.rows[0]!.data!.price, '100.13');
       assert.equal(imported.summary.warnings, 1);
     }
     const ignored = planImport(parsed.sheets[0]!, 1, { ...selected, price: null }, [], 'PARTIAL');
@@ -435,9 +442,6 @@ test('seguridad preservada: XML malformado, DTD/entidades, path traversal y rang
   assert.equal(
     catalogPreviewInputSchema.safeParse({
       uploadId: randomUUID(),
-      sheet: 'Lista',
-      headerRow: 1,
-      mapping,
       mode: 'PARTIAL',
       organizationId: randomUUID(),
     }).success,

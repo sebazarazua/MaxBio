@@ -12,21 +12,30 @@ import { useWorkspace } from '../workspace';
 export function useResource<T>(path: string | null, schema: { parse(input: unknown): T }) {
   const [revision, setRevision] = useState(0);
   const key = path + ':' + revision;
-  const [result, setResult] = useState<{ key: string; data?: T; error?: string }>({ key: '' });
+  const [result, setResult] = useState<{ key: string; path?: string; data?: T; error?: string }>({
+    key: '',
+  });
   useEffect(() => {
     if (path === null) return;
     const abort = new AbortController();
     void catalogFetch(path, schema, { signal: abort.signal })
       .then((data) => {
-        if (!abort.signal.aborted) setResult({ key, data });
+        if (!abort.signal.aborted) setResult({ key, path, data });
       })
       .catch((error) => {
-        if (!abort.signal.aborted) setResult({ key, error: humanError(error) });
+        if (!abort.signal.aborted)
+          setResult((previous) => ({
+            key,
+            path,
+            data: previous.path?.split('?')[0] === path.split('?')[0] ? previous.data : undefined,
+            error: humanError(error),
+          }));
       });
     return () => abort.abort();
   }, [path, schema, key]);
   return {
-    data: result.key === key ? result.data : undefined,
+    data:
+      path !== null && result.path?.split('?')[0] === path.split('?')[0] ? result.data : undefined,
     error: result.key === key ? result.error : undefined,
     loading: path !== null && result.key !== key,
     reload: () => setRevision((value) => value + 1),
@@ -64,15 +73,17 @@ export function Feedback({
   error,
   reload,
   loading,
+  data,
 }: {
   error?: string;
   reload?: () => void;
   loading?: boolean;
+  data?: unknown;
 }) {
   if (loading)
     return (
       <p className="catalog-status" role="status">
-        Cargando información…
+        {data ? 'Actualizando resultados…' : 'Cargando información…'}
       </p>
     );
   if (!error) return null;
@@ -264,12 +275,14 @@ export function EntityChoice({
   value,
   change,
   allowCreate = true,
+  emptyLabel,
 }: {
   kind: 'brands' | 'categories' | 'suppliers';
   label: string;
   value: Choice | null;
   change: (value: Choice | null) => void;
   allowCreate?: boolean;
+  emptyLabel?: string;
 }) {
   const search = useSearch();
   const resource = useResource(
@@ -307,7 +320,7 @@ export function EntityChoice({
           }
           disabled={mutation.busy}
         >
-          <option value="">Sin {label.toLocaleLowerCase('es')}</option>
+          <option value="">{emptyLabel ?? `Sin ${label.toLocaleLowerCase('es')}`}</option>
           {options.map((item) => (
             <option key={item.id} value={item.id}>
               {item.name}

@@ -899,3 +899,82 @@ test('archivar producto conserva identidad, relaciones y códigos reservados', a
     200,
   );
 });
+
+test('búsquedas por tokens, tildes y relaciones; renombrar catálogos refresca documentos de búsqueda', async () => {
+  const brand = await client.brand.create({
+    data: { organizationId: a, name: 'Márca buscable', normalizedName: 'márca buscable' },
+  });
+  const category = await client.category.create({
+    data: { organizationId: a, name: 'Ortopédica buscable', normalizedName: 'ortopédica buscable' },
+  });
+  const product = await json('products', 'POST', {
+    name: 'Prótesis Walker corta',
+    unitOfMeasure: 'UNIT',
+    manufacturerName: 'Fabricante especial',
+    model: 'MODELO-SEARCH',
+    brandId: brand.id,
+    categoryId: category.id,
+  });
+  const supplier = await json('suppliers', 'POST', { name: 'Mercado Médico buscable' });
+  for (const [kind, q, id] of [
+    ['brands', 'buscable MÁRCA', brand.id],
+    ['categories', 'buscable Ortopédica', category.id],
+  ])
+    assert.ok(
+      (await json(kind + '?q=' + encodeURIComponent(q!))).items.some((item) => item.id === id),
+    );
+  const code = 'SEARCH-' + randomUUID();
+  await json(`products/${product.id}/identifiers`, 'POST', {
+    kind: 'INTERNAL_CODE',
+    value: code,
+    expectedVersion: await version(product.id),
+  });
+  await json(`products/${product.id}/supplier-products`, 'POST', {
+    supplierId: supplier.id,
+    supplierCode: '00-a/B-buscable',
+    expectedVersion: await version(product.id),
+  });
+  for (const q of [
+    'walker corta',
+    'corta WALKER',
+    'protesis',
+    'marca walker',
+    'ortopedica corta',
+    'fabricante MODELO-SEARCH',
+    '00-a/B-buscable walker',
+    code + ' corta',
+    'medico walker',
+  ]) {
+    assert.ok(
+      (await json('products?q=' + encodeURIComponent(q))).items.some(
+        (item) => item.id === product.id,
+      ),
+      q,
+    );
+  }
+  for (const q of ['mercado medico', 'MEDICO mercado'])
+    assert.ok(
+      (await json('suppliers?q=' + encodeURIComponent(q))).items.some(
+        (item) => item.id === supplier.id,
+      ),
+    );
+  assert.ok((await json('products?q=4006381333931')).items.some((item) => item.id === productA));
+  await client.brand.update({
+    where: { id: brand.id },
+    data: { name: 'Marca renombrada', normalizedName: 'marca renombrada' },
+  });
+  await client.category.update({
+    where: { id: category.id },
+    data: { name: 'Categoría nueva', normalizedName: 'categoría nueva' },
+  });
+  for (const q of ['renombrada walker', 'nueva corta'])
+    assert.ok(
+      (await json('products?q=' + encodeURIComponent(q))).items.some(
+        (item) => item.id === product.id,
+      ),
+    );
+  assert.equal(
+    (await json('products?q=' + encodeURIComponent(code), 'GET', undefined, adminB)).total,
+    0,
+  );
+});
