@@ -11,7 +11,7 @@ export default async function Page({
   const requested = (await searchParams).returnTo;
   const returnTo =
     typeof requested === 'string' &&
-    /^\/inventario\/(ingresos|inicial)\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    /^\/(inventario\/(ingresos|inicial)|remitos)\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       requested,
     )
       ? requested
@@ -22,7 +22,7 @@ export default async function Page({
       <h1>Identificar producto</h1>
       {returnTo && (
         <p>
-          <Link href={returnTo}>Volver a la operación de inventario guardada</Link>
+          <Link href={returnTo}>Volver a la operación guardada</Link>
         </p>
       )}
       <ProductIdentification />

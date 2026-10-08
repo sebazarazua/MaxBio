@@ -169,9 +169,9 @@ El build no requiere una base activa. Para probar las aplicaciones compiladas, e
 
 ## Alcance y próximo paso
 
-Catálogo, listas, identificación HID, Clientes e Inventory V1 están implementados. No se implementaron salidas comerciales, reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, parser GS1 completo, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
+Catálogo, listas, identificación HID, Clientes, Inventory V1 y Remitos con salida OUTBOUND están implementados. No se implementaron impresión de remitos, reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, parser GS1 completo, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
 
-El siguiente paso es probar Inventory con usuarios, lectores HID y datos reales, validar unidades/políticas y el procedimiento de conteo gradual; luego ampliar correcciones físicas y salidas/Remitos. Las decisiones están registradas en [decisiones](docs/architecture/decisions.md).
+El siguiente paso es probar Inventory y Remitos con usuarios, lectores HID y datos reales, validar unidades/políticas y el procedimiento de conteo gradual; el renderer físico del talonario queda para un incremento separado. Las decisiones están registradas en [decisiones](docs/architecture/decisions.md).
 
 ## Inventory V1
 
@@ -181,4 +181,10 @@ Ingreso: proveedor → código + Enter → cantidad/datos físicos → Agregar �
 
 Inventario inicial: sesiones pequeñas, un producto completo por toma de conteo, sin historia previa de Inventory. Hacerlo antes de recibir nueva mercadería de un producto que ya tenía existencias. Se puede retomar/cancelar el borrador; cantidad cero confirma cobertura sin movimiento artificial. Un producto con historia requiere ajuste ADMIN o recuento futuro. ADMIN puede registrar diferencias observado/registrado sobre posiciones existentes con motivo y explicación, conservando el movimiento original.
 
-Ver [implementación y reporte completo](docs/architecture/inventory.md), [diseño original](docs/architecture/inventory-design.md) y [verificación](docs/architecture/verification.md). Para comprobar la proyección: `pnpm inventory:verify`. Reconstrucción técnica por producto: `pnpm inventory:verify --organization UUID --product UUID --rebuild`; no usarla para corregir historia de negocio. Sin salidas comerciales, el saldo representa los movimientos registrados y la cobertura mostrada.
+Ver [implementación y reporte completo](docs/architecture/inventory.md), [diseño original](docs/architecture/inventory-design.md) y [verificación](docs/architecture/verification.md). Para comprobar la proyección: `pnpm inventory:verify`. Reconstrucción técnica por producto: `pnpm inventory:verify --organization UUID --product UUID --rebuild`; no usarla para corregir historia de negocio. El saldo representa los movimientos registrados y la cobertura mostrada.
+
+## Remitos
+
+**Remitos → Hacer remito**: elegir cliente, fecha, número del talonario (con ceros), paciente/afiliado opcionales y productos por búsqueda o código. Seleccionar explícitamente cantidades/lotes/series desde existencias de Inventory, guardar borrador, revisar y **Confirmar salida**. ADMIN y OPERATOR pueden operar; solo ADMIN cancela borradores. El borrador no reserva ni mueve stock. Confirmar produce exactamente un OUTBOUND, congela los datos documentales y deja la ficha de solo lectura, con acceso al historial físico.
+
+No hay impresión, Word, screenshot, PDF ni numeración automática. Ver [dominio y API](docs/architecture/delivery-notes.md) y [reporte de verificación](docs/architecture/delivery-notes-verification.md).

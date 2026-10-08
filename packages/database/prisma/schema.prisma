@@ -49,6 +49,9 @@ model Organization {
   inventoryCountLines     InventoryCountLine[]
   inventoryMovements      InventoryMovement[]
   inventoryMovementLines  InventoryMovementLine[]
+  deliveryNotes DeliveryNote[]
+  deliveryNoteLines DeliveryNoteLine[]
+  deliveryNoteAllocations DeliveryNoteAllocation[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -82,6 +85,7 @@ model Membership {
   inventoryReceipts  InventoryReceipt[]
   inventoryCounts    InventoryCountSession[]
   inventoryMovements InventoryMovement[]
+  confirmedDeliveryNotes DeliveryNote[]
 
   @@unique([organizationId, userId])
   @@unique([id, userId])
@@ -179,6 +183,8 @@ model Customer {
   searchText       String       @default("") @db.Text
   organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
+  deliveryNotes DeliveryNote[]
+
   @@unique([organizationId, id])
   @@unique([organizationId, cuit])
   @@index([organizationId, archivedAt, name, id])
@@ -220,6 +226,8 @@ model Product {
   inventoryCountScopes   InventoryCountScope[]
   inventoryCountLines    InventoryCountLine[]
   inventoryMovementLines InventoryMovementLine[]
+
+  deliveryNoteLines DeliveryNoteLine[]
 
   @@unique([organizationId, id])
   @@index([organizationId, archivedAt, name, id])
@@ -539,6 +547,7 @@ enum InventoryDocumentStatus {
 }
 
 enum InventoryMovementType {
+  OUTBOUND
   RECEIPT
   INITIAL_COUNT
   ADJUSTMENT
@@ -652,6 +661,9 @@ model InventoryBalance {
   serial         InventorySerial?   @relation(fields: [organizationId, productId, serialId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
   quantity       Decimal            @db.Decimal(20, 6)
 
+  deliveryAllocations DeliveryNoteAllocation[]
+
+  @@unique([organizationId, productId, id])
   @@unique([organizationId, id])
   @@unique([organizationId, productId, locationId, lotId, serialId, condition], map: "InventoryBalance_position_key")
   @@index([organizationId, productId, locationId])
@@ -815,6 +827,10 @@ model InventoryMovement {
   recordedAt     DateTime                @default(now()) @db.Timestamptz(3)
   postedAt       DateTime?               @db.Timestamptz(3)
   lines          InventoryMovementLine[]
+  deliveryNoteId String? @db.Uuid
+  deliveryNote DeliveryNote? @relation(fields: [organizationId, deliveryNoteId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, deliveryNoteId])
 
   @@unique([organizationId, id])
   @@unique([organizationId, receiptId])
@@ -850,6 +866,10 @@ model InventoryMovementLine {
   receiptLine    InventoryReceiptLine? @relation(fields: [organizationId, productId, locationId, receiptLineId], references: [organizationId, productId, locationId, id], onDelete: Restrict, onUpdate: Restrict, map: "InventoryMovementLine_receipt_source_fkey")
   countLine      InventoryCountLine?   @relation(fields: [organizationId, productId, locationId, countLineId], references: [organizationId, productId, locationId, id], onDelete: Restrict, onUpdate: Restrict, map: "InventoryMovementLine_count_source_fkey")
 
+  deliveryAllocationId String? @db.Uuid
+  deliveryAllocation DeliveryNoteAllocation? @relation(fields: [organizationId, productId, deliveryAllocationId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict, map: "InventoryMovementLine_delivery_source_fkey")
+
+  @@unique([organizationId, productId, deliveryAllocationId])
   @@index([organizationId, productId, movementId, id])
   @@index([organizationId, lotId, movementId])
   @@index([organizationId, serialId, movementId])
@@ -872,4 +892,78 @@ model SupplierCatalogImportProfile {
   supplier       Supplier     @relation(fields: [organizationId, supplierId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
 
   @@unique([organizationId, supplierId, fingerprint])
+}
+
+
+model DeliveryNote {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  customerId String @db.Uuid
+  customer Customer @relation(fields: [organizationId, customerId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  status InventoryDocumentStatus @default(DRAFT)
+  version Int @default(1)
+  documentDate DateTime @db.Date
+  documentPrefix String? @db.VarChar(12)
+  documentNumber String? @db.VarChar(12)
+  patientName String? @db.VarChar(160)
+  affiliateNumber String? @db.VarChar(80)
+  notes String? @db.VarChar(1000)
+  customerSnapshot Json?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  confirmedAt DateTime? @db.Timestamptz(3)
+  confirmedByUserId String? @db.Uuid
+  confirmedByMembershipId String? @db.Uuid
+  confirmedBy Membership? @relation(fields: [organizationId, confirmedByMembershipId, confirmedByUserId], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  creationHash String @db.Char(64)
+  confirmationOperationId String? @db.Uuid
+  requestHash String? @db.Char(64)
+  lines DeliveryNoteLine[]
+  movement InventoryMovement?
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, documentPrefix, documentNumber])
+  @@unique([organizationId, confirmationOperationId])
+  @@index([organizationId, documentDate, id])
+  @@index([organizationId, customerId])
+  @@index([organizationId, status, createdAt, id])
+}
+
+model DeliveryNoteLine {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  deliveryNoteId String @db.Uuid
+  deliveryNote DeliveryNote @relation(fields: [organizationId, deliveryNoteId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  productId String @db.Uuid
+  product Product @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  ordinal Int
+  quantity Decimal @db.Decimal(20,6)
+  productNameSnapshot String? @db.VarChar(200)
+  presentationSnapshot String? @db.VarChar(200)
+  unitOfMeasureSnapshot UnitOfMeasure?
+  gtinSnapshot String? @db.VarChar(14)
+  allocations DeliveryNoteAllocation[]
+
+  @@unique([organizationId, productId, id])
+  @@index([organizationId, deliveryNoteId, ordinal])
+  @@index([organizationId, productId])
+}
+
+model DeliveryNoteAllocation {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productId String @db.Uuid
+  lineId String @db.Uuid
+  line DeliveryNoteLine @relation(fields: [organizationId, productId, lineId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+  positionId String @db.Uuid
+  position InventoryBalance @relation(fields: [organizationId, productId, positionId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+  quantity Decimal @db.Decimal(20,6)
+  movementLine InventoryMovementLine?
+
+  @@unique([organizationId, productId, id])
+  @@unique([organizationId, lineId, positionId])
+  @@index([organizationId, positionId])
 }

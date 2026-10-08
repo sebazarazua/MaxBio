@@ -66,7 +66,7 @@ test(
     }
     try {
       await cp(join(source, 'migration_lock.toml'), join(migrations, 'migration_lock.toml'));
-      for (const name of names.filter((name) => name !== customerMigration))
+      for (const name of names.filter((name) => name < customerMigration))
         await cp(join(source, name), join(migrations, name), { recursive: true });
       for (const mode of ['upgrade', 'empty']) {
         const dbName = 'maxbio_customers_migration_' + randomUUID().replaceAll('-', '');
@@ -97,6 +97,8 @@ test(
             await cp(join(source, customerMigration), join(migrations, customerMigration), {
               recursive: true,
             });
+            for (const name of names.filter((name) => name > customerMigration))
+              await cp(join(source, name), join(migrations, name), { recursive: true });
             cli(connection, ['migrate', 'deploy']);
             assert.equal(await client.product.count(), 1);
             assert.equal(await client.supplier.count(), 1);

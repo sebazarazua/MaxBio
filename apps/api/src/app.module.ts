@@ -9,6 +9,7 @@ import { CsrfGuard } from './common/auth/csrf.guard.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { InventoryModule } from './modules/inventory/inventory.module.js';
 import { CustomersModule } from './modules/customers/customers.module.js';
+import { DeliveryNotesModule } from './modules/delivery-notes/delivery-notes.module.js';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { CustomersModule } from './modules/customers/customers.module.js';
     CatalogModule,
     InventoryModule,
     CustomersModule,
+    DeliveryNotesModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: CsrfGuard },

@@ -1,5 +1,7 @@
 # Inventory V1 implementado
 
+Actualización del 8 de octubre de 2026: [Remitos + OUTBOUND](delivery-notes.md) extiende el posting y el ledger existentes con fuente tipada DeliveryNote y allocations físicas. Las referencias a salidas/Remitos diferidos en el reporte V1 siguiente describen su alcance histórico del 6 de octubre; ese punto está implementado por el nuevo incremento.
+
 Fecha de entrega: 6 de octubre de 2026. Este documento describe el código real del incremento operativo reducido. [inventory-design.md](inventory-design.md) conserva el diseño original y sus alternativas; no es una lista de funcionalidades disponibles.
 
 Inventory permite ingresar mercadería de un proveedor, contar existencias iniciales gradualmente, consultar stock/historia y registrar diferencias administrativas sobre posiciones existentes. Catalog sigue identificando artículos; importar una lista, crear/identificar un Product, reconocer un código o guardar un borrador genera **cero stock**.

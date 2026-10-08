@@ -1,5 +1,7 @@
 # Arquitectura de MaxBio
 
+Actualización del 8 de octubre de 2026: Customers y [DeliveryNotes](delivery-notes.md) ya están implementados. DeliveryNotes consume el posting transaccional de Inventory, con OUTBOUND y relaciones tipadas. Impresión, reservas, devoluciones y facturación siguen diferidas. Las descripciones futuras de Remitos más abajo se conservan como contexto del diseño inicial.
+
 Catalog incluye desde el 6 de octubre de 2026 el [catálogo de referencia de proveedores](supplier-catalog.md), separado de Product e Inventory, con importación CSV/XLSX confirmada y tenant-scoped.
 
 MaxBio se organiza como **monolito modular**: una API desplegable y una web desplegable, con PostgreSQL compartido por los módulos de la API. La separación de procesos web/API no implica microservicios de negocio.

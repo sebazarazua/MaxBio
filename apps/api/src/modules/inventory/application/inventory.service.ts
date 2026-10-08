@@ -882,6 +882,145 @@ export class InventoryService {
     });
     return m.id;
   }
+  /** Internal composition API. Caller must keep document, posting and audit in this transaction. */
+  deliveryTransaction<T>(c: RequestActorContext, fn: (tx: Tx) => Promise<T>, admin = false) {
+    return this.write(c, fn, admin);
+  }
+  lockDeliveryProducts(tx: Tx, c: RequestActorContext, ids: string[]) {
+    return this.lockProducts(tx, c, ids);
+  }
+  /** Products must already be locked in sorted order, before the source document lock. */
+  async postDeliveryNote(tx: Tx, c: RequestActorContext, deliveryNoteId: string) {
+    const source = await tx.deliveryNote.findFirstOrThrow({
+      where: { organizationId: c.organizationId, id: deliveryNoteId, status: 'DRAFT' },
+      include: {
+        lines: {
+          orderBy: { ordinal: 'asc' },
+          include: {
+            product: {
+              include: {
+                inventoryPolicy: true,
+                identifiers: {
+                  where: { kind: 'GTIN', archivedAt: null },
+                  orderBy: { createdAt: 'asc' },
+                },
+              },
+            },
+            allocations: {
+              orderBy: { positionId: 'asc' },
+              include: { position: { include: { lot: true, serial: true, location: true } } },
+            },
+          },
+        },
+      },
+    });
+    if (!source.lines.length)
+      throw new BadRequestException('Agregá al menos un producto antes de confirmar.');
+    const lines: PostingLine[] = [];
+    const totals = new Map<string, bigint>();
+    const scopes = new Set<string>();
+    const serials = new Set<string>();
+    const day = businessDate();
+    for (const l of source.lines) {
+      const p = l.product,
+        policy = p.inventoryPolicy;
+      if (p.archivedAt) throw new ConflictException('Este producto está archivado.');
+      if (!policy)
+        throw new ConflictException(
+          'Un administrador debe revisar los datos físicos de este producto.',
+        );
+      let requested: bigint;
+      try {
+        requested = validQuantity(l.quantity.toString(), p.unitOfMeasure);
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error ? error.message : 'Revisá la cantidad.',
+        );
+      }
+      if (l.allocations.reduce((n, a) => n + amount(a.quantity.toString()), 0n) !== requested)
+        throw new BadRequestException('Elegí existencias para toda la cantidad de cada producto.');
+      for (const a of l.allocations) {
+        const b = a.position;
+        const q = amount(a.quantity.toString());
+        if (q <= 0n || (['UNIT', 'PAIR'].includes(p.unitOfMeasure) && q % SCALE !== 0n))
+          throw new BadRequestException('Revisá las cantidades seleccionadas.');
+        if (b.productId !== p.id || b.organizationId !== c.organizationId)
+          throw new NotFoundException();
+        if (b.location.archivedAt || b.condition !== 'USABLE')
+          throw new ConflictException('La existencia seleccionada no está disponible para salida.');
+        if (b.lot?.expirationDate && dateText(b.lot.expirationDate)! < day)
+          throw new ConflictException(
+            'El lote seleccionado está vencido y no está disponible para salida.',
+          );
+        if (
+          (policy.lotRequired && !b.lot?.lotNumber) ||
+          (policy.expirationRequired && !b.lot?.expirationDate) ||
+          policy.serialRequired !== Boolean(b.serialId)
+        )
+          throw new ConflictException(
+            'La existencia no cumple los datos físicos requeridos del producto.',
+          );
+        if (b.serialId) {
+          if (q !== SCALE || serials.has(b.serialId))
+            throw new BadRequestException(
+              'Cada serie debe aparecer una sola vez y representar una unidad.',
+            );
+          serials.add(b.serialId);
+        }
+        const sum = (totals.get(b.id) ?? 0n) + q;
+        totals.set(b.id, sum);
+        if (sum > amount(b.quantity.toString()))
+          throw new ConflictException(
+            b.serialId
+              ? 'Esta serie ya no está disponible.'
+              : 'Ya no hay stock suficiente para completar este remito. Revisá los productos antes de confirmar.',
+          );
+        const s = await tx.inventoryStockScope.findUnique({
+          where: {
+            organizationId_productId_locationId: {
+              organizationId: c.organizationId,
+              productId: p.id,
+              locationId: b.locationId,
+            },
+          },
+        });
+        if (!s || s.activeCountSessionId)
+          throw new ConflictException('Este producto está en conteo o necesita revisión de stock.');
+        scopes.add(s.id);
+        lines.push({
+          organizationId: c.organizationId,
+          movementId: '',
+          deliveryAllocationId: a.id,
+          productId: p.id,
+          locationId: b.locationId,
+          lotId: b.lotId,
+          serialId: b.serialId,
+          condition: b.condition,
+          quantityDelta: quantity(-q),
+          unitOfMeasure: p.unitOfMeasure,
+          productName: p.name,
+          gtin: p.identifiers[0]?.normalizedValue ?? null,
+          lotNumber: b.lot?.lotNumber ?? null,
+          expirationDate: b.lot?.expirationDate ?? null,
+          serialNumber: b.serial?.serialNumber ?? null,
+        });
+      }
+      await tx.deliveryNoteLine.update({
+        where: { id: l.id },
+        data: {
+          productNameSnapshot: p.name,
+          presentationSnapshot: p.presentation,
+          unitOfMeasureSnapshot: p.unitOfMeasure,
+          gtinSnapshot: p.identifiers[0]?.normalizedValue ?? null,
+        },
+      });
+    }
+    const movementId = await this.applyMovement(tx, c, { type: 'OUTBOUND', deliveryNoteId }, lines);
+    for (const id of [...scopes].sort())
+      await tx.inventoryStockScope.update({ where: { id }, data: { version: { increment: 1 } } });
+    if (!movementId) throw new BadRequestException('Seleccioná existencias antes de confirmar.');
+    return movementId;
+  }
   async confirm(c: RequestActorContext, kind: DocumentKind, id: string, input: InventoryConfirm) {
     const initial = await this.document(this.db.client, c, kind, id, true);
     const hash = digest({ kind, id, ...input });
@@ -1303,7 +1442,7 @@ export class InventoryService {
           actorName: m.membership.user.displayName,
           supplierName: m.receipt?.supplier.name ?? null,
           notes: m.notes,
-          sourceId: m.receiptId ?? m.countSessionId,
+          sourceId: m.receiptId ?? m.countSessionId ?? m.deliveryNoteId,
           change: quantity(m.lines.reduce((n, l) => n + amount(l.quantityDelta.toString()), 0n)),
           lines: m.lines.map((l) => ({
             quantityDelta: quantity(amount(l.quantityDelta.toString())),

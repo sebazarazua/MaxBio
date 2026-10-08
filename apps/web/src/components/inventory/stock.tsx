@@ -21,6 +21,7 @@ import {
   quantityLabels,
 } from './common';
 const operationLabels = {
+  OUTBOUND: 'Salida por remito',
   RECEIPT: 'Ingreso de proveedor',
   INITIAL_COUNT: 'Inventario inicial',
   ADJUSTMENT: 'Ajuste administrativo',
@@ -352,7 +353,7 @@ export function StockDetail({ productId }: { productId: string }) {
                 </thead>
                 <tbody>
                   {history.data.items.map((h) => (
-                    <tr key={h.id}>
+                    <tr key={h.id} id={'movimiento-' + h.id}>
                       <td>{new Date(h.recordedAt).toLocaleString('es-AR')}</td>
                       <td>{operationLabels[h.type]}</td>
                       <td>
@@ -369,10 +370,12 @@ export function StockDetail({ productId }: { productId: string }) {
                           <p>
                             <Link
                               href={
-                                '/inventario/' +
-                                (h.type === 'RECEIPT' ? 'ingresos' : 'inicial') +
-                                '/' +
-                                h.sourceId
+                                h.type === 'OUTBOUND'
+                                  ? '/remitos/' + h.sourceId
+                                  : '/inventario/' +
+                                    (h.type === 'RECEIPT' ? 'ingresos' : 'inicial') +
+                                    '/' +
+                                    h.sourceId
                               }
                             >
                               Ver operación

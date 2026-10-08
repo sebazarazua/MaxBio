@@ -9,6 +9,7 @@ const links = [
   { href: '/clientes', label: 'Clientes', icon: 'clients' },
   { href: '/referencias', label: 'Listas de proveedores', icon: 'products' },
   { href: '/identificar', label: 'Identificar producto', icon: 'products' },
+  { href: '/remitos', label: 'Remitos', icon: 'products' },
   { href: '/stock', label: 'Stock', icon: 'products' },
 ] as const;
 export function Navigation() {

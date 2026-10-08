@@ -182,7 +182,7 @@ export const inventoryHistorySchema = z
       z
         .object({
           id: z.uuid(),
-          type: z.enum(['RECEIPT', 'INITIAL_COUNT', 'ADJUSTMENT']),
+          type: z.enum(['RECEIPT', 'INITIAL_COUNT', 'ADJUSTMENT', 'OUTBOUND']),
           recordedAt: z.iso.datetime(),
           actorName: z.string(),
           supplierName: z.string().nullable(),

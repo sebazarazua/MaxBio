@@ -1176,3 +1176,31 @@ h2 {
   font-size: 30px;
   font-weight: 700;
 }
+
+.delivery-editor {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.delivery-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  padding: 0;
+}
+.delivery-choices button {
+  white-space: normal;
+  text-align: left;
+}
+.delivery-position {
+  border-top: 1px solid var(--border, #dbe2df);
+  padding: 0.8rem 0;
+}
+.delivery-position input:not([type='checkbox']) {
+  max-width: 12rem;
+}
+.preserve-lines {
+  white-space: pre-wrap;
+}
