@@ -166,6 +166,10 @@ test(
       assert.equal(items.find((item) => item.id === second)!.internalReferenceCode, 'A000002');
       assert.equal(items.find((item) => item.id === third)!.internalReferenceCode, 'B000001');
       assert.equal(items.find((item) => item.id === foreign)!.internalReferenceCode, 'A000001');
+      for (const id of [supplierA, supplierB, supplierOther]) {
+        const supplier = await client.supplier.findUniqueOrThrow({ where: { id } });
+        assert.equal(supplier.catalogPrefixLength, supplier.catalogPrefix!.length);
+      }
       assert.equal(items.find((item) => item.id === first)!.supplierProductId, link.id);
       assert.equal(items.find((item) => item.id === first)!.supplierCode, '00-a/B');
       assert.equal(items.find((item) => item.id === first)!.price!.toFixed(2), '218505.12');

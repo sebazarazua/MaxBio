@@ -223,6 +223,14 @@ export class SupplierCatalogService {
   }
   async listItems(context: RequestActorContext, query: SupplierCatalogQuery, supplierId?: string) {
     if (supplierId) await this.supplier(context, supplierId);
+    const codeOrder = (
+      direction: 'asc' | 'desc',
+    ): Prisma.SupplierCatalogItemOrderByWithRelationInput[] => [
+      { supplier: { catalogPrefixLength: direction } },
+      { supplier: { catalogPrefix: direction } },
+      { referenceSequence: direction },
+      { id: 'asc' },
+    ];
     const where: Prisma.SupplierCatalogItemWhereInput = {
       organizationId: context.organizationId,
       ...(supplierId || query.supplierId ? { supplierId: supplierId ?? query.supplierId } : {}),
@@ -249,26 +257,14 @@ export class SupplierCatalogService {
         ...windowFor(query),
         orderBy:
           query.sort === 'PRICE'
-            ? [
-                { price: { sort: query.direction, nulls: 'last' } },
-                { internalReferenceCode: 'asc' },
-                { id: 'asc' },
-              ]
+            ? [{ price: { sort: query.direction, nulls: 'last' } }, ...codeOrder('asc')]
             : query.sort === 'DESCRIPTION'
-              ? [
-                  { description: { sort: query.direction, nulls: 'last' } },
-                  { internalReferenceCode: 'asc' },
-                  { id: 'asc' },
-                ]
+              ? [{ description: { sort: query.direction, nulls: 'last' } }, ...codeOrder('asc')]
               : query.sort === 'SUPPLIER'
-                ? [
-                    { supplier: { name: query.direction } },
-                    { internalReferenceCode: 'asc' },
-                    { id: 'asc' },
-                  ]
+                ? [{ supplier: { name: query.direction } }, ...codeOrder('asc')]
                 : supplierId || query.supplierId
                   ? [{ referenceSequence: query.direction }, { id: 'asc' }]
-                  : [{ internalReferenceCode: query.direction }, { id: 'asc' }],
+                  : codeOrder(query.direction),
         include: itemInclude,
       }),
       this.database.client.supplierCatalogItem.count({ where }),

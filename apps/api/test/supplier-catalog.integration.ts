@@ -1151,6 +1151,143 @@ test('automático: códigos propios, reimportación, secuencia concurrente, arch
   );
 });
 
+test('orden lógico global A…Z, AA, AB: ambos sentidos, paginación estable y desempates', async () => {
+  const organization = await client.organization.create({
+    data: { name: 'Orden ordinal', slug: randomUUID() },
+  });
+  orgs.push(organization.id);
+  const membership = await client.membership.create({
+    data: { organizationId: organization.id, userId: adminA.userId, role: 'ADMIN' },
+  });
+  const token = randomBytes(32).toString('base64url');
+  const session = await client.session.create({
+    data: {
+      userId: adminA.userId,
+      activeMembershipId: membership.id,
+      tokenHash: tokenVerifier(token),
+      expiresAt: new Date(Date.now() + 86400000),
+      absoluteExpiresAt: new Date(Date.now() + 86400000),
+    },
+  });
+  const actor: RequestActorContext = {
+    ...adminA,
+    organizationId: organization.id,
+    membershipId: membership.id,
+    sessionId: session.id,
+  };
+  cookies.set(session.id, 'maxbio-session=' + token);
+  const prefixes = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'AA', 'AB'];
+  const expected = prefixes.flatMap((prefix) => [prefix + '000001', prefix + '000002']);
+  const suppliers: string[] = [];
+  for (const prefix of prefixes) {
+    const supplier = await client.supplier.create({
+      data: { organizationId: organization.id, name: 'Lista comercial' },
+    });
+    suppliers.push(supplier.id);
+    const file = await inspect(
+      'CODIGO DEL ARTICULO;DESCRIPCION DEL PRODUCTO;PRECIO DE LISTA;ALICUOTA IVA\n01;Referencia corta;100.1199;21\n02;Referencia larga;90.0099;10.5',
+      supplier.id,
+      'ordinal.csv',
+      actor,
+    );
+    const staged = await checked(
+      await request(
+        `suppliers/${supplier.id}/catalog-imports/preview`,
+        'POST',
+        { uploadId: file.uploadId },
+        actor,
+      ),
+      catalogImportSchema,
+      201,
+    );
+    assert.equal(staged.summary.created, 2);
+    await commit(staged, false, actor);
+    const allocated = await client.supplier.findUniqueOrThrow({ where: { id: supplier.id } });
+    assert.equal(allocated.catalogPrefix, prefix);
+    assert.equal(allocated.catalogPrefixLength, prefix.length);
+  }
+  const query = async (params: Record<string, string>) =>
+    checked(
+      await request(
+        'supplier-catalog-items?' + new URLSearchParams(params),
+        'GET',
+        undefined,
+        actor,
+      ),
+      supplierCatalogListSchema,
+    );
+  for (const direction of ['asc', 'desc']) {
+    const found: string[] = [],
+      ids: string[] = [];
+    for (let page = 1; page <= 8; page++) {
+      const result = await query({ direction, sort: 'CODE', page: String(page), limit: '7' });
+      assert.equal(result.total, 56);
+      found.push(...result.items.map((item) => item.internalReferenceCode));
+      ids.push(...result.items.map((item) => item.id));
+    }
+    assert.deepEqual(found, direction === 'asc' ? expected : [...expected].reverse());
+    assert.equal(new Set(ids).size, 56);
+  }
+  assert.deepEqual(
+    (await query({ limit: '100' })).items.map((item) => item.internalReferenceCode),
+    expected,
+  );
+  for (const sort of ['PRICE', 'DESCRIPTION', 'SUPPLIER']) {
+    const ordered = (await query({ sort, limit: '100' })).items.map(
+      (item) => item.internalReferenceCode,
+    );
+    assert.deepEqual(
+      ordered,
+      sort === 'SUPPLIER'
+        ? expected
+        : [
+            ...prefixes.map((prefix) => prefix + (sort === 'PRICE' ? '000002' : '000001')),
+            ...prefixes.map((prefix) => prefix + (sort === 'PRICE' ? '000001' : '000002')),
+          ],
+    );
+  }
+  const local = await checked(
+    await request(
+      `suppliers/${suppliers[26]}/catalog-items?direction=desc`,
+      'GET',
+      undefined,
+      actor,
+    ),
+    supplierCatalogListSchema,
+  );
+  assert.deepEqual(
+    local.items.map((item) => item.internalReferenceCode),
+    ['AA000002', 'AA000001'],
+  );
+  const first = await client.supplier.update({
+    where: { id: suppliers[0]! },
+    data: { catalogPrefixLength: 99 },
+  });
+  assert.equal(first.catalogPrefixLength, 1);
+  for (const q of ['AA0000', 'Referencia corta', 'corta referencia'])
+    assert.ok((await query({ q })).items.length > 0);
+  const physical = { organizationId: organization.id };
+  assert.deepEqual(
+    await Promise.all([
+      client.product.count({ where: physical }),
+      client.productIdentifier.count({ where: physical }),
+      client.supplierProduct.count({ where: physical }),
+      client.inventoryMovement.count({ where: physical }),
+      client.inventoryBalance.count({ where: physical }),
+    ]),
+    [0, 0, 0, 0, 0],
+  );
+  assert.equal(
+    (
+      await checked(
+        await request('supplier-catalog-items?q=AA0000', 'GET', undefined, adminB),
+        supplierCatalogListSchema,
+      )
+    ).total,
+    0,
+  );
+});
+
 test(
   'aceptación opcional: archivo comercial original sin modificar, inspección y preview HTTP sin confirmar',
   { skip: !process.env.MAXBIO_CATALOG_ACCEPTANCE_FILE },

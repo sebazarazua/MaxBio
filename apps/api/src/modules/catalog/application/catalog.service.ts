@@ -67,15 +67,18 @@ function publicRow<T extends { organizationId: string }>(row: T) {
   void _organizationId;
   const {
     catalogPrefix: _prefix,
+    catalogPrefixLength: _prefixLength,
     catalogNextSequence: _sequence,
     searchText: _search,
     ...publicView
   } = view as typeof view & {
     catalogPrefix?: unknown;
+    catalogPrefixLength?: unknown;
     catalogNextSequence?: unknown;
     searchText?: unknown;
   };
   void _prefix;
+  void _prefixLength;
   void _sequence;
   void _search;
   return publicView;

@@ -57,6 +57,106 @@ const aliases: Record<keyof CatalogColumnMapping, string[]> = {
   vatRate: ['iva', 'tiva', 'alicuota', 'vatrate', 'vat'],
   currency: ['moneda', 'currency', 'divisa'],
 };
+
+// Exact legacy aliases remain authoritative. For longer headings, recognize a
+// bounded vocabulary and whole-word grammar; never substring/fuzzy similarity.
+const headingWords: Record<string, string> = {
+  cod: 'codigo',
+  code: 'codigo',
+  art: 'producto',
+  articulo: 'producto',
+  product: 'producto',
+  ref: 'referencia',
+  nro: 'numero',
+  num: 'numero',
+  description: 'descripcion',
+  name: 'nombre',
+  brand: 'marca',
+  laboratorio: 'fabricante',
+  manufacturer: 'fabricante',
+  model: 'modelo',
+  rubro: 'categoria',
+  familia: 'categoria',
+  category: 'categoria',
+  pack: 'presentacion',
+  empaque: 'presentacion',
+  price: 'precio',
+  unit: 'unitario',
+  ean: 'gtin',
+  upc: 'gtin',
+  barcode: 'gtin',
+  vat: 'iva',
+  t: 'tasa',
+};
+export function normalizeHeadingWords(value: string): string[] {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/([a-z])([0-9])/g, '$1 $2')
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word && !['de', 'del', 'la', 'el', 'y'].includes(word))
+    .map((word) => headingWords[word] ?? word);
+}
+function headingFields(header: string): Array<keyof CatalogColumnMapping> {
+  const normalized = normalizeHeader(header);
+  const exact = (Object.keys(aliases) as Array<keyof CatalogColumnMapping>).filter((field) =>
+    aliases[field].some(
+      (alias) => normalized === alias || new RegExp(`^${alias}[0-9]+$`).test(normalized),
+    ),
+  );
+  if (exact.length) return exact;
+  const words = normalizeHeadingWords(header);
+  // Numbered variants also compete: "Precio de lista 2" cannot be picked over
+  // "Precio de lista". Numeric GTIN forms are already covered by exact aliases.
+  if (/^[0-9]+$/.test(words.at(-1) ?? '')) words.pop();
+  const only = (...allowed: string[]) =>
+    words.length > 0 && words.every((word) => allowed.includes(word));
+  const has = (...anchors: string[]) => words.some((word) => anchors.includes(word));
+  if (only('gtin') || (has('codigo') && has('barras') && only('codigo', 'barras')))
+    return ['reportedGtin'];
+  if (
+    has('codigo') &&
+    has('alternativo', 'externo') &&
+    only('codigo', 'alternativo', 'externo', 'producto', 'proveedor')
+  )
+    return ['alternateSupplierCode'];
+  if (
+    (has('codigo', 'referencia') || (has('numero') && has('producto'))) &&
+    only('codigo', 'referencia', 'numero', 'interno', 'producto', 'proveedor')
+  )
+    return ['supplierCode'];
+  if (
+    has('descripcion', 'detalle', 'nombre') &&
+    only('descripcion', 'detalle', 'nombre', 'producto')
+  )
+    return ['description'];
+  if (
+    has('precio', 'valor', 'importe') &&
+    only('precio', 'valor', 'importe', 'unitario', 'lista', 'neto')
+  )
+    return ['price'];
+  if (
+    has('precio') &&
+    has('con', 'sin') &&
+    has('iva') &&
+    only('precio', 'unitario', 'lista', 'con', 'sin', 'iva')
+  ) {
+    // Contradictory commercial declarations must not select a price column.
+    return has('con') && has('sin') ? [] : ['price'];
+  }
+  if (has('iva') && only('iva', 'alicuota', 'tasa', 'porcentaje')) return ['vatRate'];
+  if (has('unidad') && only('unidad', 'medida')) return ['unitText'];
+  for (const [anchor, field] of [
+    ['marca', 'brandText'],
+    ['fabricante', 'manufacturerText'],
+    ['modelo', 'modelText'],
+    ['categoria', 'categoryText'],
+    ['presentacion', 'presentationText'],
+  ] as const)
+    if (has(anchor) && only(anchor, 'producto')) return [field];
+  return [];
+}
 export function detectMapping(headers: string[], sample: string[][] = []) {
   const mapping = Object.fromEntries(
     Object.keys(catalogMappingFields).map((key) => [key, null]),
@@ -65,14 +165,10 @@ export function detectMapping(headers: string[], sample: string[][] = []) {
     Object.keys(catalogMappingFields).map((key) => [key, 'MISSING']),
   ) as CatalogSheetInspection['confidence'];
   const used = new Set<number>();
+  const classified = headers.map(headingFields);
   for (const field of Object.keys(aliases) as Array<keyof CatalogColumnMapping>) {
-    const candidates = headers.flatMap((header, index) => {
-      const normalized = normalizeHeader(header);
-      return aliases[field].some(
-        (alias) => normalized === alias || new RegExp(`^${alias}[0-9]+$`).test(normalized),
-      )
-        ? [index]
-        : [];
+    const candidates = headers.flatMap((_, index) => {
+      return classified[index]!.includes(field) ? [index] : [];
     });
     if (candidates.length > 1) {
       confidence[field] = 'REVIEW';

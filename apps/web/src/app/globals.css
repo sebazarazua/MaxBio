@@ -48,6 +48,14 @@
 .import-rows {
   margin: 24px 0;
 }
+.import-row-details summary {
+  margin-top: 8px;
+  cursor: pointer;
+}
+.import-row-details .data-grid {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
 .sr-only {
   position: absolute;
   width: 1px;

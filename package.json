@@ -17,7 +17,7 @@
     "build": "pnpm --filter @maxbio/database generate && pnpm -r build",
     "lint": "eslint .",
     "typecheck": "pnpm prepare:packages && pnpm -r typecheck",
-    "test": "pnpm prepare:packages && pnpm --filter @maxbio/api test",
+    "test": "pnpm prepare:packages && pnpm --filter @maxbio/api test && pnpm --filter @maxbio/web test",
     "test:database": "pnpm prepare:packages && pnpm --filter @maxbio/database test:integration && pnpm --filter @maxbio/api test:integration",
     "admin:bootstrap": "pnpm prepare:packages && pnpm --filter @maxbio/api bootstrap:admin",
     "format": "prettier --write .",

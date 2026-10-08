@@ -214,6 +214,7 @@ model Supplier {
   id                String                         @id @default(uuid()) @db.Uuid
   organizationId    String                         @db.Uuid
   catalogPrefix     String?                        @db.VarChar(32)
+  catalogPrefixLength Int?
   catalogNextSequence Int                          @default(1)
   name              String                         @db.VarChar(200)
   legalName         String?                        @db.VarChar(200)
@@ -234,6 +235,7 @@ model Supplier {
 
   @@unique([organizationId, id])
   @@unique([organizationId, catalogPrefix])
+  @@index([organizationId, catalogPrefixLength, catalogPrefix])
   @@index([organizationId, archivedAt, name, id])
   searchText String @default("") @db.Text
   @@index([searchText(ops: raw("gin_trgm_ops"))],type:Gin)

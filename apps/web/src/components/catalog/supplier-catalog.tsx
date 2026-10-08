@@ -13,11 +13,15 @@ import {
   apiErrorSchema,
   type CatalogInspection,
   type CatalogImportView,
-  type CatalogImportRowView,
   type SupplierCatalogItemView,
 } from '@maxbio/contracts';
 import { catalogFetch, CatalogHttpError } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
+import {
+  CatalogImportPreviewTable,
+  formatCatalogPrice,
+  catalogOutcomeLabels,
+} from './catalog-import-preview-table';
 import {
   EntityChoice,
   Feedback,
@@ -322,15 +326,6 @@ async function uploadFile(supplierId: string, file: File) {
   }
   return catalogInspectionSchema.parse(data);
 }
-export function formatCatalogPrice(
-  price: string | null | undefined,
-  currency: string | null | undefined,
-): string {
-  if (price === null || price === undefined) return '—';
-  const [whole, cents = '00'] = price.split('.');
-  const amount = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ',' + cents.padEnd(2, '0');
-  return (currency === 'ARS' ? '$' : (currency ?? '')) + ' ' + amount;
-}
 export function CatalogImport({
   supplier,
   done,
@@ -581,15 +576,6 @@ function ImportSummary({ value }: { value: CatalogImportView }) {
     </dl>
   );
 }
-const outcomeLabels: Record<CatalogImportRowView['outcome'], string> = {
-  CREATED: 'Nueva referencia',
-  UPDATED: 'Actualización',
-  UNCHANGED: 'Sin cambios',
-  DUPLICATE: 'Repetida / ignorada',
-  EMPTY: 'Vacía / ignorada',
-  ERROR: 'Error / excluida',
-  CONFLICT: 'Conflicto / excluida',
-};
 function ImportRows({ id }: { id: string }) {
   const [page, setPage] = useState(1);
   const [outcome, setOutcome] = useState('');
@@ -610,7 +596,7 @@ function ImportRows({ id }: { id: string }) {
           }}
         >
           <option value="">Todas</option>
-          {Object.entries(outcomeLabels).map(([value, label]) => (
+          {Object.entries(catalogOutcomeLabels).map(([value, label]) => (
             <option key={value} value={value}>
               {label}
             </option>
@@ -620,78 +606,7 @@ function ImportRows({ id }: { id: string }) {
       <Feedback {...resource} reload={resource.reload} />
       {resource.data && (
         <>
-          <div className="reference-table-scroll">
-            <table className="reference-table">
-              <thead>
-                <tr>
-                  {[
-                    'Fila',
-                    'Código MaxBio',
-                    'Código del proveedor',
-                    'Código alternativo del proveedor',
-                    'Descripción',
-                    'Marca',
-                    'Fabricante',
-                    'Modelo',
-                    'Categoría',
-                    'Presentación',
-                    'Unidad',
-                    'GTIN informado',
-                    'Precio',
-                    'Moneda',
-                    'IVA (%)',
-                    'Incluye IVA',
-                    'Resultado',
-                  ].map((label) => (
-                    <th key={label} scope="col">
-                      {label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {resource.data.items.map((row) => (
-                  <tr key={row.id}>
-                    <td>{row.rowNumber}</td>
-                    <td className="code">
-                      {row.data?.internalReferenceCode ??
-                        (row.outcome === 'CREATED' || row.outcome === 'DUPLICATE'
-                          ? 'Nueva referencia'
-                          : '—')}
-                    </td>
-                    {[
-                      row.supplierCode,
-                      row.data?.alternateSupplierCode,
-                      row.data?.description,
-                      row.data?.brandText,
-                      row.data?.manufacturerText,
-                      row.data?.modelText,
-                      row.data?.categoryText,
-                      row.data?.presentationText,
-                      row.data?.unitText,
-                      row.data?.reportedGtin,
-                      formatCatalogPrice(row.data?.price, row.data?.currency),
-                      row.data?.currency,
-                      row.data?.vatRate,
-                      row.data?.priceIncludesVat === 'YES'
-                        ? 'Sí'
-                        : row.data?.priceIncludesVat === 'NO'
-                          ? 'No'
-                          : '—',
-                    ].map((value, index) => (
-                      <td key={index}>{value ?? '—'}</td>
-                    ))}
-                    <td>
-                      {outcomeLabels[row.outcome]}
-                      {row.messages.map((message, index) => (
-                        <small key={index}>{message}</small>
-                      ))}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <CatalogImportPreviewTable rows={resource.data.items} />
           <Pagination {...resource.data} change={setPage} />
         </>
       )}
