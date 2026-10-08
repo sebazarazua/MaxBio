@@ -29,6 +29,7 @@ model Organization {
   supplierProducts        SupplierProduct[]
   brands                  Brand[]
   categories              Category[]
+  customers               Customer[]
   supplierCatalogItems    SupplierCatalogItem[]
   supplierCatalogImports  SupplierCatalogImport[]
   supplierCatalogUploads  SupplierCatalogUpload[]
@@ -146,6 +147,42 @@ enum UnitOfMeasure {
   MILLILITER
   KILOGRAM
   GRAM
+}
+
+enum CustomerKind {
+  HEALTH_INSURER
+  INSTITUTION
+  COMPANY
+  OTHER
+}
+
+model Customer {
+  id               String       @id @default(uuid()) @db.Uuid
+  organizationId   String       @db.Uuid
+  name             String       @db.VarChar(200)
+  kind             CustomerKind
+  legalName        String?      @db.VarChar(200)
+  cuit             String?      @db.VarChar(11)
+  taxConditionText String?      @db.VarChar(80)
+  addressLine      String?      @db.VarChar(250)
+  locality         String?      @db.VarChar(120)
+  province         String?      @db.VarChar(100)
+  postalCode       String?      @db.VarChar(20)
+  contactName      String?      @db.VarChar(160)
+  phone            String?      @db.VarChar(50)
+  email            String?      @db.VarChar(254)
+  notes            String?      @db.VarChar(1000)
+  version          Int          @default(1)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(3)
+  archivedAt       DateTime?    @db.Timestamptz(3)
+  searchText       String       @default("") @db.Text
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, cuit])
+  @@index([organizationId, archivedAt, name, id])
+  @@index([searchText(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 enum ProductIdentifierKind {

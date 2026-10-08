@@ -8,6 +8,7 @@ import { IdentityModule } from './modules/identity/identity.module.js';
 import { CsrfGuard } from './common/auth/csrf.guard.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { InventoryModule } from './modules/inventory/inventory.module.js';
+import { CustomersModule } from './modules/customers/customers.module.js';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { InventoryModule } from './modules/inventory/inventory.module.js';
     IdentityModule,
     CatalogModule,
     InventoryModule,
+    CustomersModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: CsrfGuard },

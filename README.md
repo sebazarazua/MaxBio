@@ -47,6 +47,10 @@ ADMIN puede modificar el catálogo. OPERATOR consulta y busca; puede confirmar i
 
 Modelo, constraints, endpoints y decisiones en [catalog.md](docs/architecture/catalog.md).
 
+## Usar Clientes
+
+**Clientes** permite buscar obras sociales, instituciones, empresas y otros clientes comerciales por nombre, razón social, CUIT o contacto. ADMIN puede crear con solo nombre y tipo, editar, archivar y restaurar; OPERATOR consulta. CUIT es opcional, se valida localmente y permanece reservado dentro de la organización incluso al archivar. Los formularios agrupan datos opcionales y detectan cambios concurrentes. Ver [Clientes](docs/architecture/customers.md) y [verificación](docs/architecture/customers-verification.md). Crear clientes no modifica productos ni stock.
+
 ## Crear el primer administrador
 
 Después de migrar y ejecutar el seed, en PowerShell (contraseña de 15 a 128 caracteres; conviene una frase larga):
@@ -146,7 +150,7 @@ pnpm test:database
 pnpm build
 ```
 
-`pnpm test` ejecuta pruebas HTTP, contratos, cantidades, reglas de identificadores y seguridad con el runner nativo de Node, sin PostgreSQL. `pnpm test:database` necesita una base de desarrollo/pruebas migrada: verifica Identity, Catalog e Inventory HTTP real, constraints, roles, tenant, concurrencia y rollback. Inventory y el backfill del catálogo crean y eliminan bases propias para probar el ledger inmutable; el usuario PostgreSQL de pruebas necesita CREATE DATABASE. No ejecutar contra producción. Los fixtures anteriores se eliminan por UUID.
+`pnpm test` ejecuta pruebas HTTP, contratos, cantidades, reglas de identificadores y seguridad con el runner nativo de Node, sin PostgreSQL. `pnpm test:database` necesita una base de desarrollo/pruebas migrada: verifica Identity, Catalog, Customers e Inventory HTTP real, constraints, roles, tenant, concurrencia y rollback. Inventory y las verificaciones de migración crean y eliminan bases propias; el usuario PostgreSQL de pruebas necesita CREATE DATABASE. No ejecutar contra producción. Los fixtures se eliminan por UUID.
 
 La evidencia del bootstrap y sus límites están en [verification.md](docs/architecture/verification.md).
 
@@ -165,7 +169,7 @@ El build no requiere una base activa. Para probar las aplicaciones compiladas, e
 
 ## Alcance y próximo paso
 
-Catálogo, listas, identificación HID e Inventory V1 están implementados. No se implementaron salidas comerciales, reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, parser GS1 completo, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
+Catálogo, listas, identificación HID, Clientes e Inventory V1 están implementados. No se implementaron salidas comerciales, reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, parser GS1 completo, remitos, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
 
 El siguiente paso es probar Inventory con usuarios, lectores HID y datos reales, validar unidades/políticas y el procedimiento de conteo gradual; luego ampliar correcciones físicas y salidas/Remitos. Las decisiones están registradas en [decisiones](docs/architecture/decisions.md).
 

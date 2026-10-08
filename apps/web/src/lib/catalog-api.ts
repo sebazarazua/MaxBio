@@ -16,13 +16,17 @@ export async function catalogFetch<T>(
     method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
     body?: unknown;
     signal?: AbortSignal;
-    scope?: 'catalog' | 'inventory';
+    scope?: 'catalog' | 'inventory' | 'customers';
   } = {},
 ): Promise<T> {
   const method = options.method ?? 'GET';
   let response: Response;
   try {
-    response = await fetch(`/api/${options.scope ?? 'catalog'}/${path}`, {
+    const url =
+      options.scope === 'customers'
+        ? `/api/customers${path ? (path.startsWith('?') ? '' : '/') + path : ''}`
+        : `/api/${options.scope ?? 'catalog'}/${path}`;
+    response = await fetch(url, {
       method,
       cache: 'no-store',
       signal: options.signal ?? AbortSignal.timeout(20000),

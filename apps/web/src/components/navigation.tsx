@@ -6,6 +6,7 @@ const links = [
   { href: '/', label: 'Inicio', icon: 'home' },
   { href: '/productos', label: 'Productos', icon: 'products' },
   { href: '/proveedores', label: 'Proveedores', icon: 'suppliers' },
+  { href: '/clientes', label: 'Clientes', icon: 'clients' },
   { href: '/referencias', label: 'Listas de proveedores', icon: 'products' },
   { href: '/identificar', label: 'Identificar producto', icon: 'products' },
   { href: '/stock', label: 'Stock', icon: 'products' },

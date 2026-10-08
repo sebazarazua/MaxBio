@@ -9,33 +9,43 @@ import {
 import { catalogFetch, CatalogHttpError, humanError } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
 
-export function useResource<T>(path: string | null, schema: { parse(input: unknown): T }) {
+export function useResource<T>(
+  path: string | null,
+  schema: { parse(input: unknown): T },
+  scope: 'catalog' | 'inventory' | 'customers' = 'catalog',
+) {
   const [revision, setRevision] = useState(0);
-  const key = path + ':' + revision;
+  const resourcePath = scope + ':' + path;
+  const key = resourcePath + ':' + revision;
   const [result, setResult] = useState<{ key: string; path?: string; data?: T; error?: string }>({
     key: '',
   });
   useEffect(() => {
     if (path === null) return;
     const abort = new AbortController();
-    void catalogFetch(path, schema, { signal: abort.signal })
+    void catalogFetch(path, schema, { signal: abort.signal, scope })
       .then((data) => {
-        if (!abort.signal.aborted) setResult({ key, path, data });
+        if (!abort.signal.aborted) setResult({ key, path: resourcePath, data });
       })
       .catch((error) => {
         if (!abort.signal.aborted)
           setResult((previous) => ({
             key,
-            path,
-            data: previous.path?.split('?')[0] === path.split('?')[0] ? previous.data : undefined,
+            path: resourcePath,
+            data:
+              previous.path?.split('?')[0] === resourcePath.split('?')[0]
+                ? previous.data
+                : undefined,
             error: humanError(error),
           }));
       });
     return () => abort.abort();
-  }, [path, schema, key]);
+  }, [path, schema, key, scope, resourcePath]);
   return {
     data:
-      path !== null && result.path?.split('?')[0] === path.split('?')[0] ? result.data : undefined,
+      path !== null && result.path?.split('?')[0] === resourcePath.split('?')[0]
+        ? result.data
+        : undefined,
     error: result.key === key ? result.error : undefined,
     loading: path !== null && result.key !== key,
     reload: () => setRevision((value) => value + 1),
