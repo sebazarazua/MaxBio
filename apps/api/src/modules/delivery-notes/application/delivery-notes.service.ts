@@ -13,90 +13,23 @@ import {
   type DeliveryNoteCreate,
   type DeliveryNoteUpdate,
   type DeliveryNoteConfirm,
-  type DeliveryNoteView,
 } from '@maxbio/contracts';
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
 import { AuditService } from '../../audit/audit.service.js';
 import { InventoryService } from '../../inventory/application/inventory.service.js';
-import { amount, quantity, validQuantity } from '../../inventory/domain/quantity.js';
+import { validQuantity } from '../../inventory/domain/quantity.js';
 import type { RequestActorContext } from '../../../common/auth/request-context.js';
 import { textContains } from '../../catalog/domain/catalog-search.js';
 
+import {
+  deliveryNoteInclude as include,
+  deliveryNoteView as view,
+  customerView,
+} from './delivery-note-view.js';
+import { PrintingService } from '../../printing/application/printing.service.js';
 type Tx = Prisma.TransactionClient;
 const hash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
-const include = {
-  customer: true,
-  movement: { select: { id: true } },
-  confirmedBy: { include: { user: { select: { displayName: true } } } },
-  lines: {
-    orderBy: { ordinal: 'asc' },
-    include: {
-      product: true,
-      allocations: {
-        orderBy: { id: 'asc' },
-        include: { position: { include: { location: true, lot: true, serial: true } } },
-      },
-    },
-  },
-} satisfies Prisma.DeliveryNoteInclude;
-const customerView = (c: Prisma.CustomerGetPayload<object>) => ({
-  id: c.id,
-  name: c.name,
-  kind: c.kind,
-  legalName: c.legalName,
-  cuit: c.cuit,
-  taxConditionText: c.taxConditionText,
-  addressLine: c.addressLine,
-  locality: c.locality,
-  province: c.province,
-  postalCode: c.postalCode,
-});
 type Record = Prisma.DeliveryNoteGetPayload<{ include: typeof include }>;
-function view(d: Record, replayed = false): DeliveryNoteView {
-  const confirmed = d.status === 'CONFIRMED';
-  return {
-    id: d.id,
-    status: d.status,
-    version: d.version,
-    customer: confirmed
-      ? deliveryNoteCustomerSchema.parse(d.customerSnapshot)
-      : customerView(d.customer),
-    customerArchived: Boolean(d.customer.archivedAt),
-    documentDate: d.documentDate.toISOString().slice(0, 10),
-    documentPrefix: d.documentPrefix,
-    documentNumber: d.documentNumber,
-    patientName: d.patientName,
-    affiliateNumber: d.affiliateNumber,
-    notes: d.notes,
-    createdAt: d.createdAt.toISOString(),
-    confirmedAt: d.confirmedAt?.toISOString() ?? null,
-    confirmedBy: d.confirmedBy?.user.displayName ?? null,
-    movementId: d.movement?.id ?? null,
-    replayed,
-    lines: d.lines.map((l) => ({
-      id: l.id,
-      productId: l.productId,
-      productName: confirmed ? l.productNameSnapshot! : l.product.name,
-      presentation: confirmed ? l.presentationSnapshot : l.product.presentation,
-      unitOfMeasure: confirmed ? l.unitOfMeasureSnapshot! : l.product.unitOfMeasure,
-      gtin: l.gtinSnapshot,
-      productArchived: Boolean(l.product.archivedAt),
-      quantity: quantity(amount(l.quantity.toString())),
-      allocations: l.allocations.map((a) => ({
-        id: a.id,
-        positionId: a.positionId,
-        quantity: quantity(amount(a.quantity.toString())),
-        location: { id: a.position.locationId, name: a.position.location.name },
-        lotId: a.position.lotId,
-        lotNumber: a.position.lot?.lotNumber ?? null,
-        expirationDate: a.position.lot?.expirationDate?.toISOString().slice(0, 10) ?? null,
-        serialId: a.position.serialId,
-        serialNumber: a.position.serial?.serialNumber ?? null,
-        condition: a.position.condition,
-      })),
-    })),
-  };
-}
 
 @Injectable()
 export class DeliveryNotesService {
@@ -104,6 +37,7 @@ export class DeliveryNotesService {
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(InventoryService) private readonly inventory: InventoryService,
+    @Inject(PrintingService) private readonly printing: PrintingService,
   ) {}
   private async write<T>(c: RequestActorContext, fn: (tx: Tx) => Promise<T>, admin = false) {
     return this.inventory.deliveryTransaction(
@@ -300,6 +234,8 @@ export class DeliveryNotesService {
         );
       if (!d.documentPrefix || !d.documentNumber)
         throw new BadRequestException('Ingresá el número del talonario antes de confirmar.');
+      // Pure geometry validation only. No PDF/storage work participates in stock posting.
+      await this.printing.assertConfirmable(tx, c, view(d));
       await this.inventory.postDeliveryNote(tx, c, id);
       await tx.deliveryNote.update({
         where: { organizationId_id: { organizationId: c.organizationId, id } },

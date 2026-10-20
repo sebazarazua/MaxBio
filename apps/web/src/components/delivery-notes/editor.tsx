@@ -26,6 +26,7 @@ import {
 } from '../catalog/common';
 import { documentLabels, quantityLabels } from '../inventory/common';
 import { useWorkspace } from '../workspace';
+import { DeliveryPrintPanel } from '../printing/delivery-print-panel';
 type Line = DeliveryNoteCreate['lines'][number] & {
   productName: string;
   unitOfMeasure: ProductView['unitOfMeasure'];
@@ -419,6 +420,7 @@ function ReadOnly({ doc }: { doc: DeliveryNoteView }) {
 
 function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNoteView) => void }) {
   const { isAdmin } = useWorkspace();
+  const [printReady, setPrintReady] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(doc?.customer ?? null);
   const [date, setDate] = useState(
     doc?.documentDate ??
@@ -527,7 +529,7 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
     void run();
   }
   function confirm() {
-    if (!doc || dirty || frozen || guard.current) return;
+    if (!doc || dirty || frozen || guard.current || !printReady) return;
     attempt.current = {
       path: doc.id + '/confirm',
       method: 'POST',
@@ -751,13 +753,13 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
           disabled={busy}
           onClick={() => setPreview(!preview)}
         >
-          Previsualizar datos
+          Resumen de datos
         </button>
         {doc && (
           <button
             type="button"
             className="primary-button"
-            disabled={frozen || dirty}
+            disabled={frozen || dirty || !printReady}
             onClick={() => setReview(true)}
           >
             Confirmar salida
@@ -769,8 +771,10 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
       )}
       {preview && (
         <section className="catalog-panel">
-          <h2>Previsualizar datos</h2>
-          <p>Contenido documental; la disposición para impresión se agregará después.</p>
+          <h2>Resumen de datos</h2>
+          <p>
+            Para ver el formulario físico, guardá el borrador y abrí la vista previa de impresión.
+          </p>
           <p>
             {customer?.name} · {prefix}-{number} · {date}
           </p>
@@ -793,6 +797,7 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
           <p>{notes}</p>
         </section>
       )}
+      {doc && !dirty && <DeliveryPrintPanel doc={doc} onValidation={setPrintReady} />}
       {review && !dirty && (
         <section className="catalog-panel" role="region" aria-label="Revisar salida">
           <h2>Revisar y confirmar</h2>
@@ -801,7 +806,12 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
           </p>
           <p>Comprobá el número del talonario y los lotes o series físicos elegidos.</p>
           {doc && <ReadOnly doc={doc} />}
-          <button className="primary-button" type="button" disabled={frozen} onClick={confirm}>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={frozen || !printReady}
+            onClick={confirm}
+          >
             Sí, confirmar salida
           </button>{' '}
           <button
@@ -850,7 +860,7 @@ export function DeliveryNoteDetail({ id }: { id?: string }) {
     setUpdated(d);
     // A failed save can leave the server version unchanged. Reload must still
     // discard local edits before enabling confirmation again.
-    setEditorRevision(value => value + 1);
+    setEditorRevision((value) => value + 1);
     if (!id) router.replace('/remitos/' + d.id);
   }
   return (
@@ -865,9 +875,16 @@ export function DeliveryNoteDetail({ id }: { id?: string }) {
       {id && <Feedback {...resource} reload={resource.reload} />}
       {(!id || doc) &&
         (doc && doc.status !== 'DRAFT' ? (
-          <ReadOnly doc={doc} />
+          <>
+            <ReadOnly doc={doc} />
+            {doc.status === 'CONFIRMED' && <DeliveryPrintPanel doc={doc} />}
+          </>
         ) : (
-          <Editor key={(doc ? doc.id + ':' + doc.version : 'new') + ':' + editorRevision} doc={doc} saved={saved} />
+          <Editor
+            key={(doc ? doc.id + ':' + doc.version : 'new') + ':' + editorRevision}
+            doc={doc}
+            saved={saved}
+          />
         ))}
     </>
   );

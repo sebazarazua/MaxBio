@@ -169,9 +169,9 @@ El build no requiere una base activa. Para probar las aplicaciones compiladas, e
 
 ## Alcance y próximo paso
 
-Catálogo, listas, identificación HID, Clientes, Inventory V1 y Remitos con salida OUTBOUND están implementados. No se implementaron impresión de remitos, reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, parser GS1 completo, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
+Catálogo, listas, identificación HID, Clientes, Inventory V1, Remitos con salida OUTBOUND e impresión con plantilla/preview/PDF overlay/calibración están implementados. La plantilla física real de Bourbon requiere sus referencias, medidas y prueba de impresora. No se implementaron reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, parser GS1 completo, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
 
-El siguiente paso es probar Inventory y Remitos con usuarios, lectores HID y datos reales, validar unidades/políticas y el procedimiento de conteo gradual; el renderer físico del talonario queda para un incremento separado. Las decisiones están registradas en [decisiones](docs/architecture/decisions.md).
+El siguiente paso es probar Inventory y Remitos con usuarios, lectores HID y datos reales, validar unidades/políticas y el procedimiento de conteo gradual, y preparar/calibrar el formulario real del talonario. Las decisiones están registradas en [decisiones](docs/architecture/decisions.md).
 
 ## Inventory V1
 
@@ -187,4 +187,6 @@ Ver [implementación y reporte completo](docs/architecture/inventory.md), [dise�
 
 **Remitos → Hacer remito**: elegir cliente, fecha, número del talonario (con ceros), paciente/afiliado opcionales y productos por búsqueda o código. Seleccionar explícitamente cantidades/lotes/series desde existencias de Inventory, guardar borrador, revisar y **Confirmar salida**. ADMIN y OPERATOR pueden operar; solo ADMIN cancela borradores. El borrador no reserva ni mueve stock. Confirmar produce exactamente un OUTBOUND, congela los datos documentales y deja la ficha de solo lectura, con acceso al historial físico.
 
-No hay impresión, Word, screenshot, PDF ni numeración automática. Ver [dominio y API](docs/architecture/delivery-notes.md) y [reporte de verificación](docs/architecture/delivery-notes-verification.md).
+**Configurar impresión sobre talonario** permite a ADMIN cargar dimensiones reales en mm, PNG privado y definición geométrica, probar/publicar una revisión y guardar calibraciones X/Y. Un remito guardado tiene preview con fondo y diagnóstico SAFE/WARNING/BLOCKED; el confirmado genera PDF de una hoja con solo datos variables. Verificar número del papel, tamaño personalizado y 100 % en el visor/driver. No se presupone A4 ni se instala una plantilla Bourbon inventada.
+
+Reimprimir registra otra generación con el mismo archivo; no confirma de nuevo ni modifica stock. Los archivos son privados: `PRINT_STORAGE_DIR` opcional configura un directorio persistente; por defecto `.maxbio-private-print` en el directorio de ejecución de API, ignorado por Git. Respaldarlo junto con la base. No hay Word runtime ni numeración automática. Ver [dominio y API](docs/architecture/delivery-notes.md) e [impresión, configuración y verificación](docs/architecture/delivery-note-printing.md).

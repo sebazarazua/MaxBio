@@ -5,6 +5,10 @@ const config: NextConfig = {
   distDir: process.env.MAXBIO_BUILD_DIR ?? '.next',
   poweredByHeader: false,
   devIndicators: false,
+  outputFileTracingRoot: path.resolve(import.meta.dirname, '../..'),
+  outputFileTracingIncludes: {
+    '/api/printing/pdf-worker': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs'],
+  },
   turbopack: { root: path.resolve(import.meta.dirname, '../..') },
   async headers() {
     return [

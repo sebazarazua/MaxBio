@@ -9,6 +9,7 @@ coverage/
 !.env.example
 packages/database/src/generated/
 artifacts/
+.maxbio-private-print/
 *.log
 .DS_Store
 Thumbs.db

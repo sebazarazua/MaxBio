@@ -1,22 +1,22 @@
 # Remitos y salida de stock
 
-Incremento sobre HEAD `080d57afb1cf84b2f753e2c0d71d54452f40d266`, 8 de octubre de 2026. [Verificación y decisiones para revisión](delivery-notes-verification.md).
+Incremento documental original sobre HEAD `080d57afb1cf84b2f753e2c0d71d54452f40d266`, 8 de octubre de 2026. La extensión de representación del 19 de octubre se documenta en [impresión y verificación](delivery-note-printing.md).
 
 ## Dominio y límites
 
-`DeliveryNote` es el documento comercial estructurado. `InventoryMovement` es el hecho físico. Un renderer futuro consumirá los datos del documento sin controlar stock. No se implementan plantillas, Word, screenshots, coordenadas, PDF, impresión, facturación, ARCA, ANMAT, presupuestos, devoluciones ni reservas.
+`DeliveryNote` es el documento comercial estructurado. `InventoryMovement` es el hecho físico. El módulo Printing consume los datos del documento sin controlar stock: agrega plantillas, preview, PDF overlay y calibración. No hay Word runtime, facturación, ARCA, ANMAT, presupuestos, devoluciones ni reservas.
 
 El borrador tiene cliente, fecha documental, número opcional, paciente/afiliado opcionales, observaciones y hasta 50 líneas. Se guarda explícitamente. Puede retomarse y editarse entre operadores de la misma organización; no hay restricción de autor como en los ingresos. Todo cambio exige `expectedVersion`. La API reemplaza cabecera y líneas en una sola transacción para evitar un guardado parcial.
 
 ## Modelo Prisma
 
-| Entidad | Datos y relaciones |
-| --- | --- |
-| DeliveryNote | UUID técnico, organizationId, Customer con FK compuesta, status, version, documentDate DATE, documentPrefix/documentNumber varchar(12), patientName varchar(160), affiliateNumber varchar(80), notes varchar(1000), customerSnapshot JSON tipado por contrato, createdAt/updatedAt/confirmedAt timestamptz(3), confirmador Membership/User con FK compuesta, creationHash, confirmationOperationId/requestHash; relación inversa única a InventoryMovement. |
-| DeliveryNoteLine | UUID, organizationId, DeliveryNote y Product mediante FKs compuestas, ordinal, cantidad NUMERIC(20,6), snapshots mínimos de nombre/presentación/unidad/GTIN al confirmar. No existe unique por producto: puede repetirse. |
-| DeliveryNoteAllocation | UUID, organizationId, productId, lineId, positionId, cantidad NUMERIC(20,6). FK compuesta a línea y a InventoryBalance que exige el mismo producto y tenant. Una posición aparece una vez por línea; distintas líneas pueden usarla, sumando su demanda. |
-| InventoryMovement | Nuevo tipo OUTBOUND y deliveryNoteId con FK tenant-scoped y unique. Conserva actor/session/timestamps/sellado del Inventory actual. |
-| InventoryMovementLine | deliveryAllocationId con FK tenant/product-scoped y unique. El trigger también comprueba remito, ubicación, lote, serie, condición y delta contra la allocation. |
+| Entidad                | Datos y relaciones                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DeliveryNote           | UUID técnico, organizationId, Customer con FK compuesta, status, version, documentDate DATE, documentPrefix/documentNumber varchar(12), patientName varchar(160), affiliateNumber varchar(80), notes varchar(1000), customerSnapshot JSON tipado por contrato, createdAt/updatedAt/confirmedAt timestamptz(3), confirmador Membership/User con FK compuesta, creationHash, confirmationOperationId/requestHash; relación inversa única a InventoryMovement. |
+| DeliveryNoteLine       | UUID, organizationId, DeliveryNote y Product mediante FKs compuestas, ordinal, cantidad NUMERIC(20,6), snapshots mínimos de nombre/presentación/unidad/GTIN al confirmar. No existe unique por producto: puede repetirse.                                                                                                                                                                                                                                   |
+| DeliveryNoteAllocation | UUID, organizationId, productId, lineId, positionId, cantidad NUMERIC(20,6). FK compuesta a línea y a InventoryBalance que exige el mismo producto y tenant. Una posición aparece una vez por línea; distintas líneas pueden usarla, sumando su demanda.                                                                                                                                                                                                    |
+| InventoryMovement      | Nuevo tipo OUTBOUND y deliveryNoteId con FK tenant-scoped y unique. Conserva actor/session/timestamps/sellado del Inventory actual.                                                                                                                                                                                                                                                                                                                         |
+| InventoryMovementLine  | deliveryAllocationId con FK tenant/product-scoped y unique. El trigger también comprueba remito, ubicación, lote, serie, condición y delta contra la allocation.                                                                                                                                                                                                                                                                                            |
 
 La posición referenciada identifica de forma inequívoca ubicación, lote real, serie real y condición. `InventoryStockScope` sigue siendo el ancla producto/ubicación existente: no representa un lote. Se deriva y revalida desde la posición; no se duplica una estructura de scopes/lotes/series. Una posición referenciada conserva su identidad, aunque su cantidad cambie o llegue a cero. El rebuild existente conserva estos IDs mediante UPSERT por dimensión.
 
@@ -35,7 +35,7 @@ El número es `documentPrefix + '-' + documentNumber`, ambos strings de 1–12 d
 3. Locks Product por UUID ordenado, Customer y luego DeliveryNote.
 4. Releer el documento y comprobar tanto expectedVersion como la versión de la lectura previa. Una edición concurrente, incluso con una versión futura adivinada, no puede introducir productos que quedaron sin lock.
 5. Exigir borrador, número completo y líneas; revalidar Customer/Product activos.
-6. `InventoryService.postDeliveryNote(tx, context, id)` valida política vigente, unidad, cantidades, allocations completas, posición, ubicación activa, condición USABLE, vencimiento, series y disponibilidad agregada. Rechaza scopes en conteo.
+6. Si hay una plantilla activa, Printing valida la geometría nominal de los datos actuales y rechaza BLOCKED antes del posting; no genera PDF ni escribe archivos en esta transacción. `InventoryService.postDeliveryNote(tx, context, id)` valida política vigente, unidad, cantidades, allocations completas, posición, ubicación activa, condición USABLE, vencimiento, series y disponibilidad agregada. Rechaza scopes en conteo.
 7. Sellar snapshots de líneas; usar **el mismo `InventoryService.applyMovement`** que ingresos/conteos/ajustes para crear OUTBOUND, aplicar deltas negativos a balances, insertar ledger y sellarlo. Incrementar versiones de scopes afectados.
 8. Guardar snapshot de cliente, confirmador, operación/hash, fecha, estado y versión del remito. Auditar `DELIVERY_NOTE_CONFIRMED` en esa misma transacción.
 9. Commit con triggers diferidos que exigen ambas direcciones del vínculo y correspondencia completa de allocations/líneas.
@@ -74,15 +74,15 @@ Navegación: remito → Customer/Product y movimiento en historial de stock; his
 
 Nest `/api/v1/delivery-notes`, BFF `/api/delivery-notes` con allowlist, CSRF, cookie acotada, no-store, límites de cuerpo y validación de respuestas. Contratos Zod strict; actor, organización, estado, snapshots y fechas técnicas nunca provienen del formulario.
 
-| Método / ruta relativa | Función | Permiso |
-| --- | --- | --- |
-| GET / | Listado paginado; filtros q/includeArchived/page/limit | ADMIN y OPERATOR |
-| POST /search | Mismo listado, búsqueda privada en cuerpo | ADMIN y OPERATOR |
-| POST / | Crear DRAFT con UUID estable | ADMIN y OPERATOR |
-| GET /:id | Documento y relaciones para revisión | ADMIN y OPERATOR |
-| PATCH /:id | Reemplazo atómico de campos y líneas con expectedVersion | ADMIN y OPERATOR |
-| POST /:id/confirm | Confirmación con operationId estable y expectedVersion | ADMIN y OPERATOR |
-| POST /:id/cancel | Cancelar solamente DRAFT | ADMIN |
+| Método / ruta relativa | Función                                                  | Permiso          |
+| ---------------------- | -------------------------------------------------------- | ---------------- |
+| GET /                  | Listado paginado; filtros q/includeArchived/page/limit   | ADMIN y OPERATOR |
+| POST /search           | Mismo listado, búsqueda privada en cuerpo                | ADMIN y OPERATOR |
+| POST /                 | Crear DRAFT con UUID estable                             | ADMIN y OPERATOR |
+| GET /:id               | Documento y relaciones para revisión                     | ADMIN y OPERATOR |
+| PATCH /:id             | Reemplazo atómico de campos y líneas con expectedVersion | ADMIN y OPERATOR |
+| POST /:id/confirm      | Confirmación con operationId estable y expectedVersion   | ADMIN y OPERATOR |
+| POST /:id/cancel       | Cancelar solamente DRAFT                                 | ADMIN            |
 
 Creación: advisory por UUID y creationHash de payload canónico/actor. Replay idéntico devuelve el documento actual sin otro evento, incluso si luego cambió; carga/actor incompatibles generan 409. UUID de otro tenant no revela su documento.
 
@@ -96,6 +96,6 @@ Eventos CREATED, UPDATED, CONFIRMED y CANCELLED mediante AuditService.success, r
 
 ## Evolución posterior
 
-Un renderer podrá agregar sus propias PrintTemplate/PrintTemplateField, referencia Word/imagen, dimensiones, coordenadas mm, tipografía, offsets y calibración sin cambiar DeliveryNote ni provocar movimientos. No hay esas tablas ahora.
+Printing ya agrega PrintTemplate con definition JSON tipado, PNG privado, dimensiones/coordenadas mm, tipografía, PrinterCalibration y PrintArtifact. No cambia los datos de DeliveryNote ni provoca movimientos al generar o reimprimir. La UI permite preview del borrador guardado; el overlay operativo exige CONFIRMED. Ver [arquitectura de impresión](delivery-note-printing.md).
 
 Facturación podrá relacionarse con remitos CONFIRMED y sus líneas mediante entidades propias, sin un billingStatus anticipado ni imponer todavía uno-a-uno o facturación completa. Devoluciones/reversiones deberán crear nuevos movimientos y vínculos al original; nunca reabrir ni reescribir el OUTBOUND.

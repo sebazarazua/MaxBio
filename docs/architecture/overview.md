@@ -1,6 +1,6 @@
 # Arquitectura de MaxBio
 
-Actualización del 8 de octubre de 2026: Customers y [DeliveryNotes](delivery-notes.md) ya están implementados. DeliveryNotes consume el posting transaccional de Inventory, con OUTBOUND y relaciones tipadas. Impresión, reservas, devoluciones y facturación siguen diferidas. Las descripciones futuras de Remitos más abajo se conservan como contexto del diseño inicial.
+Actualización del 19 de octubre de 2026: Customers y [DeliveryNotes](delivery-notes.md) están implementados. DeliveryNotes consume el posting transaccional de Inventory, con OUTBOUND y relaciones tipadas. [Printing](delivery-note-printing.md) agrega plantilla, preview, PDF overlay, calibración y reimpresión sin mover stock. Reservas, devoluciones y facturación siguen diferidas. Las descripciones futuras de Remitos más abajo se conservan como contexto del diseño inicial.
 
 Catalog incluye desde el 6 de octubre de 2026 el [catálogo de referencia de proveedores](supplier-catalog.md), separado de Product e Inventory, con importación CSV/XLSX confirmada y tenant-scoped.
 
@@ -41,7 +41,7 @@ La conexión a PostgreSQL es diferida. La API puede iniciar cuando la base está
 | Files / Documents                | Metadatos y representaciones; almacenamiento detrás de un adaptador   |
 | Integrations                     | Adaptadores externos; no autoridad sobre reglas internas de negocio   |
 
-Identity, Audit, Catalog e Inventory V1 ya tienen implementación. Catalog agrupa Product, ProductIdentifier, Supplier, SupplierProduct, Brand y Category porque comparten este flujo comercial pequeño; no se crean seis módulos artificiales. Los otros límites orientan desarrollo futuro. Lotes, series y movimientos pertenecen al mismo dominio de inventario, evitando fragmentar operaciones que requieren una transacción. Reservas y Remitos siguen diferidos.
+Identity, Audit, Catalog, Customers, Inventory V1, DeliveryNotes y Printing tienen implementación. Catalog agrupa Product, ProductIdentifier, Supplier, SupplierProduct, Brand y Category porque comparten este flujo comercial pequeño; no se crean seis módulos artificiales. Los otros límites orientan desarrollo futuro. Lotes, series y movimientos pertenecen al mismo dominio de inventario, evitando fragmentar operaciones que requieren una transacción. Reservas siguen diferidas.
 
 ## Organización del backend
 

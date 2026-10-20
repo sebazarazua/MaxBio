@@ -52,6 +52,11 @@ model Organization {
   deliveryNotes DeliveryNote[]
   deliveryNoteLines DeliveryNoteLine[]
   deliveryNoteAllocations DeliveryNoteAllocation[]
+  printTemplates PrintTemplate[]
+  printCalibrations PrinterCalibration[]
+  printAssets PrintAsset[]
+  printArtifacts PrintArtifact[]
+  printConfiguration PrintConfiguration?
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -86,6 +91,7 @@ model Membership {
   inventoryCounts    InventoryCountSession[]
   inventoryMovements InventoryMovement[]
   confirmedDeliveryNotes DeliveryNote[]
+  printArtifacts PrintArtifact[]
 
   @@unique([organizationId, userId])
   @@unique([id, userId])
@@ -921,6 +927,7 @@ model DeliveryNote {
   requestHash String? @db.Char(64)
   lines DeliveryNoteLine[]
   movement InventoryMovement?
+  printArtifacts PrintArtifact[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, documentPrefix, documentNumber])
@@ -966,4 +973,118 @@ model DeliveryNoteAllocation {
   @@unique([organizationId, productId, id])
   @@unique([organizationId, lineId, positionId])
   @@index([organizationId, positionId])
+}
+
+enum PrintTemplateStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum PrintAssetKind {
+  BACKGROUND
+  PDF
+}
+
+model PrintAsset {
+  id             String          @id @default(uuid()) @db.Uuid
+  organizationId String          @db.Uuid
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  kind           PrintAssetKind
+  storageKey     String          @unique @db.VarChar(80)
+  contentHash    String          @db.Char(64)
+  byteSize       Int
+  widthPx        Int?
+  heightPx       Int?
+  createdAt      DateTime        @default(now()) @db.Timestamptz(3)
+  templates      PrintTemplate[]
+  artifacts      PrintArtifact[]
+
+  @@unique([organizationId, id])
+}
+
+model PrintTemplate {
+  id                String               @id @default(uuid()) @db.Uuid
+  organizationId    String               @db.Uuid
+  organization      Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  familyId          String               @db.Uuid
+  revision          Int
+  name              String               @db.VarChar(160)
+  status            PrintTemplateStatus  @default(DRAFT)
+  pageWidthMm       Decimal              @db.Decimal(9, 3)
+  pageHeightMm      Decimal              @db.Decimal(9, 3)
+  safeToleranceXmm  Decimal              @db.Decimal(7, 3)
+  safeToleranceYmm  Decimal              @db.Decimal(7, 3)
+  backgroundAssetId String               @db.Uuid
+  background        PrintAsset           @relation(fields: [organizationId, backgroundAssetId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  definition        Json
+  createdAt         DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime             @updatedAt @db.Timestamptz(3)
+  publishedAt       DateTime?            @db.Timestamptz(3)
+  calibrations      PrinterCalibration[]
+  artifacts         PrintArtifact[]
+  configurations    PrintConfiguration[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, familyId, revision])
+  @@index([organizationId, createdAt, id])
+}
+
+// Activation is outside the immutable template revision.
+model PrintConfiguration {
+  organizationId     String        @id @db.Uuid
+  organization       Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  templateRevisionId String        @db.Uuid
+  template           PrintTemplate @relation(fields: [organizationId, templateRevisionId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  updatedAt          DateTime      @updatedAt @db.Timestamptz(3)
+}
+
+// Editing creates another immutable revision, preserving exact reprints.
+model PrinterCalibration {
+  id                 String          @id @default(uuid()) @db.Uuid
+  organizationId     String          @db.Uuid
+  organization       Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  familyId           String          @db.Uuid
+  revision           Int
+  templateRevisionId String          @db.Uuid
+  template           PrintTemplate   @relation(fields: [organizationId, templateRevisionId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  name               String          @db.VarChar(160)
+  printerDescription String?         @db.VarChar(160)
+  trayDescription    String?         @db.VarChar(160)
+  offsetXmm          Decimal         @db.Decimal(7, 3)
+  offsetYmm          Decimal         @db.Decimal(7, 3)
+  createdAt          DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime        @updatedAt @db.Timestamptz(3)
+  artifacts          PrintArtifact[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, templateRevisionId, id])
+  @@unique([organizationId, familyId, revision])
+}
+
+model PrintArtifact {
+  id                      String              @id @default(uuid()) @db.Uuid
+  organizationId          String              @db.Uuid
+  organization            Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  deliveryNoteId          String              @db.Uuid
+  deliveryNote            DeliveryNote        @relation(fields: [organizationId, deliveryNoteId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  templateRevisionId      String              @db.Uuid
+  template                PrintTemplate       @relation(fields: [organizationId, templateRevisionId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  calibrationId           String?             @db.Uuid
+  calibration             PrinterCalibration? @relation(fields: [organizationId, templateRevisionId, calibrationId], references: [organizationId, templateRevisionId, id], onDelete: Restrict, onUpdate: Restrict)
+  mode                    String              @default("PRINT_OVERLAY") @db.VarChar(20)
+  assetId                 String              @db.Uuid
+  asset                   PrintAsset          @relation(fields: [organizationId, assetId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  contentHash             String              @db.Char(64)
+  requestHash             String              @db.Char(64)
+  documentVersion         Int
+  generatedAt             DateTime            @default(now()) @db.Timestamptz(3)
+  generatedBy             String              @db.Uuid
+  generatedByMembershipId String              @db.Uuid
+  actor                   Membership          @relation(fields: [organizationId, generatedByMembershipId, generatedBy], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  reprintOfId             String?             @db.Uuid
+  reprintOf               PrintArtifact?      @relation("PrintReprints", fields: [organizationId, reprintOfId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  reprints                PrintArtifact[]     @relation("PrintReprints")
+
+  @@unique([organizationId, id])
+  @@index([organizationId, deliveryNoteId, generatedAt, id])
 }

@@ -1,5 +1,7 @@
 # Decisiones del bootstrap
 
+Actualización del 19 de octubre de 2026: las secciones cronológicas siguientes conservan decisiones de sus incrementos. Remitos/OUTBOUND ya existen; Printing agrega representación física con revisiones inmutables, geometría en mm, PNG privado, PDF overlay sin fondo, calibración sin escala y artifacts/reimpresión separados del documento y del ledger. La confirmación solo suma un guard geométrico si hay plantilla activa; no renderiza ni imprime dentro del posting. Ver [impresión](delivery-note-printing.md).
+
 Bootstrap: 1 de octubre de 2026. Fundación de seguridad: 4 de octubre de 2026. Catálogo: 5 de octubre de 2026. Estado: desarrollo local con Identity, Audit y Catalog. Las decisiones originales siguientes se conservan como historial; las secciones posteriores actualizan autenticación, proxies y dominio comercial.
 
 | Decisión                                           | Motivo y consecuencia                                                                                                         |

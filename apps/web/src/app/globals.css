@@ -1204,3 +1204,78 @@ h2 {
 .preserve-lines {
   white-space: pre-wrap;
 }
+/* Private document preview; all persistent geometry remains in millimetres. */
+.print-panel-heading,
+.print-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.print-controls label,
+.print-zoom {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.print-canvas-scroll {
+  overflow: auto;
+  max-height: 75vh;
+  background: #dfe5e7;
+  padding: 1rem;
+  border-radius: 0.5rem;
+}
+.print-canvas-scroll canvas {
+  display: block;
+  background: white;
+  box-shadow: 0 2px 12px #0002;
+}
+.print-status {
+  margin: 1rem 0;
+  padding: 1rem;
+  border-left: 4px solid;
+  border-radius: 0.3rem;
+}
+.print-status-safe {
+  background: #eef8f0;
+  border-color: #3d7f55;
+}
+.print-status-warning {
+  background: #fff8e8;
+  border-color: #a76a17;
+}
+.print-status-blocked {
+  background: #fff0ef;
+  border-color: #b33d37;
+}
+.print-number {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+.print-operative,
+.print-number-check {
+  margin: 1.25rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border, #cbd5d1);
+  border-radius: 0.5rem;
+}
+.print-artifacts {
+  display: grid;
+  gap: 0.7rem;
+  padding-left: 1.25rem;
+}
+.print-artifacts li {
+  padding: 0.5rem;
+}
+.print-json {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  tab-size: 2;
+}
+.print-panel .check-field {
+  display: flex;
+  flex-direction: row;
+  gap: 0.5rem;
+  align-items: center;
+}

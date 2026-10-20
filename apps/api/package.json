@@ -15,18 +15,23 @@
     "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "dependencies": {
+    "@fontsource/noto-sans": "^5.3.0",
     "@maxbio/contracts": "workspace:*",
     "@maxbio/database": "workspace:*",
     "@nestjs/common": "12.1.2",
     "@nestjs/config": "12.0.1",
     "@nestjs/core": "12.1.2",
     "@nestjs/platform-express": "12.1.2",
+    "@pdf-lib/fontkit": "^1.1.1",
     "argon2": "^0.45.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "cookie": "^2.0.1",
     "csv-parse": "7.0.3",
+    "express": "^5.2.1",
     "helmet": "^8.1.0",
+    "pdf-lib": "^1.17.1",
+    "pngjs": "^7.0.0",
     "read-excel-file": "9.3.10",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
@@ -38,6 +43,8 @@
     "@nestjs/testing": "12.1.2",
     "@types/express": "^5.0.3",
     "@types/multer": "2.3.0",
-    "@types/yauzl": "3.4.0"
+    "@types/pngjs": "^6.0.5",
+    "@types/yauzl": "3.4.0",
+    "pdfjs-dist": "^6.4.299"
   }
 }
