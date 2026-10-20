@@ -126,6 +126,24 @@ test(
             },
           });
           const id = randomUUID();
+          for (const definition of [{}, { schemaVersion: null }])
+            await assert.rejects(
+              client.printTemplate.create({
+                data: {
+                  id: randomUUID(),
+                  organizationId: org.id,
+                  familyId: id,
+                  revision: 1,
+                  name: 'Invalid schema fixture',
+                  pageWidthMm: 180,
+                  pageHeightMm: 240,
+                  safeToleranceXmm: 2,
+                  safeToleranceYmm: 1,
+                  backgroundAssetId: assetId,
+                  definition,
+                },
+              }),
+            );
           await client.printTemplate.create({
             data: {
               id,

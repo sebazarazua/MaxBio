@@ -17,6 +17,7 @@ import { catalogFetch } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
 import { Field } from '../catalog/common';
 import { DeliveryPrintPanel } from './delivery-print-panel';
+import { TestDeliveryNotePicker } from './test-delivery-note-picker';
 
 const emptyDefinition = JSON.stringify(
   {
@@ -57,8 +58,7 @@ export function PrintTemplateManager() {
     [tray, setTray] = useState('');
   const [dx, setDx] = useState('0'),
     [dy, setDy] = useState('0');
-  const [noteId, setNoteId] = useState(''),
-    [note, setNote] = useState<DeliveryNoteView>();
+  const [note, setNote] = useState<DeliveryNoteView>();
   const guard = useRef(false);
   const template = templates.find((t) => t.id === selected);
   useEffect(() => {
@@ -493,25 +493,16 @@ export function PrintTemplateManager() {
             ) : (
               <p>Publicá esta revisión antes de guardar calibraciones.</p>
             )}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void run(async () =>
-                  setNote(
-                    await catalogFetch(noteId.trim(), deliveryNoteSchema, {
-                      scope: 'delivery-notes',
-                    }),
-                  ),
-                );
-              }}
-            >
-              <Field label="ID de un remito guardado para probar la revisión">
-                <input required value={noteId} onChange={(e) => setNoteId(e.target.value)} />
-              </Field>
-              <button type="submit" className="secondary-button" disabled={busy}>
-                Probar con este remito
-              </button>
-            </form>
+            <TestDeliveryNotePicker
+              disabled={busy}
+              selectedId={note?.id}
+              onSelect={(id) =>
+                void run(async () => {
+                  setNote(undefined);
+                  setNote(await catalogFetch(id, deliveryNoteSchema, { scope: 'delivery-notes' }));
+                })
+              }
+            />
           </>
         )}
       </section>

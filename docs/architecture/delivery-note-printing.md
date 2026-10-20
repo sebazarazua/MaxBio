@@ -2,6 +2,8 @@
 
 Implementación sobre HEAD `1a1be33a406da33cb96b7b6bb73341ccc40691ad`. La representación consume el remito existente. No reemplaza DeliveryNote, sus snapshots, Inventory ni OUTBOUND.
 
+El cierre técnico del incremento sobre `8b3d08a`, con comandos ejecutados, resultados y limitaciones del entorno, está en [verificación del 20 de octubre](delivery-note-printing-verification.md). Las listas de pruebas de este documento describen cobertura; la evidencia de ejecución se registra por separado.
+
 ## Estado y materiales de Bourbon
 
 No se recibieron el PDF escaneado ni el DOCX reconstruido. No conocemos el tamaño físico del talonario, sus espacios libres ni su capacidad de renglones. **No hay plantilla Bourbon ni tamaño de papel predeterminado instalado.** Los fixtures de pruebas usan 180 × 240 mm exclusivamente como ejemplo sintético; no son una medición de Bourbon.
@@ -142,6 +144,8 @@ Cada calibración corresponde a una revisión exacta de plantilla. Guardar ajust
 
 Procedimiento: imprimir PDF de prueba sobre hoja del tamaño correcto al 100 %, medir cruces desde bordes, introducir correcciones X/Y, guardar revisión y repetir. Una desviación de +2 mm a la derecha requiere offset X −2 mm. Comparar varios puntos y varios ejemplares. Si cambia la distancia entre marcas, revisar escalado/tamaño antes de calibrar; si varía hoja a hoja, revisar alimentación. El PDF de prueba no declara éxito físico.
 
+El PDF de prueba también solicita PrintScaling=None y mantiene el mismo tamaño personalizado. La preferencia del PDF no sustituye verificar el 100 % en visor/driver.
+
 ## Confirmación y reimpresión
 
 Se conserva el caso de uso transaccional existente. Tras sus locks/versiones/validación del número y antes de postDeliveryNote, un guard consulta la revisión activa y evalúa geometría nominal de los datos actuales bajo los locks del cliente/productos/documento. BLOCKED devuelve conflicto antes de cualquier OUTBOUND. Sin plantilla activa, mantiene el comportamiento previo. Activación y guard usan el mismo advisory lock por organización. Replays existentes de confirmación se resuelven antes del guard; no se reconfirman.
@@ -190,13 +194,15 @@ Auditoría transaccional: PRINT_TEMPLATE_CREATED, PRINT_TEMPLATE_PUBLISHED, PRIN
 
 ADMIN entra desde Remitos → Configurar impresión sobre talonario. Carga dimensiones medidas, tolerancias explícitas, PNG y definition; guarda un borrador, lo prueba con un remito guardado, publica/activa y calibra. La configuración JSON es para desktop y una preparación técnica inicial; la calibración cotidiana se hace con controles X/Y. No se publica automáticamente al guardar.
 
+Para elegir el remito de prueba se busca por número, nombre de cliente o CUIT. La lista paginada muestra número, cliente, fecha y estado; permite seleccionar o volver a cargar el documento. Los cancelados no se pueden elegir. Se reutiliza `POST /delivery-notes/search`, con términos en el cuerpo y UUID solo interno. No se pide copiar un identificador técnico ni se incorporan nuevos filtros de fecha.
+
 Empleado: preparar remito → seleccionar existencias → guardar → revisar formulario/diagnósticos → confirmar salida → verificar número y perfil → generar/descargar overlay → imprimir desde el visor al 100 %. La preview tiene scroll/zoom responsive; configurar plantillas prioriza notebook/desktop.
 
 ## Verificación y límites
 
 Pruebas de geometría/PDF: mm→pt, cajas/tolerancia, SAFE/WARNING/BLOCKED, multiline/opcionales, fechas/cantidades, fuente, filas por allocations, lotes/series, reconciliación, overflow, página custom de una hoja, imagen solo en preview, extracción de texto y offsets de operadores PDF. Zoom no forma parte del contrato y no puede alterar el PDF.
 
-Integración HTTP/PostgreSQL: roles/tenant, PNG, publicación, inmutabilidad SQL, revisiones, compatibilidad de calibración, DRAFT preview/CONFIRMED overlay, retry concurrente, reimpresión idéntica, auditoría/rollback/limpieza y comparación completa de documento/movimientos/balances antes/después. Migración: upgrade desde HEAD y from-zero, status y drift.
+Integración HTTP/PostgreSQL: roles/tenant, PNG, publicación, inmutabilidad SQL, revisiones, compatibilidad de calibración, DRAFT preview/CONFIRMED overlay, retry concurrente, reimpresión idéntica, auditoría/rollback/limpieza y comparación completa de documento/movimientos/balances antes/después. Migración: upgrade desde las migraciones de `1a1be33a` y from-zero, status y drift. El smoke HTTP de Next compilado se habilita con `MAXBIO_PRINT_BFF_SMOKE=1` después de `pnpm build`; no equivale a una prueba visual en navegador.
 
 Ejecutar `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`, `pnpm test:database`, `pnpm build`, `pnpm db:generate`, `pnpm db:migrate` y Prisma migrate status/diff. Las suites de base crean bases descartables; requieren PostgreSQL local y permiso CREATE DATABASE. Nunca ejecutarlas contra producción.
 

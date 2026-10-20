@@ -15,6 +15,7 @@ import {
   printCalibrationSchema,
   printEvaluationSchema,
   deliveryNoteSchema,
+  deliveryNoteListSchema,
   inventoryDocumentSchema,
   inventoryStockDetailSchema,
   type PrintTemplate,
@@ -285,6 +286,11 @@ test('Printing HTTP: PNG privado, roles, tenant, formatos y proporción', async 
 });
 test('Printing HTTP: preview DRAFT, guías, evaluación, overlay exige CONFIRMED y PUBLISHED', async () => {
   const d = await draft();
+  const physicalBefore = await physicalState();
+  const documentBefore = await client.deliveryNote.findUnique({
+    where: { id: d.id },
+    include: { lines: { include: { allocations: true } } },
+  });
   const input = renderInput(d);
   const r = await request(`printing/delivery-notes/${d.id}/preview`, 'POST', {
     ...input,
@@ -336,6 +342,14 @@ test('Printing HTTP: preview DRAFT, guías, evaluación, overlay exige CONFIRMED
     1,
   );
   assert.equal(publishedPreview.status, 200);
+  assert.deepEqual(await physicalState(), physicalBefore);
+  assert.deepEqual(
+    await client.deliveryNote.findUnique({
+      where: { id: d.id },
+      include: { lines: { include: { allocations: true } } },
+    }),
+    documentBefore,
+  );
 });
 test('Printing: published immutable en SQL, revisión nueva, calibración inmutable y compatibilidad', async () => {
   await assert.rejects(
@@ -448,11 +462,14 @@ async function physicalState() {
 }
 test('Printing: generación concurrente idempotente, exact reprint y cero cambios DeliveryNote/OUTBOUND/balance', async () => {
   const before = await physicalState();
+  const calibration = await client.printerCalibration.findFirstOrThrow({
+    where: { organizationId: org, templateRevisionId: template.id },
+  });
   const input = {
     id: randomUUID(),
     templateRevisionId: template.id,
     expectedVersion: confirmed.version,
-    calibrationId: null,
+    calibrationId: calibration.id,
   };
   const responses = await Promise.all([
     request(`printing/delivery-notes/${confirmed.id}/artifacts`, 'POST', input, 1),
@@ -461,6 +478,7 @@ test('Printing: generación concurrente idempotente, exact reprint y cero cambio
   const a = printArtifactSchema.parse(await checked(responses[0]!));
   const b = printArtifactSchema.parse(await checked(responses[1]!));
   assert.equal(a.id, b.id);
+  assert.equal(a.calibrationId, calibration.id);
   const r = await request(`printing/artifacts/${a.id}/pdf`, 'GET', undefined, 1);
   assert.equal(r.status, 200);
   const bytes = Buffer.from(await r.arrayBuffer());
@@ -472,6 +490,9 @@ test('Printing: generación concurrente idempotente, exact reprint y cero cambio
   );
   assert.equal(reprint.contentHash, a.contentHash);
   assert.equal(reprint.reprintOfId, a.id);
+  assert.equal(reprint.templateRevisionId, a.templateRevisionId);
+  assert.equal(reprint.calibrationId, a.calibrationId);
+  assert.equal(reprint.documentVersion, a.documentVersion);
   const retry = printArtifactSchema.parse(
     await checked(
       await request(`printing/artifacts/${a.id}/reprint`, 'POST', { id: reprintId }, 1),
@@ -510,6 +531,17 @@ test('Printing: generación concurrente idempotente, exact reprint y cero cambio
   );
   await assert.rejects(
     client.printArtifact.update({ where: { id: a.id }, data: { contentHash: 'a'.repeat(64) } }),
+  );
+  const record = await client.printArtifact.findUniqueOrThrow({ where: { id: a.id } });
+  await assert.rejects(
+    client.printArtifact.create({
+      data: { ...record, id: randomUUID(), calibrationId: null, reprintOfId: a.id },
+    }),
+  );
+  await assert.rejects(
+    client.printArtifact.create({
+      data: { ...record, id: randomUUID(), contentHash: 'a'.repeat(64) },
+    }),
   );
   await assert.rejects(
     client.printAsset.update({
@@ -584,6 +616,88 @@ test('Printing: plantilla activa bloquea confirmación directa con overflow, gua
   assert.ok(audit.every((a) => !JSON.stringify(a.metadata).includes('PRIVADO')));
 });
 
+test('Printing: WARNING permite confirmar; calibración insegura bloquea overlay sin tocar stock', async () => {
+  const input = printingTemplateInput(background);
+  input.definition.fields[0]!.paddingMm = 0.2;
+  const warning = printTemplateSchema.parse(
+    await checked(await request('printing/templates', 'POST', input)),
+  );
+  await checked(
+    await request(`printing/templates/${warning.id}/publish`, 'POST', { activate: true }),
+  );
+  try {
+    const d = await draft();
+    const evaluation = printEvaluationSchema.parse(
+      await checked(
+        await request(
+          `printing/delivery-notes/${d.id}/evaluate`,
+          'POST',
+          renderInput(d, warning),
+          1,
+        ),
+      ),
+    );
+    assert.equal(evaluation.state, 'WARNING');
+    const beforeCount = await client.inventoryMovement.count();
+    const confirmedWarning = deliveryNoteSchema.parse(
+      await checked(
+        await request(
+          `delivery-notes/${d.id}/confirm`,
+          'POST',
+          { expectedVersion: d.version, operationId: randomUUID() },
+          1,
+        ),
+      ),
+    );
+    assert.equal(confirmedWarning.status, 'CONFIRMED');
+    assert.equal(await client.inventoryMovement.count(), beforeCount + 1);
+    const calibration = printCalibrationSchema.parse(
+      await checked(
+        await request('printing/calibrations', 'POST', {
+          id: randomUUID(),
+          templateRevisionId: warning.id,
+          name: 'Desplazamiento inseguro de prueba',
+          offsetXmm: -4,
+          offsetYmm: 0,
+        }),
+      ),
+    );
+    const physicalBefore = await physicalState();
+    const artifactCount = await client.printArtifact.count();
+    const blocked = printEvaluationSchema.parse(
+      await checked(
+        await request(
+          `printing/delivery-notes/${confirmedWarning.id}/evaluate`,
+          'POST',
+          renderInput(confirmedWarning, warning, calibration.id),
+          1,
+        ),
+      ),
+    );
+    assert.equal(blocked.state, 'BLOCKED');
+    await checked(
+      await request(
+        `printing/delivery-notes/${confirmedWarning.id}/artifacts`,
+        'POST',
+        {
+          id: randomUUID(),
+          templateRevisionId: warning.id,
+          expectedVersion: confirmedWarning.version,
+          calibrationId: calibration.id,
+        },
+        1,
+      ),
+      409,
+    );
+    assert.equal(await client.printArtifact.count(), artifactCount);
+    assert.deepEqual(await physicalState(), physicalBefore);
+  } finally {
+    await checked(
+      await request(`printing/templates/${template.id}/publish`, 'POST', { activate: true }),
+    );
+  }
+});
+
 test(
   'Printing BFF real: Next compilado → API → PostgreSQL/storage → PDF privado y worker local',
   {
@@ -653,6 +767,26 @@ test(
       }
       assert.ok(ready, logs);
       const before = await physicalState();
+      for (const q of [
+        confirmed.documentPrefix + '-' + confirmed.documentNumber,
+        'Cliente de prueba',
+      ]) {
+        const response = await fetch('http://localhost:3000/api/delivery-notes/search', {
+          method: 'POST',
+          headers: {
+            Origin: 'http://localhost:3000',
+            'X-Maxbio-Csrf': '1',
+            'Content-Type': 'application/json',
+            Cookie: cookies[0]!,
+          },
+          body: JSON.stringify({ q, page: '1', limit: '20', includeArchived: 'false' }),
+        });
+        const list = deliveryNoteListSchema.parse(await checked(response));
+        assert.ok(list.items.some((note) => note.id === confirmed.id));
+        const selected = list.items.find((note) => note.id === confirmed.id)!;
+        assert.equal(selected.customerName, confirmed.customer.name);
+        assert.equal(selected.documentDate, confirmed.documentDate);
+      }
       const worker = await fetch('http://localhost:3000/api/printing/pdf-worker');
       assert.equal(worker.status, 200, logs);
       assert.match(worker.headers.get('content-type')!, /javascript/);

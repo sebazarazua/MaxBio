@@ -139,6 +139,7 @@ export function DeliveryPrintPanel({
       };
     }
     const current = attempt.current;
+    let registered = false;
     guard.current = true;
     setBusy(true);
     setError('');
@@ -152,6 +153,7 @@ export function DeliveryPrintPanel({
             printArtifactSchema,
             current.body,
           );
+      registered = true;
       attempt.current = null;
       setUncertain(false);
       setArtifacts((previous) =>
@@ -165,7 +167,9 @@ export function DeliveryPrintPanel({
         (e instanceof Error ? e.message : 'No pudimos generar el overlay.') +
           (attempt.current
             ? ' Reintentá el mismo envío; no confirma nuevamente el remito.'
-            : ' El archivo está registrado y puede descargarse desde el historial.'),
+            : registered
+              ? ' El archivo está registrado y puede descargarse desde el historial.'
+              : ''),
       );
     } finally {
       guard.current = false;

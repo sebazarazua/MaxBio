@@ -115,6 +115,7 @@ export async function renderCalibrationTest(t: PrintTemplate, c: PrintCalibratio
     f = await font(pdf),
     h = mmToPt(t.pageHeightMm);
   const p = pdf.addPage([mmToPt(t.pageWidthMm), h]);
+  pdf.catalog.getOrCreateViewerPreferences().setPrintScaling(PrintScaling.None);
   const dx = c?.offsetXmm ?? 0,
     dy = c?.offsetYmm ?? 0;
   const anchors = [

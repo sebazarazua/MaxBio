@@ -196,6 +196,33 @@ test('PDF: página custom, fuente embebida, fondo solo PREVIEW, texto, una pági
   assert.ok(Math.abs(o.getPage(0).getHeight() - mmToPt(240)) < 0.000001);
   assert.equal(imageCount(p), 1);
   assert.equal(imageCount(o), 0);
+  for (const pdf of [p, o]) {
+    assert.equal(pdf.getPage(0).getWidth(), mmToPt(template.pageWidthMm));
+    assert.equal(pdf.getPage(0).getHeight(), mmToPt(template.pageHeightMm));
+    assert.equal(pdf.catalog.getOrCreateViewerPreferences().getPrintScaling(), 'None');
+  }
+  assert.equal(
+    o.context
+      .enumerateIndirectObjects()
+      .some(
+        ([, object]) =>
+          object instanceof PDFRawStream &&
+          object.dict.get(PDFName.of('Subtype')) === PDFName.of('Image'),
+      ),
+    false,
+  );
+  assert.doesNotMatch(operators(o), /\bre\b|\bDo\b|\bS\b/);
+  assert.match(operators(o), /0 0 0 rg/);
+  const withoutGuides = await renderPdf({
+    template,
+    document,
+    calibration: null,
+    mode: 'PREVIEW',
+    background: printingPng(),
+  });
+  const plainPreview = await PDFDocument.load(withoutGuides.bytes);
+  assert.match(operators(p), /\bS\b/);
+  assert.doesNotMatch(operators(plainPreview), /\bS\b/);
   const fontObjects = o.context
     .enumerateIndirectObjects()
     .map(([, v]) => v)
@@ -230,6 +257,85 @@ test('PDF: página custom, fuente embebida, fondo solo PREVIEW, texto, una pági
   const testPdf = await PDFDocument.load(await renderCalibrationTest(template, null));
   assert.equal(testPdf.getPageCount(), 1);
   assert.equal(testPdf.getPage(0).getWidth(), o.getPage(0).getWidth());
+  assert.equal(testPdf.getPage(0).getHeight(), o.getPage(0).getHeight());
+  assert.equal(testPdf.catalog.getOrCreateViewerPreferences().getPrintScaling(), 'None');
+  assert.equal(imageCount(testPdf), 0);
+  const shiftedTest = await PDFDocument.load(
+    await renderCalibrationTest(template, {
+      offsetXmm: 2,
+      offsetYmm: -3,
+    } as never),
+  );
+  const firstCross = (pdf: PDFDocument) => {
+    const match = operators(pdf).match(/([\d.-]+) ([\d.-]+) m/);
+    assert.ok(match);
+    return [Number(match[1]), Number(match[2])];
+  };
+  const nominalCross = firstCross(testPdf),
+    shiftedCross = firstCross(shiftedTest);
+  assert.ok(Math.abs(shiftedCross[0]! - nominalCross[0]! - mmToPt(2)) < 0.000001);
+  assert.ok(Math.abs(shiftedCross[1]! - nominalCross[1]! - mmToPt(3)) < 0.000001);
+});
+
+test('Printing: alineación en ambos ejes, wrapping y umbral de tolerancia sin duplicar offsets', async () => {
+  const template = printingTemplate(),
+    document = printingDocument(),
+    metrics = await loadPrintMetrics();
+  document.customer.name = 'Cliente';
+  const field = template.definition.fields[0]!;
+  for (const align of ['left', 'center', 'right'] as const)
+    for (const verticalAlign of ['top', 'middle', 'bottom'] as const) {
+      field.align = align;
+      field.verticalAlign = verticalAlign;
+      const nominal = layoutDocument(document, template, metrics);
+      const { safe, text } = nominal.bounds[0]!;
+      assert.ok(text);
+      assert.equal(nominal.evaluation.state, 'SAFE');
+      const horizontal =
+        align === 'left'
+          ? text.xMm - safe.xMm
+          : align === 'right'
+            ? safe.xMm + safe.widthMm - text.xMm - text.widthMm
+            : text.xMm + text.widthMm / 2 - safe.xMm - safe.widthMm / 2;
+      const vertical =
+        verticalAlign === 'top'
+          ? text.yMm - safe.yMm
+          : verticalAlign === 'bottom'
+            ? safe.yMm + safe.heightMm - text.yMm - text.heightMm
+            : text.yMm + text.heightMm / 2 - safe.yMm - safe.heightMm / 2;
+      assert.ok(Math.abs(horizontal) < 0.000001);
+      assert.ok(Math.abs(vertical) < 0.000001);
+      const moved = layoutDocument(document, template, metrics, { offsetXmm: 0.1, offsetYmm: 0.2 });
+      assert.ok(Math.abs(moved.texts[0]!.xMm - nominal.texts[0]!.xMm - 0.1) < 0.000001);
+      assert.ok(
+        Math.abs(moved.texts[0]!.baselineMm - nominal.texts[0]!.baselineMm - 0.2) < 0.000001,
+      );
+    }
+  field.align = 'left';
+  field.verticalAlign = 'top';
+  assert.equal(
+    layoutDocument(document, template, metrics, { offsetXmm: -0.3, offsetYmm: 0 }).evaluation.state,
+    'WARNING',
+  );
+  assert.equal(
+    layoutDocument(document, template, metrics, { offsetXmm: -0.5, offsetYmm: 0 }).evaluation.state,
+    'BLOCKED',
+  );
+  assert.equal(
+    layoutDocument(document, template, metrics, { offsetXmm: 0, offsetYmm: -0.5 }).evaluation.state,
+    'BLOCKED',
+  );
+  document.customer.name = 'Cliente de prueba con nombre extenso';
+  field.widthMm = 40;
+  field.heightMm = 15;
+  const wrapped = layoutDocument(document, template, metrics);
+  assert.equal(wrapped.evaluation.state, 'SAFE');
+  assert.deepEqual(
+    wrapped.texts.filter((text) => text.region === field.id).map((text) => text.text),
+    ['Cliente de prueba con', 'nombre extenso'],
+  );
+  field.maxLines = 1;
+  assert.equal(layoutDocument(document, template, metrics).evaluation.state, 'BLOCKED');
 });
 test('Storage privado: traversal y claves no scoped se rechazan antes de leer', async () => {
   const storage = new LocalPrivatePrintStorage();
