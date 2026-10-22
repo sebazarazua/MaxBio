@@ -622,16 +622,10 @@
   margin-bottom: 24px;
 }
 .auth-brand {
-  display: flex;
-  align-items: center;
-  gap: 16px;
   color: var(--accent);
   font-size: 23px;
   font-weight: 700;
   margin-bottom: 28px;
-}
-.auth-brand .brand-logo {
-  width: 80px;
 }
 .auth-card form {
   display: flex;
@@ -783,12 +777,16 @@ p {
   line-height: 1.25;
   letter-spacing: -0.8px;
 }
-.brand-logo {
-  display: block;
-  flex: none;
-  width: 56px;
-  height: auto;
-  object-fit: contain;
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: white;
+  font-size: 25px;
+  font-weight: 700;
 }
 .brand-description {
   display: block;

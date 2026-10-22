@@ -5,7 +5,6 @@ import type { FormEvent, ReactNode } from 'react';
 import { apiErrorSchema, identityResponseSchema } from '@maxbio/contracts';
 import type { IdentityResponse } from '@maxbio/contracts';
 import { ConnectionStatus } from './connection-status';
-import { BrandLogo } from './brand-logo';
 
 export function IdentityScreen({
   children,
@@ -132,20 +131,13 @@ export function IdentityScreen({
   if (loading)
     return (
       <div className="auth-card">
-        <p className="auth-brand">
-          <BrandLogo />
-          <span>MaxBio</span>
-        </p>
         <p role="status">Abriendo MaxBio…</p>
       </div>
     );
   if (unavailable)
     return (
       <div className="auth-card">
-        <h1 className="auth-brand">
-          <BrandLogo />
-          <span>MaxBio</span>
-        </h1>
+        <h1>MaxBio</h1>
         <p role="alert">{message}</p>
         <button className="primary-button" onClick={() => void refresh()}>
           Volver a intentar
@@ -155,10 +147,7 @@ export function IdentityScreen({
   if (!identity)
     return (
       <section className="auth-card" aria-labelledby="login-title">
-        <p className="auth-brand">
-          <BrandLogo />
-          <span>MaxBio</span>
-        </p>
+        <p className="auth-brand">MAXBIO</p>
         <h1 id="login-title">Iniciar sesión</h1>
         <form onSubmit={login}>
           <label htmlFor="email">Email</label>
@@ -199,10 +188,7 @@ export function IdentityScreen({
   if (identity.activeOrganization && children) return children(identity);
   return (
     <section className="auth-card workspace-card" aria-labelledby="welcome-title">
-      <p className="auth-brand">
-        <BrandLogo />
-        <span>MaxBio</span>
-      </p>
+      <p className="auth-brand">MAXBIO</p>
       <h1 id="welcome-title">Hola, {identity.user.displayName}</h1>
       {identity.activeOrganization ? (
         <>

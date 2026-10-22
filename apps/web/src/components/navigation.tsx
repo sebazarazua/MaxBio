@@ -2,7 +2,6 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Icon } from './icon';
-import { BrandLogo } from './brand-logo';
 const links = [
   { href: '/', label: 'Inicio', icon: 'home' },
   { href: '/productos', label: 'Productos', icon: 'products' },
@@ -18,7 +17,9 @@ export function Navigation() {
   return (
     <aside className="sidebar">
       <Link href="/" className="brand" aria-label="MaxBio — Inicio">
-        <BrandLogo />
+        <span className="brand-mark" aria-hidden="true">
+          M
+        </span>
         <span>
           MaxBio<span className="brand-description">Gestión de distribución</span>
         </span>
