@@ -6,7 +6,8 @@
     "moduleResolution": "NodeNext",
     "jsx": "react-jsx",
     "rootDir": ".",
-    "outDir": "dist-test"
+    "outDir": "dist-test",
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["test/**/*.tsx", "src/components/catalog/catalog-import-preview-table.tsx"]
 }

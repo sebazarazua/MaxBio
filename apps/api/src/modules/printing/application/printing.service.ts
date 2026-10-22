@@ -23,6 +23,7 @@ import {
   type PrintSampleGeometryInput,
   type PrintTemplate,
   type PrintCalibration,
+  type PrintDraftPreviewInput,
 } from '@maxbio/contracts';
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
 import type { RequestActorContext } from '../../../common/auth/request-context.js';
@@ -38,6 +39,7 @@ import {
 import { evaluatePrint, renderPdf, renderCalibrationTest } from '../infrastructure/pdf-renderer.js';
 import { printingEnvelopes } from '../domain/geometry.js';
 import { printSampleDocument } from '../domain/sample-document.js';
+import type { PrintDocument } from '../domain/print-document.js';
 
 type Tx = Prisma.TransactionClient;
 type TemplateRow = Prisma.PrintTemplateGetPayload<object>;
@@ -199,6 +201,96 @@ export class PrintingService {
       },
       { isolationLevel: 'RepeatableRead' },
     );
+  }
+  async draftPreview(c: RequestActorContext, input: PrintDraftPreviewInput) {
+    // A read-only snapshot: no business writes, audit, storage.put or stock locks.
+    const context = await this.db.client.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        await this.authorize(tx, c);
+        const config = await tx.printConfiguration.findUnique({
+          where: { organizationId: c.organizationId },
+          include: { template: true },
+        });
+        if (!config || config.template.status !== 'PUBLISHED')
+          throw new ConflictException('Todavía no hay una plantilla de remito lista para usar.');
+        const template = templateView(config.template);
+        const customer = input.customerId
+          ? await tx.customer.findFirst({
+              where: { organizationId: c.organizationId, id: input.customerId },
+            })
+          : null;
+        if (input.customerId && !customer)
+          throw new NotFoundException('No encontramos el cliente.');
+        const products = await tx.product.findMany({
+          where: {
+            organizationId: c.organizationId,
+            id: { in: input.lines.map((l) => l.productId) },
+          },
+        });
+        const positions = await tx.inventoryBalance.findMany({
+          where: {
+            organizationId: c.organizationId,
+            id: { in: input.lines.flatMap((l) => l.allocations.map((a) => a.positionId)) },
+          },
+          include: { lot: true, serial: true },
+        });
+        const document: PrintDocument = {
+          status: 'DRAFT',
+          version: 1,
+          documentDate: input.documentDate ?? '',
+          documentPrefix: input.documentPrefix ?? null,
+          documentNumber: input.documentNumber ?? null,
+          patientName: input.patientName ?? null,
+          affiliateNumber: input.affiliateNumber ?? null,
+          notes: input.notes ?? null,
+          customer: customer ?? {
+            name: '',
+            legalName: null,
+            cuit: null,
+            taxConditionText: null,
+            addressLine: null,
+            locality: null,
+            province: null,
+            postalCode: null,
+          },
+          lines: input.lines.map((line) => {
+            const product = products.find((p) => p.id === line.productId);
+            if (!product) throw new NotFoundException('No encontramos el producto.');
+            return {
+              productName: product.name,
+              presentation: product.presentation,
+              unitOfMeasure: product.unitOfMeasure,
+              quantity: line.quantity,
+              allocations: line.allocations.map((allocation) => {
+                const position = positions.find(
+                  (p) => p.id === allocation.positionId && p.productId === product.id,
+                );
+                if (!position)
+                  throw new NotFoundException('No encontramos la existencia para este producto.');
+                return {
+                  quantity: allocation.quantity,
+                  lotNumber: position.lot?.lotNumber ?? null,
+                  expirationDate: position.lot?.expirationDate?.toISOString().slice(0, 10) ?? null,
+                  serialNumber: position.serial?.serialNumber ?? null,
+                };
+              }),
+            };
+          }),
+        };
+        return { document, template, calibration: null };
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+    const background = await this.background(c, context.template.backgroundAssetId);
+    const { bytes, layout } = await renderPdf({
+      ...context,
+      background,
+      mode: 'PREVIEW',
+      guides: false,
+      previewBadge: false,
+    });
+    return { pdfBase64: Buffer.from(bytes).toString('base64'), evaluation: layout.evaluation };
   }
   async listTemplates(c: RequestActorContext) {
     return {

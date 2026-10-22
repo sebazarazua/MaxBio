@@ -12,9 +12,15 @@ import {
   type PrintCalibration,
   type PrintGeometryPreview,
 } from '@maxbio/contracts';
-import { printingJson } from '../../lib/printing-api';
-import { PdfPreview } from './pdf-preview';
-import { moveGeometry, screenDeltaMm, selectedColumn } from './geometry-controls';
+import {
+  printLabels,
+  printRegionLabel,
+  printIssueMessage,
+  printErrorMessage,
+} from './print-labels.ts';
+import { printingJson } from '../../lib/printing-api.ts';
+import { PdfPreview } from './pdf-preview.tsx';
+import { moveGeometry, screenDeltaMm, selectedColumn } from './geometry-controls.ts';
 
 type Preview = {
   definition: PrintDefinition;
@@ -48,6 +54,7 @@ export function PrintGeometryEditor({
     height: number;
     region: string;
     definition: PrintDefinition;
+    resize?: boolean;
   } | null>(null);
   const calibrationId = calibration?.id ?? '';
   const noteId = note?.id;
@@ -154,10 +161,10 @@ export function PrintGeometryEditor({
         definition,
       });
       const saved = await printingJson('templates', printTemplateSchema, input);
-      setMessage('Geometría guardada en una nueva revisión DRAFT.');
+      setMessage('Ubicación guardada en un nuevo borrador. Probalo antes de publicar.');
       onSaved(saved);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'No pudimos guardar la geometría.');
+      setError(printErrorMessage(e));
     } finally {
       saveGuard.current = false;
       setSaving(false);
@@ -168,27 +175,19 @@ export function PrintGeometryEditor({
     : undefined;
   return (
     <section className="catalog-panel">
-      <h2>Editar geometría · {template.name}</h2>
+      <h2>Ajustar ubicación de textos</h2>
       <p>
-        {note
-          ? `Remito ${note.documentPrefix}-${note.documentNumber} · ${note.customer.name}`
-          : 'DATOS DE PRUEBA · No es un remito guardado'}{' '}
-        · {template.pageWidthMm} × {template.pageHeightMm} mm
+        Arrastrá los textos sobre el formulario. El recuadro muestra el espacio que puede ocupar
+        cada dato.
       </p>
-      <p>
-        Un recuadro por texto: área completa de posible caída. Verde SAFE, naranja WARNING, rojo
-        BLOCKED. El formulario requiere revisión visual y prueba física. Tamaño personalizado,
-        tamaño real / 100 %.
-      </p>
-      <p>
-        Tolerancia provisional: X ±{template.safeToleranceXmm} mm / Y ±{template.safeToleranceYmm}{' '}
-        mm. Calibración: {calibration?.offsetXmm ?? 0} / {calibration?.offsetYmm ?? 0} mm.
+      <p className="muted">
+        Modo de prueba · {template.name} · Papel: {template.pageWidthMm} × {template.pageHeightMm}{' '}
+        mm
       </p>
       {template.name === bourbonProvisionalName && (
         <p className="print-status print-status-warning">
-          Revisión del papel pendiente: con estas tolerancias, las envolventes del año y CUIT
-          alcanzan líneas preimpresas. SAFE evalúa la geometría matemática; no certifica el espacio
-          disponible en la imagen. Conservá esta plantilla como provisional hasta la prueba física.
+          Revisá especialmente el año y el CUIT: podrían tocar las líneas del papel. Hacé una prueba
+          física antes de usar esta plantilla.
         </p>
       )}
       {error && (
@@ -197,192 +196,357 @@ export function PrintGeometryEditor({
         </p>
       )}
       {message && <p role="status">{message}</p>}
-      <fieldset disabled={saving} className="print-geometry-controls">
-        <label>
-          Campo o región
-          <select value={selected} onChange={(e) => setSelected(e.target.value)}>
-            {definition.fields.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.binding}
-              </option>
-            ))}
-            <option value="products">Región de productos</option>
-            {definition.productRegion.columns.map((c) => (
-              <option key={c.binding} value={`row-1-${c.binding}`}>
-                Columna: {c.binding}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="form-grid">
-          {number('X (mm)', box.xMm, (v) => updateBox('xMm', v))}
-          {number('Y (mm)', box.yMm, (v) => updateBox('yMm', v))}
-          {number('Ancho disponible de región (mm)', box.widthMm, (v) => updateBox('widthMm', v))}
-          {number('Alto disponible de región (mm)', box.heightMm, (v) => updateBox('heightMm', v))}
-          {!field &&
-            number('Alto de fila (mm)', definition.productRegion.rowHeightMm, (v) =>
-              updateBox('rowHeightMm', v),
-            )}
-          {columnIndex >= 0 &&
-            style &&
-            number('Ancho de columna (mm)', style.widthMm, (v) => updateStyle('widthMm', v))}
-          {style && (
+      <div className="geometry-workspace">
+        <div>
+          {!current && !error && <p role="status">Actualizando vista…</p>}
+          {preview && (
             <>
-              {number('Fuente NotoSans (pt)', style.fontSizePt, (v) =>
-                updateStyle('fontSizePt', v),
-              )}
-              {number('Interlineado (pt)', style.lineHeightPt, (v) =>
-                updateStyle('lineHeightPt', v),
-              )}
-              {number('Máximo de líneas', style.maxLines, (v) => updateStyle('maxLines', v), 1)}
-              {number('Padding (mm)', style.paddingMm, (v) => updateStyle('paddingMm', v))}
-              <label>
-                Alineación
-                <select value={style.align} onChange={(e) => updateStyle('align', e.target.value)}>
-                  <option value="left">Izquierda</option>
-                  <option value="center">Centro</option>
-                  <option value="right">Derecha</option>
-                </select>
-              </label>
-              <label>
-                Alineación vertical
-                <select
-                  value={style.verticalAlign}
-                  onChange={(e) => updateStyle('verticalAlign', e.target.value)}
-                >
-                  <option value="top">Arriba</option>
-                  <option value="middle">Centro</option>
-                  <option value="bottom">Abajo</option>
-                </select>
-              </label>
-            </>
-          )}
-        </div>
-        <p>
-          Estado del texto: {status ?? (current ? preview?.data.evaluation.state : 'Recalculando…')}
-          .
-        </p>
-        {!field && (
-          <p>
-            Las filas comparten geometría. Arrastrar un texto de producto mueve toda la región;
-            ancho y tipografía de columna se aplican a todas sus filas.
-          </p>
-        )}
-        <button
-          type="button"
-          className="primary-button"
-          onClick={() => void save()}
-          disabled={!current}
-        >
-          Guardar geometría como nueva revisión en borrador
-        </button>
-      </fieldset>
-      {!current && !error && (
-        <p role="status">Recalculando texto y envolventes con el motor PDF…</p>
-      )}
-      {preview && (
-        <>
-          <p>
-            Arrastrá un recuadro para moverlo. Flechas: 0,5 mm; Shift + flecha: 0,1 mm.
-            Seleccionado:{' '}
-            {field?.binding ?? (columnIndex >= 0 ? style?.binding : 'Región de productos')}.
-          </p>
-          <PdfPreview bytes={preview.bytes} onReady={onReady}>
-            <svg
-              className="print-geometry-hits"
-              viewBox={`0 0 ${template.pageWidthMm} ${template.pageHeightMm}`}
-              aria-label="Seleccionar y mover textos del remito"
-              style={{ pointerEvents: current && !saving ? 'auto' : 'none' }}
-              onPointerMove={(event) => {
-                const start = drag.current;
-                if (!start) return;
-                setDefinition(
-                  moveGeometry(
-                    start.definition,
-                    start.region,
-                    screenDeltaMm(event.clientX - start.x, start.width, template.pageWidthMm),
-                    screenDeltaMm(event.clientY - start.y, start.height, template.pageHeightMm),
-                    template.pageWidthMm,
-                    template.pageHeightMm,
-                  ),
-                );
-              }}
-              onPointerUp={(event) => {
-                drag.current = null;
-                if (event.currentTarget.hasPointerCapture(event.pointerId))
-                  event.currentTarget.releasePointerCapture(event.pointerId);
-              }}
-              onPointerCancel={() => {
-                drag.current = null;
-              }}
-            >
-              {preview.data.envelopes.map(({ region, rect }) => (
-                <rect
-                  key={region}
-                  x={rect.xMm}
-                  y={rect.yMm}
-                  width={rect.widthMm}
-                  height={rect.heightMm}
-                  fill="transparent"
-                  stroke="none"
-                  tabIndex={current ? 0 : -1}
-                  role="button"
-                  aria-label={`Mover ${region}`}
-                  aria-pressed={selected === region}
-                  onFocus={() => setSelected(region)}
-                  onPointerDown={(event) => {
-                    event.preventDefault();
-                    setSelected(region);
-                    event.currentTarget.focus();
-                    const svg = event.currentTarget.ownerSVGElement!;
-                    const size = svg.getBoundingClientRect();
-                    drag.current = {
-                      x: event.clientX,
-                      y: event.clientY,
-                      width: size.width,
-                      height: size.height,
-                      region,
-                      definition,
-                    };
-                    svg.setPointerCapture(event.pointerId);
-                  }}
-                  onKeyDown={(event) => {
-                    const deltas: Record<string, [number, number]> = {
-                      ArrowLeft: [-1, 0],
-                      ArrowRight: [1, 0],
-                      ArrowUp: [0, -1],
-                      ArrowDown: [0, 1],
-                    };
-                    const delta = deltas[event.key];
-                    if (!delta) return;
-                    event.preventDefault();
-                    const step = event.shiftKey ? 0.1 : 0.5;
+              <p>
+                Arrastrá un recuadro para moverlo. Flechas: 0,5 mm; Shift + flecha: 0,1 mm.
+                Seleccionado:{' '}
+                {field
+                  ? printLabels[field.binding]
+                  : columnIndex >= 0
+                    ? printLabels[style?.binding ?? '']
+                    : 'Productos'}
+                .
+              </p>
+              <PdfPreview bytes={preview.bytes} onReady={onReady} fit>
+                <svg
+                  className="print-geometry-hits"
+                  viewBox={`0 0 ${template.pageWidthMm} ${template.pageHeightMm}`}
+                  aria-label="Seleccionar y mover textos del remito"
+                  style={{ pointerEvents: current && !saving ? 'auto' : 'none' }}
+                  onPointerMove={(event) => {
+                    const start = drag.current;
+                    if (!start) return;
+                    if (start.resize) {
+                      const next = structuredClone(start.definition);
+                      const r = next.productRegion;
+                      const dx = screenDeltaMm(
+                        event.clientX - start.x,
+                        start.width,
+                        template.pageWidthMm,
+                      );
+                      const dy = screenDeltaMm(
+                        event.clientY - start.y,
+                        start.height,
+                        template.pageHeightMm,
+                      );
+                      r.widthMm = Math.min(
+                        template.pageWidthMm - r.xMm,
+                        Math.max(
+                          r.columns.reduce((n, c) => n + c.widthMm, 0),
+                          r.widthMm + dx,
+                        ),
+                      );
+                      r.heightMm = Math.min(
+                        template.pageHeightMm - r.yMm,
+                        Math.max(r.rowHeightMm, r.heightMm + dy),
+                      );
+                      setDefinition(next);
+                      return;
+                    }
                     setDefinition(
                       moveGeometry(
-                        definition,
-                        region,
-                        delta[0] * step,
-                        delta[1] * step,
+                        start.definition,
+                        start.region,
+                        screenDeltaMm(event.clientX - start.x, start.width, template.pageWidthMm),
+                        screenDeltaMm(event.clientY - start.y, start.height, template.pageHeightMm),
                         template.pageWidthMm,
                         template.pageHeightMm,
                       ),
                     );
                   }}
-                />
-              ))}
-            </svg>
-          </PdfPreview>
-          {current && (
-            <ul>
-              {preview.data.evaluation.issues.map((issue, index) => (
-                <li key={index}>
-                  {issue.region}: {issue.message}
-                </li>
-              ))}
-            </ul>
+                  onPointerUp={(event) => {
+                    drag.current = null;
+                    if (event.currentTarget.hasPointerCapture(event.pointerId))
+                      event.currentTarget.releasePointerCapture(event.pointerId);
+                  }}
+                  onPointerCancel={() => {
+                    drag.current = null;
+                  }}
+                >
+                  {selected === 'products' && (
+                    <>
+                      <rect
+                        x={definition.productRegion.xMm}
+                        y={definition.productRegion.yMm}
+                        width={definition.productRegion.widthMm}
+                        height={definition.productRegion.heightMm}
+                        fill="transparent"
+                        stroke="#1457b8"
+                        strokeWidth="0.4"
+                        strokeDasharray="2 1"
+                      />
+                      <circle
+                        cx={definition.productRegion.xMm + definition.productRegion.widthMm}
+                        cy={definition.productRegion.yMm + definition.productRegion.heightMm}
+                        r="2"
+                        fill="#1457b8"
+                        role="button"
+                        aria-label="Cambiar tamaño de Productos"
+                        tabIndex={0}
+                        onPointerDown={(event) => {
+                          const svg = event.currentTarget.ownerSVGElement!;
+                          const size = svg.getBoundingClientRect();
+                          drag.current = {
+                            x: event.clientX,
+                            y: event.clientY,
+                            width: size.width,
+                            height: size.height,
+                            region: 'products',
+                            definition,
+                            resize: true,
+                          };
+                          svg.setPointerCapture(event.pointerId);
+                        }}
+                      />
+                    </>
+                  )}
+                  {preview.data.envelopes.map(({ region, rect }) => (
+                    <rect
+                      key={region}
+                      x={rect.xMm}
+                      y={rect.yMm}
+                      width={rect.widthMm}
+                      height={rect.heightMm}
+                      fill="transparent"
+                      stroke={selected === region ? '#1457b8' : 'none'}
+                      strokeWidth={0.7}
+                      tabIndex={current ? 0 : -1}
+                      role="button"
+                      aria-label={`Mover ${printRegionLabel(region, template)}`}
+                      aria-pressed={selected === region}
+                      onFocus={() => setSelected(region)}
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        setSelected(region);
+                        event.currentTarget.focus();
+                        const svg = event.currentTarget.ownerSVGElement!;
+                        const size = svg.getBoundingClientRect();
+                        drag.current = {
+                          x: event.clientX,
+                          y: event.clientY,
+                          width: size.width,
+                          height: size.height,
+                          region,
+                          definition,
+                        };
+                        svg.setPointerCapture(event.pointerId);
+                      }}
+                      onKeyDown={(event) => {
+                        const deltas: Record<string, [number, number]> = {
+                          ArrowLeft: [-1, 0],
+                          ArrowRight: [1, 0],
+                          ArrowUp: [0, -1],
+                          ArrowDown: [0, 1],
+                        };
+                        const delta = deltas[event.key];
+                        if (!delta) return;
+                        event.preventDefault();
+                        const step = event.shiftKey ? 0.1 : 0.5;
+                        setDefinition(
+                          moveGeometry(
+                            definition,
+                            region,
+                            delta[0] * step,
+                            delta[1] * step,
+                            template.pageWidthMm,
+                            template.pageHeightMm,
+                          ),
+                        );
+                      }}
+                    />
+                  ))}
+                </svg>
+              </PdfPreview>
+              {current && (
+                <ul>
+                  {preview.data.evaluation.issues.map((issue, index) => (
+                    <li key={index}>{printIssueMessage(issue, template)}</li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
-        </>
-      )}
+        </div>
+        <fieldset disabled={saving} className="print-geometry-controls">
+          <label>
+            Texto a ajustar
+            <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+              {definition.fields.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {printLabels[f.binding]}
+                </option>
+              ))}
+              <option value="products">Productos</option>
+              {definition.productRegion.columns.map((c) => (
+                <option key={c.binding} value={`row-1-${c.binding}`}>
+                  {printLabels[c.binding]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="geometry-simple-controls">
+            <p>
+              <strong>
+                {field
+                  ? printLabels[field.binding]
+                  : columnIndex >= 0
+                    ? printLabels[style?.binding ?? '']
+                    : 'Productos'}
+              </strong>
+            </p>
+            <p>Posición</p>
+            <div className="actions">
+              {(
+                [
+                  ['←', -0.5, 0, 'Mover a la izquierda'],
+                  ['→', 0.5, 0, 'Mover a la derecha'],
+                  ['↑', 0, -0.5, 'Mover hacia arriba'],
+                  ['↓', 0, 0.5, 'Mover hacia abajo'],
+                ] as const
+              ).map(([arrow, x, y, label]) => (
+                <button
+                  key={arrow}
+                  type="button"
+                  className="secondary-button"
+                  aria-label={label}
+                  onClick={() =>
+                    setDefinition(
+                      moveGeometry(
+                        definition,
+                        selected,
+                        x,
+                        y,
+                        template.pageWidthMm,
+                        template.pageHeightMm,
+                      ),
+                    )
+                  }
+                >
+                  {arrow}
+                </button>
+              ))}
+            </div>
+            {style && (
+              <>
+                <p>Tamaño de letra</p>
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    aria-label="Reducir letra"
+                    onClick={() => updateStyle('fontSizePt', Math.max(6, style.fontSizePt - 0.5))}
+                  >
+                    −
+                  </button>
+                  <span>{style.fontSizePt} pt</span>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    aria-label="Aumentar letra"
+                    onClick={() => updateStyle('fontSizePt', Math.min(36, style.fontSizePt + 0.5))}
+                  >
+                    +
+                  </button>
+                </div>
+                <label>
+                  Alineación
+                  <select
+                    value={style.align}
+                    onChange={(e) => updateStyle('align', e.target.value)}
+                  >
+                    <option value="left">Izquierda</option>
+                    <option value="center">Centro</option>
+                    <option value="right">Derecha</option>
+                  </select>
+                </label>
+              </>
+            )}
+          </div>
+          <details>
+            <summary>Ajuste preciso</summary>
+            <div className="form-grid">
+              {number('X (mm)', box.xMm, (v) => updateBox('xMm', v))}
+              {number('Y (mm)', box.yMm, (v) => updateBox('yMm', v))}
+              {number('Ancho disponible de región (mm)', box.widthMm, (v) =>
+                updateBox('widthMm', v),
+              )}
+              {number('Alto disponible de región (mm)', box.heightMm, (v) =>
+                updateBox('heightMm', v),
+              )}
+              {!field &&
+                number('Alto de fila (mm)', definition.productRegion.rowHeightMm, (v) =>
+                  updateBox('rowHeightMm', v),
+                )}
+              {columnIndex >= 0 &&
+                style &&
+                number('Ancho de columna (mm)', style.widthMm, (v) => updateStyle('widthMm', v))}
+              {style && (
+                <>
+                  {number('Fuente NotoSans (pt)', style.fontSizePt, (v) =>
+                    updateStyle('fontSizePt', v),
+                  )}
+                  {number('Interlineado (pt)', style.lineHeightPt, (v) =>
+                    updateStyle('lineHeightPt', v),
+                  )}
+                  {number('Máximo de líneas', style.maxLines, (v) => updateStyle('maxLines', v), 1)}
+                  {number('Padding (mm)', style.paddingMm, (v) => updateStyle('paddingMm', v))}
+                  <label>
+                    Alineación
+                    <select
+                      value={style.align}
+                      onChange={(e) => updateStyle('align', e.target.value)}
+                    >
+                      <option value="left">Izquierda</option>
+                      <option value="center">Centro</option>
+                      <option value="right">Derecha</option>
+                    </select>
+                  </label>
+                  <label>
+                    Alineación vertical
+                    <select
+                      value={style.verticalAlign}
+                      onChange={(e) => updateStyle('verticalAlign', e.target.value)}
+                    >
+                      <option value="top">Arriba</option>
+                      <option value="middle">Centro</option>
+                      <option value="bottom">Abajo</option>
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+          </details>
+          <p>
+            Estado del texto:{' '}
+            {status
+              ? {
+                  SAFE: 'Dentro del espacio',
+                  WARNING: 'Revisar visualmente',
+                  BLOCKED: 'Necesita ajuste',
+                }[status]
+              : 'Actualizando…'}
+            .
+          </p>
+          {!field && (
+            <p>
+              Las filas comparten geometría. Arrastrar un texto de producto mueve toda la región;
+              ancho y tipografía de columna se aplican a todas sus filas.
+            </p>
+          )}
+          <button
+            type="button"
+            className="primary-button"
+            onClick={() => void save()}
+            disabled={!current}
+          >
+            Guardar cambios en borrador
+          </button>
+        </fieldset>
+      </div>
     </section>
   );
 }

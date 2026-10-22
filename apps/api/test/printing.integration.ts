@@ -15,6 +15,7 @@ import {
   printCalibrationSchema,
   printEvaluationSchema,
   printGeometryPreviewSchema,
+  printDraftPreviewSchema,
   deliveryNoteSchema,
   deliveryNoteListSchema,
   inventoryDocumentSchema,
@@ -848,6 +849,32 @@ test(
       }
       assert.ok(ready, logs);
       const before = await physicalState();
+      const noteCount = await client.deliveryNote.count();
+      const artifactCount = await client.printArtifact.count();
+      for (const body of [
+        {},
+        {
+          customerId: customer,
+          documentDate: '2026-10-22',
+          patientName: 'Paciente BFF',
+          lines: [
+            {
+              productId: product,
+              quantity: '1',
+              allocations: [{ positionId: position, quantity: '1' }],
+            },
+          ],
+        },
+      ]) {
+        const transient = printDraftPreviewSchema.parse(
+          await checked(await bff('draft-preview', body)),
+        );
+        assert.equal(Buffer.from(transient.pdfBase64, 'base64').subarray(0, 5).toString(), '%PDF-');
+        assert.equal('envelopes' in transient, false);
+      }
+      assert.equal(await client.deliveryNote.count(), noteCount);
+      assert.equal(await client.printArtifact.count(), artifactCount);
+      assert.deepEqual(await physicalState(), before);
       for (const q of [
         confirmed.documentPrefix + '-' + confirmed.documentNumber,
         'Cliente de prueba',
@@ -953,3 +980,190 @@ test(
     }
   },
 );
+
+test('Preview efímera HTTP: parcial, datos autoritativos, OPERATOR, tenant y cero escrituras', async () => {
+  const stockBeforeEdit = await physicalState();
+  const source = await client.printTemplate.findUniqueOrThrow({ where: { id: template.id } });
+  const newAsset = (await checked(
+    await request('printing/assets', 'POST', { pngBase64: printingPng().toString('base64') }),
+  )) as { id: string };
+  const input = printingTemplateInput(newAsset.id);
+  input.sourceTemplateId = template.id;
+  const style = input.definition.fields[0]!;
+  input.definition.fields.push(
+    { ...style, id: 'patient', binding: 'patient.name', yMm: 210 },
+    { ...style, id: 'affiliate', binding: 'patient.affiliateNumber', yMm: 225 },
+  );
+  const liveTemplate = printTemplateSchema.parse(
+    await checked(await request('printing/templates', 'POST', input)),
+  );
+  assert.equal(liveTemplate.status, 'DRAFT');
+  assert.equal(liveTemplate.familyId, template.familyId);
+  assert.notEqual(liveTemplate.backgroundAssetId, template.backgroundAssetId);
+  assert.deepEqual(
+    await client.printTemplate.findUniqueOrThrow({ where: { id: template.id } }),
+    source,
+  );
+  assert.deepEqual(await physicalState(), stockBeforeEdit);
+  await checked(
+    await request(`printing/templates/${liveTemplate.id}/publish`, 'POST', { activate: true }),
+  );
+  await checked(await request('printing/draft-preview', 'POST', {}, 2), 409);
+  const foreignAsset = (await checked(
+    await request('printing/assets', 'POST', { pngBase64: printingPng().toString('base64') }, 2),
+  )) as { id: string };
+  const foreignTemplate = printTemplateSchema.parse(
+    await checked(
+      await request('printing/templates', 'POST', printingTemplateInput(foreignAsset.id), 2),
+    ),
+  );
+  await checked(await request('printing/draft-preview', 'POST', {}, 2), 409);
+  await checked(
+    await request(
+      `printing/templates/${foreignTemplate.id}/publish`,
+      'POST',
+      { activate: true },
+      2,
+    ),
+  );
+  await client.customer.create({
+    data: { organizationId: foreign, name: 'Cliente ajeno', kind: 'COMPANY' },
+  });
+  // Establish the usual authenticated session activity before taking the business snapshot.
+  await checked(await request('printing/config', 'GET', undefined, 1));
+  const snapshot = async () => ({
+    notes: await client.deliveryNote.findMany({
+      include: { lines: { include: { allocations: true } } },
+    }),
+    physical: await physicalState(),
+    customers: await client.customer.findMany(),
+    products: await client.product.findMany(),
+    artifacts: await client.printArtifact.findMany(),
+    assets: await client.printAsset.findMany(),
+    templates: await client.printTemplate.findMany(),
+    audits: await client.auditEvent.findMany(),
+    disk: await readdir(join(folder, org)),
+  });
+  const balance = await client.inventoryBalance.findUniqueOrThrow({
+    where: { id: position },
+    include: { lot: true },
+  });
+  const serial = await client.inventorySerial.create({
+    data: {
+      organizationId: org,
+      productId: product,
+      serialNumber: 'SERIE-LIVE-1',
+      normalizedSerialNumber: 'SERIE-LIVE-1',
+    },
+  });
+  const serialPosition = await client.inventoryBalance.create({
+    data: {
+      organizationId: org,
+      productId: product,
+      locationId: balance.locationId,
+      serialId: serial.id,
+      lotId: balance.lotId,
+      condition: 'USABLE',
+      quantity: 0,
+    },
+  });
+  const before = await snapshot();
+  const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  async function preview(body: object, actor = 1) {
+    const r = await request('printing/draft-preview', 'POST', body, actor);
+    assert.match(r.headers.get('cache-control')!, /no-store/);
+    const result = printDraftPreviewSchema.parse(await checked(r));
+    assert.equal(result.evaluation.templateRevisionId, liveTemplate.id);
+    assert.equal('envelopes' in result, false);
+    const task = getDocument({
+      data: Uint8Array.from(Buffer.from(result.pdfBase64, 'base64')),
+      useSystemFonts: false,
+    });
+    try {
+      const pdf = await task.promise;
+      const page = await pdf.getPage(1);
+      const text = (await page.getTextContent()).items
+        .flatMap((item) => ('str' in item ? [item.str] : []))
+        .join(' ');
+      return { text, result };
+    } finally {
+      await task.destroy();
+    }
+  }
+  try {
+    const empty = await preview({});
+    assert.equal(empty.text.trim(), '');
+    assert.equal(empty.result.evaluation.rowCount, 0);
+    const selected = await preview({ customerId: customer });
+    assert.match(selected.text, /Cliente de prueba/);
+    assert.match(selected.text, /Calle 123/);
+    for (const date of ['2026-10-22', '2026-11-09']) {
+      const dated = await preview({ documentDate: date });
+      assert.ok(dated.text.includes(date.split('-').reverse().join('/')));
+    }
+    assert.match((await preview({ patientName: 'Paciente actual' })).text, /Paciente actual/);
+    assert.match((await preview({ affiliateNumber: 'AF-2026' })).text, /AF-2026/);
+    const line = {
+      productId: product,
+      quantity: '1',
+      allocations: [] as { positionId: string; quantity: string }[],
+    };
+    assert.match((await preview({ lines: [line] })).text, /Producto X/);
+    const allocated = await preview({
+      lines: [{ ...line, allocations: [{ positionId: position, quantity: '1' }] }],
+    });
+    assert.ok(allocated.text.includes(balance.lot!.lotNumber!));
+    assert.ok(
+      allocated.text.includes(
+        balance.lot!.expirationDate!.toISOString().slice(0, 10).split('-').reverse().join('/'),
+      ),
+    );
+    const serialized = await preview({
+      lines: [{ ...line, allocations: [{ positionId: serialPosition.id, quantity: '1' }] }],
+    });
+    assert.match(serialized.text, /SERIE-LIVE-1/);
+    const otherCustomer = await client.customer.findFirst({ where: { organizationId: foreign } });
+    for (const body of [
+      { customerId: otherCustomer?.id ?? randomUUID() },
+      { lines: [{ ...line, productId: randomUUID() }] },
+      { lines: [{ ...line, allocations: [{ positionId: randomUUID(), quantity: '1' }] }] },
+    ])
+      await checked(await request('printing/draft-preview', 'POST', body, 1), 404);
+    for (const body of [
+      { customerName: 'Inventado' },
+      { templateRevisionId: liveTemplate.id },
+      { organizationId: foreign },
+      { guides: true },
+      { lines: [{ ...line, productName: 'Inventado' }] },
+    ])
+      await checked(await request('printing/draft-preview', 'POST', body, 1), 400);
+    await checked(
+      await request('printing/draft-preview', 'POST', { customerId: customer }, 2),
+      404,
+    );
+    await checked(
+      await request(
+        'printing/draft-preview',
+        'POST',
+        { lines: [{ ...line, allocations: [{ positionId: position, quantity: '1' }] }] },
+        2,
+      ),
+      404,
+    );
+    const response = await fetch(base + '/api/v1/printing/draft-preview', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'http://localhost:3000',
+        'X-Maxbio-Csrf': '1',
+      },
+      body: '{}',
+    });
+    assert.equal(response.status, 401);
+    assert.deepEqual(await snapshot(), before);
+  } finally {
+    await checked(
+      await request(`printing/templates/${template.id}/publish`, 'POST', { activate: true }),
+    );
+  }
+});

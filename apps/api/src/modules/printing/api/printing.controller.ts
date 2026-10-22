@@ -25,6 +25,7 @@ import {
   printReprintInputSchema,
   printGeometryInputSchema,
   printSampleGeometryInputSchema,
+  printDraftPreviewInputSchema,
 } from '@maxbio/contracts';
 import type { AuthenticatedRequest } from '../../../common/auth/request-context.js';
 import { Roles } from '../../../common/auth/roles.decorator.js';
@@ -60,6 +61,12 @@ function binary(res: Response, data: Uint8Array, type = 'application/pdf') {
 @Controller('printing')
 export class PrintingController {
   constructor(@Inject(PrintingService) private readonly service: PrintingService) {}
+  @Post('draft-preview') @HttpCode(200) draftPreview(
+    @Req() r: AuthenticatedRequest,
+    @Body() body: unknown,
+  ) {
+    return this.service.draftPreview(actor(r), parse(printDraftPreviewInputSchema, body));
+  }
   @Get('config') config(@Req() r: AuthenticatedRequest) {
     return this.service.config(actor(r));
   }

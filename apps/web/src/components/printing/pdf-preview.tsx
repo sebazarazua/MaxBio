@@ -6,10 +6,12 @@ export function PdfPreview({
   bytes,
   children,
   onReady,
+  fit = false,
 }: {
   bytes: Uint8Array;
   children?: ReactNode;
   onReady?: () => void;
+  fit?: boolean;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState(1),
@@ -50,24 +52,30 @@ export function PdfPreview({
   }, [bytes, zoom, onReady]);
   return (
     <div>
-      <label className="print-zoom">
-        Zoom de pantalla
-        <select value={zoom} onChange={(e) => setZoom(Number(e.target.value))}>
-          {[0.5, 0.75, 1, 1.25, 1.5, 2].map((n) => (
-            <option key={n} value={n}>
-              {n * 100} %
-            </option>
-          ))}
-        </select>
-      </label>
-      <p className="muted">El zoom solo cambia la pantalla. El PDF conserva su tamaño físico.</p>
+      {!fit && (
+        <>
+          <label className="print-zoom">
+            Zoom de pantalla
+            <select value={zoom} onChange={(e) => setZoom(Number(e.target.value))}>
+              {[0.5, 0.75, 1, 1.25, 1.5, 2].map((n) => (
+                <option key={n} value={n}>
+                  {n * 100} %
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="muted">
+            El zoom solo cambia la pantalla. El PDF conserva su tamaño físico.
+          </p>
+        </>
+      )}
       {error && (
         <p role="alert" className="catalog-error">
           {error}
         </p>
       )}
-      <div className="print-canvas-scroll">
-        <div style={{ position: 'relative', width: 'max-content' }}>
+      <div className={'print-canvas-scroll' + (fit ? ' print-canvas-fit' : '')}>
+        <div style={{ position: 'relative', width: fit ? '100%' : 'max-content' }}>
           <canvas
             ref={canvas}
             aria-label="Vista previa del formulario y datos del remito"

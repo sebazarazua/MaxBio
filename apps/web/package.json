@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 3000",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+    "test": "tsc -p tsconfig.test.json && node --experimental-test-module-mocks --test dist-test/test/*.test.js"
   },
   "dependencies": {
     "@maxbio/contracts": "workspace:*",
@@ -19,7 +19,9 @@
     "server-only": "^0.0.1"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0"
+    "@types/react-dom": "^19.2.0",
+    "jsdom": "^30.1.3"
   }
 }

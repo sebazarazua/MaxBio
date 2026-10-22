@@ -1,5 +1,5 @@
+import type { PrintDocument } from './print-document.js';
 import type {
-  DeliveryNoteView,
   PrintTemplate,
   PrintField,
   PrintColumn,
@@ -72,7 +72,7 @@ export function formatPrintValue(value: string | null, formatter: PrintField['fo
     return value.slice(0, 2) + '-' + value.slice(2, 10) + '-' + value.slice(10);
   return value;
 }
-export function fieldValue(doc: DeliveryNoteView, binding: PrintField['binding']) {
+export function fieldValue(doc: PrintDocument, binding: PrintField['binding']) {
   const c = doc.customer;
   const values = {
     'document.number': doc.documentNumber ? `${doc.documentPrefix}-${doc.documentNumber}` : '',
@@ -95,7 +95,7 @@ export function fieldValue(doc: DeliveryNoteView, binding: PrintField['binding']
   };
   return values[binding] ?? '';
 }
-export function projectRows(doc: DeliveryNoteView, columns: PrintColumn[]) {
+export function projectRows(doc: PrintDocument, columns: PrintColumn[]) {
   const physical = columns.some((c) =>
     ['lotNumber', 'expirationDate', 'serialNumber'].includes(c.binding),
   );
@@ -171,7 +171,7 @@ const labels: Partial<Record<PrintField['binding'], string>> = {
   'patient.name': 'El nombre del paciente',
 };
 export function layoutDocument(
-  doc: DeliveryNoteView,
+  doc: PrintDocument,
   template: PrintTemplate,
   metrics: Metrics,
   calibration: Pick<PrintCalibration, 'offsetXmm' | 'offsetYmm'> | null = null,

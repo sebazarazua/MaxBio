@@ -1295,3 +1295,144 @@ h2 {
   gap: 0.5rem;
   align-items: center;
 }
+
+/* Remito entry and paper share one workspace. */
+main:has(.delivery-workspace),
+main:has(.template-current) {
+  max-width: 1600px;
+}
+.delivery-workspace {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(420px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.delivery-entry,
+.geometry-workspace > div {
+  min-width: 0;
+}
+.delivery-live-preview {
+  position: sticky;
+  top: 16px;
+  margin-top: 0;
+}
+.live-background,
+.template-background {
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-color: white;
+  width: 100%;
+}
+.template-background {
+  max-width: 580px;
+}
+.print-canvas-fit {
+  max-height: none;
+  overflow: hidden;
+  padding: 8px;
+}
+.print-canvas-fit canvas {
+  width: 100% !important;
+  height: auto !important;
+}
+.preview-expanded {
+  position: fixed;
+  inset: 20px;
+  z-index: 100;
+  overflow: auto;
+}
+.preview-expanded .print-canvas-fit {
+  max-width: 860px;
+  margin: auto;
+}
+.template-current {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+  gap: 24px;
+}
+.template-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-self: start;
+}
+.geometry-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  gap: 24px;
+  align-items: start;
+}
+.geometry-workspace .print-canvas-scroll {
+  max-height: 85vh;
+}
+.print-geometry-controls {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  position: sticky;
+  top: 16px;
+}
+.print-geometry-controls .form-grid {
+  grid-template-columns: 1fr;
+}
+.geometry-simple-controls {
+  padding: 8px 0 16px;
+}
+.print-geometry-hits rect {
+  cursor: grab;
+}
+.print-geometry-hits rect:active {
+  cursor: grabbing;
+}
+.print-geometry-hits circle {
+  cursor: nwse-resize;
+}
+.print-human-issues {
+  padding-left: 20px;
+  line-height: 1.6;
+}
+.delivery-workspace button,
+.template-current button,
+.geometry-workspace button {
+  min-height: 44px;
+}
+.delivery-workspace input,
+.delivery-workspace select {
+  min-height: 44px;
+}
+.delivery-workspace .form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+}
+.delivery-workspace summary,
+.print-geometry-controls summary {
+  cursor: pointer;
+  padding: 12px 0;
+  font-weight: 600;
+}
+@media (max-width: 1150px) {
+  .delivery-workspace {
+    grid-template-columns: minmax(320px, 1fr) minmax(360px, 1fr);
+    gap: 16px;
+  }
+}
+@media (max-width: 950px) {
+  .delivery-workspace,
+  .template-current,
+  .geometry-workspace {
+    grid-template-columns: 1fr;
+  }
+  .delivery-live-preview,
+  .print-geometry-controls {
+    position: static;
+  }
+  .delivery-live-preview.preview-expanded {
+    position: fixed;
+  }
+  .preview-expanded {
+    inset: 8px;
+  }
+  .geometry-workspace .print-canvas-scroll {
+    max-height: 70vh;
+  }
+}

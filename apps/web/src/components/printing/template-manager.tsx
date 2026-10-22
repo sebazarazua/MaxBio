@@ -20,50 +20,47 @@ import { Field } from '../catalog/common';
 import { DeliveryPrintPanel } from './delivery-print-panel';
 import { TestDeliveryNotePicker } from './test-delivery-note-picker';
 import { PrintGeometryEditor } from './geometry-editor';
+import { printErrorMessage } from './print-labels';
 
-const emptyDefinition = JSON.stringify(
-  {
-    schemaVersion: 1,
-    fields: [],
-    productRegion: {
-      xMm: 0,
-      yMm: 0,
-      widthMm: 0,
-      heightMm: 0,
-      rowHeightMm: 0,
-      columns: [],
-    },
-  },
-  null,
-  2,
-);
 export function PrintTemplateManager() {
   const { isAdmin } = useWorkspace();
-  const [revision, setRevision] = useState(0);
   const [templates, setTemplates] = useState<PrintTemplate[]>([]);
   const [config, setConfig] = useState<ReturnType<typeof printConfigSchema.parse>>();
+  const [selected, setSelected] = useState('');
+  const [mode, setMode] = useState<'adjust' | 'test' | 'change' | 'printer' | null>(null);
   const [error, setError] = useState(''),
     [message, setMessage] = useState(''),
     [busy, setBusy] = useState(false);
-  const [name, setName] = useState(''),
-    [width, setWidth] = useState(''),
-    [height, setHeight] = useState('');
-  const [tx, setTx] = useState(''),
-    [ty, setTy] = useState(''),
-    [assetId, setAssetId] = useState('');
-  const [definition, setDefinition] = useState(emptyDefinition),
-    [sourceId, setSourceId] = useState('');
-  const [selected, setSelected] = useState(''),
-    [calibrationId, setCalibrationId] = useState('');
-  const [calName, setCalName] = useState(''),
+  const [note, setNote] = useState<DeliveryNoteView>();
+  const [width, setWidth] = useState('203'),
+    [height, setHeight] = useState('271');
+  const [name, setName] = useState('Plantilla Bourbon');
+  const [calibrationId, setCalibrationId] = useState('');
+  const [calName, setCalName] = useState('Impresora habitual'),
     [printer, setPrinter] = useState(''),
     [tray, setTray] = useState('');
-  const [dx, setDx] = useState('0'),
-    [dy, setDy] = useState('0');
-  const [note, setNote] = useState<DeliveryNoteView>();
-  const [useSample, setUseSample] = useState(false);
+  const [dx, setDx] = useState(0),
+    [dy, setDy] = useState(0);
+  const [technical, setTechnical] = useState('');
   const guard = useRef(false);
-  const template = templates.find((t) => t.id === selected);
+  const editorSection = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (mode) editorSection.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [mode, selected]);
+  const active = config?.activeTemplate;
+  const template = templates.find((t) => t.id === selected) ?? active ?? templates[0];
+  const calibration =
+    config?.calibrations.find(
+      (c) => c.id === calibrationId && c.templateRevisionId === template?.id,
+    ) ?? null;
+  async function reload() {
+    const [list, current] = await Promise.all([
+      printingJson('templates', printTemplateListSchema),
+      printingJson('config', printConfigSchema),
+    ]);
+    setTemplates(list.items);
+    setConfig(current);
+  }
   useEffect(() => {
     if (!isAdmin) return;
     let alive = true;
@@ -71,19 +68,19 @@ export function PrintTemplateManager() {
       printingJson('templates', printTemplateListSchema),
       printingJson('config', printConfigSchema),
     ])
-      .then(([list, c]) => {
+      .then(([list, current]) => {
         if (alive) {
           setTemplates(list.items);
-          setConfig(c);
+          setConfig(current);
         }
       })
-      .catch((e) => {
-        if (alive) setError(String(e.message));
+      .catch(() => {
+        if (alive) setError('No pudimos cargar la plantilla.');
       });
     return () => {
       alive = false;
     };
-  }, [isAdmin, revision]);
+  }, [isAdmin]);
   async function run(fn: () => Promise<void>) {
     if (guard.current) return;
     guard.current = true;
@@ -93,25 +90,25 @@ export function PrintTemplateManager() {
     try {
       await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'No pudimos guardar la configuración.');
+      setError(printErrorMessage(e));
     } finally {
       guard.current = false;
       setBusy(false);
     }
   }
-  function copy(t: PrintTemplate) {
-    setSourceId(t.id);
-    setName(t.name);
-    setWidth(String(t.pageWidthMm));
-    setHeight(String(t.pageHeightMm));
-    setTx(String(t.safeToleranceXmm));
-    setTy(String(t.safeToleranceYmm));
-    setAssetId(t.backgroundAssetId);
-    setDefinition(JSON.stringify(t.definition, null, 2));
-    setMessage('La copia se guardará como una nueva revisión.');
+  function open(next: typeof mode) {
+    if (template) {
+      setWidth(String(template.pageWidthMm));
+      setHeight(String(template.pageHeightMm));
+      setName(template.name);
+      setSelected(template.id);
+      setTechnical(JSON.stringify(template.definition, null, 2));
+    }
+    setMode(next);
   }
   async function upload(file: File) {
-    if (file.size > 4194304) throw new Error('Usá un PNG preparado de hasta 4 MiB.');
+    if (file.type !== 'image/png' || file.size > 4194304)
+      throw new Error('Usá un PNG de hasta 4 MiB.');
     const encoded = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('No pudimos leer la imagen.'));
@@ -119,8 +116,36 @@ export function PrintTemplateManager() {
       reader.readAsDataURL(file);
     });
     const asset = await printingJson('assets', printAssetSchema, { pngBase64: encoded });
-    setAssetId(asset.id);
-    setMessage('Fondo guardado en almacenamiento privado.');
+    const preset = bourbonProvisionalTemplate(crypto.randomUUID(), asset.id);
+    const created = await printingJson(
+      'templates',
+      printTemplateSchema,
+      printTemplateCreateSchema.parse({
+        ...preset,
+        id: crypto.randomUUID(),
+        ...(template ? { sourceTemplateId: template.id } : {}),
+        name,
+        pageWidthMm: Number(width),
+        pageHeightMm: Number(height),
+        backgroundAssetId: asset.id,
+        definition: template?.definition ?? preset.definition,
+        safeToleranceXmm: template?.safeToleranceXmm ?? 4,
+        safeToleranceYmm: template?.safeToleranceYmm ?? 3,
+      }),
+    );
+    setTemplates((items) => [created, ...items]);
+    setSelected(created.id);
+    setCalibrationId('');
+    setNote(undefined);
+    setMode('adjust');
+    setMessage(
+      'Formulario cargado en un nuevo borrador. Arrastrá los textos y probalo antes de publicar.',
+    );
+  }
+  async function publish(t: PrintTemplate) {
+    await printingJson(`templates/${t.id}/publish`, printTemplateSchema, { activate: true });
+    await reload();
+    setMessage('Plantilla lista para usar. Comprobá la impresión sobre una hoja de prueba.');
   }
   if (!isAdmin) return <p role="alert">La configuración de impresión requiere un administrador.</p>;
   return (
@@ -129,8 +154,8 @@ export function PrintTemplateManager() {
       <header className="catalog-heading">
         <div>
           <p className="eyebrow">Configuración</p>
-          <h1>Impresión sobre talonario</h1>
-          <p>Prepará una revisión con las medidas reales del papel y calibrá la impresora.</p>
+          <h1>Plantilla actual</h1>
+          <p>Ajustá los textos sobre el papel y probá la impresión antes de publicar.</p>
         </div>
       </header>
       {error && (
@@ -139,451 +164,415 @@ export function PrintTemplateManager() {
         </p>
       )}
       {message && <p role="status">{message}</p>}
-      <section className="catalog-panel">
-        <h2>Revisiones del formulario</h2>
-        <p>
-          Activa:{' '}
-          {config?.activeTemplate
-            ? `${config.activeTemplate.name} · revisión ${config.activeTemplate.revision}`
-            : 'Sin plantilla activa'}
-          .
-        </p>
-        <p>Las revisiones publicadas no se editan. Copiá una revisión para ajustar su geometría.</p>
-        <div className="reference-table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Plantilla</th>
-                <th>Revisión</th>
-                <th>Estado</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {templates.map((t) => (
-                <tr key={t.id}>
-                  <td>
-                    {t.name}
-                    <br />
-                    {t.pageWidthMm} × {t.pageHeightMm} mm
-                  </td>
-                  <td>{t.revision}</td>
-                  <td>{t.status === 'PUBLISHED' ? 'Publicada' : 'Borrador'}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={busy}
-                      onClick={() => copy(t)}
-                    >
-                      Copiar como nueva revisión
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={busy}
-                      onClick={() => {
-                        setSelected(t.id);
-                        setCalibrationId('');
-                      }}
-                    >
-                      Probar / calibrar
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={busy}
-                      onClick={() => {
-                        setSelected(t.id);
-                        setCalibrationId('');
-                        setMessage(
-                          'Elegí un remito guardado para editar la geometría sobre el fondo.',
-                        );
-                      }}
-                    >
-                      Editar geometría
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={busy || config?.activeTemplate?.id === t.id}
-                      onClick={() =>
-                        void run(async () => {
-                          await printingJson(`templates/${t.id}/publish`, printTemplateSchema, {
-                            activate: true,
-                          });
-                          setRevision((r) => r + 1);
-                          setMessage(
-                            'Revisión publicada y activa. Validá su impresión sobre una hoja de prueba.',
-                          );
-                        })
-                      }
-                    >
-                      {t.status === 'PUBLISHED' ? 'Activar revisión' : 'Publicar y activar'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {!templates.length && <p>Todavía no hay revisiones. No se presupone un tamaño de papel.</p>}
-      </section>
-      <section className="catalog-panel">
-        <h2>{sourceId ? 'Crear nueva revisión' : 'Preparar primer formulario'}</h2>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={busy}
-          onClick={() => {
-            const preset = bourbonProvisionalTemplate(crypto.randomUUID(), crypto.randomUUID());
-            setSourceId('');
-            setAssetId('');
-            setName(preset.name);
-            setWidth('203');
-            setHeight('271');
-            setTx('4');
-            setTy('3');
-            setDefinition(JSON.stringify(preset.definition, null, 2));
-            setMessage(
-              'Base provisional Bourbon preparada. Cargá el PNG real y guardá el borrador. Las posiciones iniciales requieren revisión contra la imagen y prueba física.',
-            );
-          }}
-        >
-          Preparar Bourbon Remito 203x271 - Provisional
-        </button>
-        <p>
-          Las cajas describen espacios en blanco disponibles. Incluí la tolerancia de alimentación y
-          un margen interno. La configuración geométrica inicial es técnica.
-        </p>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void run(async () => {
-              if (![width, height, tx, ty].every((v) => v.trim()))
-                throw new Error(
-                  'Ingresá las medidas y tolerancias explícitamente; cero es válido para tolerancia.',
-                );
-              let json: unknown;
-              try {
-                json = JSON.parse(definition);
-              } catch {
-                throw new Error('La definición JSON no es válida.');
-              }
-              const input = printTemplateCreateSchema.safeParse({
-                id: crypto.randomUUID(),
-                ...(sourceId ? { sourceTemplateId: sourceId } : {}),
-                name,
-                pageWidthMm: Number(width),
-                pageHeightMm: Number(height),
-                safeToleranceXmm: Number(tx),
-                safeToleranceYmm: Number(ty),
-                backgroundAssetId: assetId,
-                definition: json,
-              });
-              if (!input.success)
-                throw new Error(
-                  input.error.issues
-                    .slice(0, 4)
-                    .map((i) => i.message)
-                    .join(' '),
-                );
-              const created = await printingJson('templates', printTemplateSchema, input.data);
-              setSelected(created.id);
-              setRevision((r) => r + 1);
-              setSourceId(created.id);
-              setMessage('Borrador de plantilla guardado. Probalo antes de publicar.');
-            });
-          }}
-        >
-          <fieldset disabled={busy}>
-            <div className="form-grid">
-              <Field label="Nombre">
-                <input
-                  required
-                  maxLength={160}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </Field>
-              <Field label="Ancho del papel (mm)">
-                <input
-                  required
-                  type="number"
-                  min="40"
-                  max="1000"
-                  step="0.001"
-                  value={width}
-                  onChange={(e) => setWidth(e.target.value)}
-                />
-              </Field>
-              <Field label="Alto del papel (mm)">
-                <input
-                  required
-                  type="number"
-                  min="40"
-                  max="1000"
-                  step="0.001"
-                  value={height}
-                  onChange={(e) => setHeight(e.target.value)}
-                />
-              </Field>
-              <Field label="Tolerancia horizontal ± (mm)">
-                <input
-                  required
-                  type="number"
-                  min="0"
-                  max="10"
-                  step="0.001"
-                  value={tx}
-                  onChange={(e) => setTx(e.target.value)}
-                />
-              </Field>
-              <Field label="Tolerancia vertical ± (mm)">
-                <input
-                  required
-                  type="number"
-                  min="0"
-                  max="10"
-                  step="0.001"
-                  value={ty}
-                  onChange={(e) => setTy(e.target.value)}
-                />
-              </Field>
-              <Field label="PNG preparado del formulario">
-                <input
-                  type="file"
-                  accept="image/png"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) void run(() => upload(f));
-                  }}
-                />
-              </Field>
-            </div>
-            <p>
-              {assetId
-                ? 'Fondo privado disponible para esta revisión.'
-                : 'Cargá el PNG sin datos personales y con la misma proporción que el papel.'}
-            </p>
-            <Field label="Definición de campos y región repetible (JSON)">
-              <textarea
-                className="print-json"
-                rows={18}
-                value={definition}
-                onChange={(e) => setDefinition(e.target.value)}
-                spellCheck={false}
+      <section className="catalog-panel template-current">
+        <div>
+          {active ? (
+            <>
+              <h2>{active.name}</h2>
+              <p>
+                Lista para usar · Papel: {active.pageWidthMm} × {active.pageHeightMm} mm
+              </p>
+              <div
+                className="template-background"
+                style={{
+                  aspectRatio: `${active.pageWidthMm} / ${active.pageHeightMm}`,
+                  backgroundImage: `url(/api/printing/assets/${active.backgroundAssetId})`,
+                }}
+                role="img"
+                aria-label="Formulario actual del remito"
               />
-            </Field>
-            <p className="muted">
-              Bindings permitidos: document.number, document.date, document.dateDay,
-              document.dateMonth, document.dateYear, customer.name, customer.legalName,
-              customer.cuit, customer.taxCondition, customer.address, customer.addressLine,
-              customer.locality, patient.name, patient.affiliateNumber, notes. Fuente: NotoSans;
-              geometría en mm, tipografía e interlineado en pt.
-            </p>
-            <button className="primary-button" type="submit">
-              Guardar revisión en borrador
-            </button>
-          </fieldset>
-        </form>
-      </section>
-      <section className="catalog-panel">
-        <h2>Prueba y calibración</h2>
-        <Field label="Revisión a probar">
-          <select
-            value={selected}
+            </>
+          ) : (
+            <>
+              <h2>Todavía no hay una plantilla de remito lista para usar.</h2>
+              <p>Cargá el formulario Bourbon. Papel: 203 × 271 mm.</p>
+            </>
+          )}
+        </div>
+        <div className="template-actions">
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy || !template}
+            onClick={() => open('adjust')}
+          >
+            Ajustar ubicación de textos
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy || !template}
+            onClick={() => open('test')}
+          >
+            Probar impresión
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
             disabled={busy}
-            onChange={(e) => {
-              setSelected(e.target.value);
-              setCalibrationId('');
+            onClick={() => open('change')}
+          >
+            Cambiar formulario
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy || !active}
+            onClick={() => {
+              setSelected(active!.id);
+              setMode('printer');
             }}
           >
-            <option value="">Elegí una revisión</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} · r{t.revision} · {t.status}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {template && (
-          <>
-            <p>
-              Imprimí la prueba al 100 %, medí los desplazamientos y repetí. Positivo X mueve a la
-              derecha; positivo Y, hacia abajo. La escala permanece en 1.
-            </p>
-            <Field label="Calibración guardada">
-              <select
-                disabled={busy}
-                value={calibrationId}
-                onChange={(e) => {
-                  setCalibrationId(e.target.value);
-                  const c = config?.calibrations.find((c) => c.id === e.target.value);
-                  if (c) {
-                    setCalName(c.name);
-                    setPrinter(c.printerDescription ?? '');
-                    setTray(c.trayDescription ?? '');
-                    setDx(String(c.offsetXmm));
-                    setDy(String(c.offsetYmm));
-                  }
-                }}
-              >
-                <option value="">Nominal / nueva calibración</option>
-                {config?.calibrations
-                  .filter((c) => c.templateRevisionId === template.id)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} · r{c.revision}
-                    </option>
-                  ))}
-              </select>
+            Ajustar impresora
+          </button>
+        </div>
+      </section>
+      <div ref={editorSection} />
+      {mode === 'change' && (
+        <section className="catalog-panel">
+          <h2>Cambiar formulario</h2>
+          <p>
+            Elegí una imagen PNG del formulario vacío. Se conserva el historial y la plantilla
+            actual sigue en uso hasta publicar.
+          </p>
+          <fieldset disabled={busy}>
+            <Field label="Nombre de la plantilla">
+              <input value={name} maxLength={160} onChange={(e) => setName(e.target.value)} />
             </Field>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={busy}
-              onClick={() =>
-                void run(async () =>
-                  downloadPrintPdf(
-                    await printingPdf('calibration-test', {
-                      templateRevisionId: template.id,
-                      calibrationId: calibrationId || null,
-                    }),
-                  ),
-                )
-              }
-            >
-              Descargar PDF de prueba
-            </button>
-            {template.status === 'PUBLISHED' ? (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void run(async () => {
-                    const c = await printingJson('calibrations', printCalibrationSchema, {
-                      id: crypto.randomUUID(),
-                      templateRevisionId: template.id,
-                      ...(calibrationId ? { sourceCalibrationId: calibrationId } : {}),
-                      name: calName,
-                      printerDescription: printer || null,
-                      trayDescription: tray || null,
-                      offsetXmm: Number(dx),
-                      offsetYmm: Number(dy),
-                    });
-                    setCalibrationId(c.id);
-                    setRevision((r) => r + 1);
-                    setMessage('Nueva revisión de calibración guardada. Repetí la prueba física.');
-                  });
+            <p>
+              Papel: {width} × {height} mm
+            </p>
+            <details>
+              <summary>Cambiar tamaño del papel</summary>
+              <div className="form-grid">
+                <Field label="Ancho (mm)">
+                  <input
+                    type="number"
+                    min="40"
+                    max="1000"
+                    step="0.001"
+                    value={width}
+                    onChange={(e) => setWidth(e.target.value)}
+                  />
+                </Field>
+                <Field label="Alto (mm)">
+                  <input
+                    type="number"
+                    min="40"
+                    max="1000"
+                    step="0.001"
+                    value={height}
+                    onChange={(e) => setHeight(e.target.value)}
+                  />
+                </Field>
+              </div>
+            </details>
+            <Field label="Cargar nuevo formulario PNG">
+              <input
+                type="file"
+                accept="image/png"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void run(() => upload(file));
                 }}
-              >
-                <fieldset disabled={busy}>
-                  <div className="form-grid">
-                    <Field label="Nombre de calibración">
-                      <input
-                        required
-                        value={calName}
-                        maxLength={160}
-                        onChange={(e) => setCalName(e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Impresora / equipo (opcional)">
-                      <input
-                        value={printer}
-                        maxLength={160}
-                        onChange={(e) => setPrinter(e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Bandeja / alimentación (opcional)">
-                      <input
-                        value={tray}
-                        maxLength={160}
-                        onChange={(e) => setTray(e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Corrección X (mm)">
-                      <input
-                        required
-                        type="number"
-                        min="-20"
-                        max="20"
-                        step="0.001"
-                        value={dx}
-                        onChange={(e) => setDx(e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Corrección Y (mm)">
-                      <input
-                        required
-                        type="number"
-                        min="-20"
-                        max="20"
-                        step="0.001"
-                        value={dy}
-                        onChange={(e) => setDy(e.target.value)}
-                      />
-                    </Field>
-                  </div>
-                  <button type="submit" className="primary-button">
-                    Guardar nueva revisión de calibración
-                  </button>
-                </fieldset>
-              </form>
-            ) : (
-              <p>Publicá esta revisión antes de guardar calibraciones.</p>
-            )}
+              />
+            </Field>
+          </fieldset>
+        </section>
+      )}
+      {template && (mode === 'adjust' || mode === 'test') && (
+        <section className="catalog-panel">
+          <h2>Modo de prueba</h2>
+          <p>
+            {template.name} ·{' '}
+            {template.status === 'DRAFT'
+              ? 'Borrador: todavía no se usa para hacer remitos.'
+              : 'Plantilla publicada. Los ajustes se guardan en un nuevo borrador.'}
+          </p>
+          <details>
+            <summary>Usar un remito guardado en la prueba</summary>
             <TestDeliveryNotePicker
               disabled={busy}
               selectedId={note?.id}
               onSelect={(id) =>
                 void run(async () => {
-                  setNote(undefined);
-                  setUseSample(false);
                   setNote(await catalogFetch(id, deliveryNoteSchema, { scope: 'delivery-notes' }));
                 })
               }
             />
+            <button type="button" className="secondary-button" onClick={() => setNote(undefined)}>
+              Volver a datos de ejemplo
+            </button>
+          </details>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            onClick={() =>
+              void run(async () =>
+                downloadPrintPdf(
+                  await printingPdf('calibration-test', {
+                    templateRevisionId: template.id,
+                    calibrationId: calibration?.id ?? null,
+                  }),
+                ),
+              )
+            }
+          >
+            Descargar prueba de impresión
+          </button>
+          {config?.activeTemplate?.id !== template.id && (
             <button
               type="button"
-              className="secondary-button"
+              className="primary-button"
               disabled={busy}
-              onClick={() => {
-                setNote(undefined);
-                setUseSample(true);
-              }}
+              onClick={() => void run(() => publish(template))}
             >
-              Usar datos de prueba para editar geometría
+              Publicar y usar esta plantilla
             </button>
-          </>
-        )}
-      </section>
-      {template && (note || useSample) && (
+          )}
+          {mode === 'test' && !note && (
+            <p>
+              Los datos de ejemplo aparecen a continuación para comprobar la ubicación. Imprimí una
+              prueba al 100 %.
+            </p>
+          )}
+        </section>
+      )}
+      {template && (mode === 'adjust' || mode === 'test') && (
         <PrintGeometryEditor
-          key={'geometry:' + template.id + ':' + (note?.id ?? 'sample')}
+          key={template.id + ':' + (note?.id ?? 'sample')}
           template={template}
           note={note}
-          calibration={
-            config?.calibrations.find(
-              (c) => c.id === calibrationId && c.templateRevisionId === template.id,
-            ) ?? null
-          }
+          calibration={calibration}
           onSaved={(saved) => {
             setTemplates((items) => [saved, ...items]);
             setSelected(saved.id);
             setCalibrationId('');
-            setRevision((r) => r + 1);
-            setMessage(
-              'Geometría guardada como nueva revisión DRAFT. Calibración nominal 0 / 0; prueba física pendiente.',
-            );
+            setTechnical(JSON.stringify(saved.definition, null, 2));
+            setMessage('Cambios guardados en borrador. Probá esta plantilla antes de publicarla.');
           }}
         />
       )}
-      {template && note && (
-        <DeliveryPrintPanel
-          key={template.id + ':' + note.id}
-          doc={note}
-          templateOverride={template}
-        />
+      {mode === 'test' && template && note && (
+        <DeliveryPrintPanel doc={note} templateOverride={template} />
+      )}
+      {mode === 'printer' && template && (
+        <section className="catalog-panel">
+          <h2>Ajustar impresora</h2>
+          <p>
+            Si todos los datos salen corridos en la misma dirección, podés mover toda la impresión.
+          </p>
+          <Field label="Impresora guardada">
+            <select
+              value={calibrationId}
+              disabled={busy}
+              onChange={(e) => {
+                setCalibrationId(e.target.value);
+                const c = config?.calibrations.find((c) => c.id === e.target.value);
+                setDx(c?.offsetXmm ?? 0);
+                setDy(c?.offsetYmm ?? 0);
+                setCalName(c?.name ?? 'Impresora habitual');
+                setPrinter(c?.printerDescription ?? '');
+                setTray(c?.trayDescription ?? '');
+              }}
+            >
+              <option value="">Nueva / sin ajuste</option>
+              {config?.calibrations
+                .filter((c) => c.templateRevisionId === template.id)
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void run(async () => {
+                const c = await printingJson('calibrations', printCalibrationSchema, {
+                  id: crypto.randomUUID(),
+                  templateRevisionId: template.id,
+                  ...(calibrationId ? { sourceCalibrationId: calibrationId } : {}),
+                  name: calName,
+                  printerDescription: printer || null,
+                  trayDescription: tray || null,
+                  offsetXmm: dx,
+                  offsetYmm: dy,
+                });
+                await reload();
+                setCalibrationId(c.id);
+                setMessage('Ajuste de impresora guardado. Repetí la prueba en papel.');
+              });
+            }}
+          >
+            <fieldset disabled={busy}>
+              <p>Mover impresión</p>
+              <div className="actions">
+                {(
+                  [
+                    ['←', -0.5, 0, 'Mover impresión a la izquierda'],
+                    ['→', 0.5, 0, 'Mover impresión a la derecha'],
+                    ['↑', 0, -0.5, 'Mover impresión hacia arriba'],
+                    ['↓', 0, 0.5, 'Mover impresión hacia abajo'],
+                  ] as const
+                ).map(([arrow, x, y, label]) => (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    aria-label={label}
+                    key={arrow}
+                    onClick={() => {
+                      setDx((v) => Math.max(-20, Math.min(20, v + x)));
+                      setDy((v) => Math.max(-20, Math.min(20, v + y)));
+                    }}
+                  >
+                    {arrow}
+                  </button>
+                ))}
+              </div>
+              <Field label="Nombre de la impresora">
+                <input
+                  value={calName}
+                  required
+                  maxLength={160}
+                  onChange={(e) => setCalName(e.target.value)}
+                />
+              </Field>
+              <details>
+                <summary>Ajuste preciso</summary>
+                <div className="form-grid">
+                  <Field label="X (mm)">
+                    <input
+                      type="number"
+                      min="-20"
+                      max="20"
+                      step="0.001"
+                      value={dx}
+                      onChange={(e) => setDx(Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Y (mm)">
+                    <input
+                      type="number"
+                      min="-20"
+                      max="20"
+                      step="0.001"
+                      value={dy}
+                      onChange={(e) => setDy(Number(e.target.value))}
+                    />
+                  </Field>
+                  <Field label="Equipo (opcional)">
+                    <input
+                      value={printer}
+                      maxLength={160}
+                      onChange={(e) => setPrinter(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Bandeja (opcional)">
+                    <input value={tray} maxLength={160} onChange={(e) => setTray(e.target.value)} />
+                  </Field>
+                </div>
+              </details>
+              <button type="submit" className="primary-button">
+                Guardar ajuste de impresora
+              </button>
+            </fieldset>
+          </form>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            onClick={() =>
+              void run(async () =>
+                downloadPrintPdf(
+                  await printingPdf('calibration-test', {
+                    templateRevisionId: template.id,
+                    calibrationId: calibration?.id ?? null,
+                  }),
+                ),
+              )
+            }
+          >
+            Probar ajuste guardado
+          </button>
+        </section>
+      )}
+      <details className="catalog-panel">
+        <summary>Historial de cambios</summary>
+        <p>Las versiones publicadas se conservan. Cada ajuste crea un nuevo borrador.</p>
+        <ul className="print-artifacts">
+          {templates.map((t) => (
+            <li key={t.id}>
+              <span>
+                {t.name} · Versión {t.revision} ·{' '}
+                {t.status === 'PUBLISHED' ? 'Publicada' : 'Borrador'}
+              </span>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                onClick={() => {
+                  setSelected(t.id);
+                  setCalibrationId('');
+                  setTechnical(JSON.stringify(t.definition, null, 2));
+                  setMode('adjust');
+                }}
+              >
+                Probar esta plantilla
+              </button>
+            </li>
+          ))}
+        </ul>
+      </details>
+      {template && (
+        <details className="catalog-panel">
+          <summary>Opciones técnicas</summary>
+          <p>
+            Papel: {template.pageWidthMm} × {template.pageHeightMm} mm · Tolerancia: X ±
+            {template.safeToleranceXmm} mm / Y ±{template.safeToleranceYmm} mm
+          </p>
+          <Field label="Definición de campos (JSON)">
+            <textarea
+              className="print-json"
+              rows={18}
+              spellCheck={false}
+              value={technical || JSON.stringify(template.definition, null, 2)}
+              onChange={(e) => setTechnical(e.target.value)}
+            />
+          </Field>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            onClick={() =>
+              void run(async () => {
+                const saved = await printingJson(
+                  'templates',
+                  printTemplateSchema,
+                  printTemplateCreateSchema.parse({
+                    id: crypto.randomUUID(),
+                    sourceTemplateId: template.id,
+                    name: template.name,
+                    pageWidthMm: template.pageWidthMm,
+                    pageHeightMm: template.pageHeightMm,
+                    safeToleranceXmm: template.safeToleranceXmm,
+                    safeToleranceYmm: template.safeToleranceYmm,
+                    backgroundAssetId: template.backgroundAssetId,
+                    definition: JSON.parse(technical || JSON.stringify(template.definition)),
+                  }),
+                );
+                setTemplates((items) => [saved, ...items]);
+                setSelected(saved.id);
+                setMode('adjust');
+                setMessage('Nuevo borrador técnico guardado.');
+              })
+            }
+          >
+            Guardar como nuevo borrador
+          </button>
+        </details>
       )}
     </>
   );

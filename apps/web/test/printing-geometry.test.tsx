@@ -44,3 +44,19 @@ test('Editor: el zoom no cambia mm; movimiento nominal exacto, fila compartida y
   )!;
   assert.ok(edge.xMm + edge.widthMm <= 203);
 });
+
+test('Textos de impresión: nombres humanos y errores técnicos sin bindings ni JSON', async () => {
+  const { printLabels, humanPrintMessage, printErrorMessage } =
+    await import('../src/components/printing/print-labels.js');
+  for (const [binding, label] of Object.entries(printLabels)) {
+    assert.equal(humanPrintMessage(binding), label);
+  }
+  assert.equal(humanPrintMessage('El campo customer.name no entra.'), 'El campo Cliente no entra.');
+  assert.equal(humanPrintMessage('La columna lotNumber no entra.'), 'La columna Lote no entra.');
+  const invalid = new Error('[{path:["definition","fields"]}]');
+  invalid.name = 'ZodError';
+  assert.equal(
+    printErrorMessage(invalid),
+    'Revisá el tamaño de los textos y su ubicación dentro del papel.',
+  );
+});

@@ -27,6 +27,8 @@ import {
 import { documentLabels, quantityLabels } from '../inventory/common';
 import { useWorkspace } from '../workspace';
 import { DeliveryPrintPanel } from '../printing/delivery-print-panel';
+import { LiveDeliveryPreview } from '../printing/live-delivery-preview';
+import { humanPrintMessage } from '../printing/print-labels';
 type Line = DeliveryNoteCreate['lines'][number] & {
   productName: string;
   unitOfMeasure: ProductView['unitOfMeasure'];
@@ -44,8 +46,20 @@ function CustomerChoice({
   selected: Customer | null;
   change: (c: Customer) => void;
 }) {
+  const [changing, setChanging] = useState(false);
   const search = useSearch();
   const result = useResource('?' + search.query, customerListSchema, 'customers');
+  if (selected && !changing)
+    return (
+      <div className="delivery-customer-card">
+        <h3>{selected.name}</h3>
+        {selected.cuit && <p>CUIT {selected.cuit}</p>}
+        <p>{[selected.addressLine, selected.locality].filter(Boolean).join(' · ')}</p>
+        <button type="button" className="secondary-button" onClick={() => setChanging(true)}>
+          Cambiar cliente
+        </button>
+      </div>
+    );
   return (
     <div>
       <Field label="Buscar cliente">
@@ -70,7 +84,10 @@ function CustomerChoice({
             <button
               type="button"
               className="secondary-button"
-              onClick={() => change(c)}
+              onClick={() => {
+                change(c);
+                setChanging(false);
+              }}
               aria-pressed={selected?.id === c.id}
             >
               {c.name}
@@ -94,6 +111,7 @@ function StockChoice({
   change: (l: Line) => void;
 }) {
   const [page, setPage] = useState(1);
+  const [choosing, setChoosing] = useState(value.allocations.length === 0);
   const result = useResource(
     `products/${productId}?page=${page}`,
     inventoryStockDetailSchema,
@@ -120,6 +138,24 @@ function StockChoice({
     }
     change({ ...value, allocations, physical });
   }
+  if (!choosing && value.allocations.length > 0)
+    return (
+      <div className="delivery-selected-stock">
+        <p>
+          <strong>Existencias elegidas</strong>
+        </p>
+        {value.physical.map((a) => (
+          <p key={a.positionId}>
+            {a.quantity} · {a.lotNumber ? 'Lote ' + a.lotNumber : 'Sin lote'}
+            {a.expirationDate ? ' · Vence ' + a.expirationDate.split('-').reverse().join('/') : ''}
+            {a.serialNumber ? ' · Serie ' + a.serialNumber : ''}
+          </p>
+        ))}
+        <button type="button" className="secondary-button" onClick={() => setChoosing(true)}>
+          Cambiar lote o serie
+        </button>
+      </div>
+    );
   return (
     <div>
       <Feedback {...result} reload={result.reload} />
@@ -200,6 +236,11 @@ function StockChoice({
               </div>
             );
           })}
+          {value.allocations.length > 0 && (
+            <button type="button" className="secondary-button" onClick={() => setChoosing(false)}>
+              Usar estas existencias
+            </button>
+          )}
           <Pagination {...d} change={setPage} />
           {value.allocations.length > 0 && (
             <div>
@@ -422,20 +463,13 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
   const { isAdmin } = useWorkspace();
   const [printReady, setPrintReady] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(doc?.customer ?? null);
-  const [date, setDate] = useState(
-    doc?.documentDate ??
-      new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'America/Argentina/Buenos_Aires',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(new Date()),
-  );
+  const [date, setDate] = useState(doc?.documentDate ?? '');
   const [prefix, setPrefix] = useState(doc?.documentPrefix ?? ''),
     [number, setNumber] = useState(doc?.documentNumber ?? '');
   const [patient, setPatient] = useState(doc?.patientName ?? ''),
     [affiliate, setAffiliate] = useState(doc?.affiliateNumber ?? ''),
     [notes, setNotes] = useState(doc?.notes ?? '');
+  const [patientOpen, setPatientOpen] = useState(Boolean(doc?.patientName || doc?.affiliateNumber));
   const [lines, setLines] = useState<Line[]>(
     doc?.lines.map((l) => ({
       id: l.id,
@@ -449,7 +483,6 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
     })) ?? [],
   );
   const [dirty, setDirty] = useState(!doc),
-    [preview, setPreview] = useState(false),
     [review, setReview] = useState(false);
   const [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
@@ -487,7 +520,7 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
       setDirty(false);
       saved(result);
     } catch (e) {
-      setError(humanError(e));
+      setError(humanPrintMessage(humanError(e)));
       if (e instanceof CatalogHttpError && e.status < 500) {
         attempt.current = null;
         setUncertain(false);
@@ -596,256 +629,278 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
           Volver a cargar el remito
         </button>
       )}
-      <fieldset disabled={frozen} className="delivery-editor">
-        <section className="catalog-panel">
-          <h2>Cliente</h2>
-          <CustomerChoice
-            selected={customer}
-            change={(c) => {
-              setCustomer(c);
-              setDirty(true);
-              setReview(false);
-            }}
-          />
-        </section>
-        <section className="catalog-panel">
-          <h2>Datos del remito</h2>
-          <div className="form-grid">
-            <Field label="Fecha del documento">
-              <input
-                type="date"
-                value={date}
-                onChange={(e) => {
-                  setDate(e.target.value);
-                  setDirty(true);
-                  setReview(false);
-                }}
-                required
-              />
-            </Field>
-            <Field label="Prefijo del talonario">
-              <input
-                inputMode="numeric"
-                maxLength={12}
-                value={prefix}
-                onChange={(e) => {
-                  setPrefix(e.target.value);
-                  setDirty(true);
-                  setReview(false);
-                }}
-                placeholder="00001"
-              />
-            </Field>
-            <Field label="Número del talonario">
-              <input
-                inputMode="numeric"
-                maxLength={12}
-                value={number}
-                onChange={(e) => {
-                  setNumber(e.target.value);
-                  setDirty(true);
-                  setReview(false);
-                }}
-                placeholder="00003897"
-              />
-            </Field>
-            <Field label="Paciente (opcional)">
-              <input
-                maxLength={160}
-                value={patient}
-                onChange={(e) => {
-                  setPatient(e.target.value);
+      <div className="delivery-workspace">
+        <div className="delivery-entry">
+          <fieldset disabled={frozen} className="delivery-editor">
+            <section className="catalog-panel">
+              <h2>1. Cliente</h2>
+              <CustomerChoice
+                selected={customer}
+                change={(c) => {
+                  setCustomer(c);
                   setDirty(true);
                   setReview(false);
                 }}
               />
-            </Field>
-            <Field label="N.º afiliado (opcional)">
-              <input
-                maxLength={80}
-                value={affiliate}
+            </section>
+            <section className="catalog-panel">
+              <h2>2. Datos del remito</h2>
+              <div className="form-grid">
+                <Field label="Fecha del documento">
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => {
+                      setDate(e.target.value);
+                      setDirty(true);
+                      setReview(false);
+                    }}
+                    required
+                  />
+                </Field>
+                <Field label="Prefijo del talonario">
+                  <input
+                    inputMode="numeric"
+                    maxLength={12}
+                    value={prefix}
+                    onChange={(e) => {
+                      setPrefix(e.target.value);
+                      setDirty(true);
+                      setReview(false);
+                    }}
+                    placeholder="0002"
+                  />
+                </Field>
+                <Field label="Número del talonario">
+                  <input
+                    inputMode="numeric"
+                    maxLength={12}
+                    value={number}
+                    onChange={(e) => {
+                      setNumber(e.target.value);
+                      setDirty(true);
+                      setReview(false);
+                    }}
+                    placeholder="00003897"
+                  />
+                </Field>
+              </div>
+              <details
+                open={patientOpen}
+                onToggle={(event) => setPatientOpen(event.currentTarget.open)}
+              >
+                <summary>Datos del paciente (opcional)</summary>
+                <div className="form-grid">
+                  <Field label="Paciente">
+                    <input
+                      maxLength={160}
+                      value={patient}
+                      onChange={(e) => {
+                        setPatient(e.target.value);
+                        setDirty(true);
+                        setReview(false);
+                      }}
+                    />
+                  </Field>
+                  <Field label="N.º afiliado (opcional)">
+                    <input
+                      maxLength={80}
+                      value={affiliate}
+                      onChange={(e) => {
+                        setAffiliate(e.target.value);
+                        setDirty(true);
+                        setReview(false);
+                      }}
+                    />
+                  </Field>
+                </div>
+              </details>
+              {(prefix || number) && (
+                <p className="print-number">
+                  Remito físico: {prefix || '…'}-{number || '…'}
+                </p>
+              )}
+            </section>
+            <section>
+              <h2>3. Productos</h2>
+              <ProductCapture
+                returnTo={doc && !dirty ? '/remitos/' + doc.id : undefined}
+                add={(p) => {
+                  setLines((previous) => [
+                    ...previous,
+                    {
+                      id: crypto.randomUUID(),
+                      productId: p.id,
+                      productName: p.name,
+                      presentation: p.presentation,
+                      unitOfMeasure: p.unitOfMeasure,
+                      quantity: '1',
+                      allocations: [],
+                      physical: [],
+                    },
+                  ]);
+                  setDirty(true);
+                  setReview(false);
+                }}
+              />
+              {lines.map((l, i) => (
+                <section className="catalog-panel" key={l.id}>
+                  <h3>{l.productName}</h3>
+                  <p>{l.presentation}</p>
+                  <Field label={'Cantidad · ' + quantityLabels[l.unitOfMeasure]}>
+                    <input
+                      inputMode="decimal"
+                      value={l.quantity}
+                      onChange={(e) => changeLine(i, { ...l, quantity: e.target.value })}
+                    />
+                  </Field>
+                  <StockChoice
+                    productId={l.productId}
+                    value={l}
+                    change={(next) => changeLine(i, next)}
+                  />
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => {
+                      setLines((previous) => previous.filter((item) => item.id !== l.id));
+                      setDirty(true);
+                      setReview(false);
+                    }}
+                  >
+                    Quitar producto
+                  </button>
+                </section>
+              ))}
+            </section>
+            <Field label="Observaciones del remito">
+              <textarea
+                rows={3}
+                maxLength={1000}
+                value={notes}
                 onChange={(e) => {
-                  setAffiliate(e.target.value);
+                  setNotes(e.target.value);
                   setDirty(true);
                   setReview(false);
                 }}
               />
             </Field>
-          </div>
-        </section>
-        <section>
-          <h2>Productos</h2>
-          <ProductCapture
-            returnTo={doc && !dirty ? '/remitos/' + doc.id : undefined}
-            add={(p) => {
-              setLines((previous) => [
-                ...previous,
-                {
-                  id: crypto.randomUUID(),
-                  productId: p.id,
-                  productName: p.name,
-                  presentation: p.presentation,
-                  unitOfMeasure: p.unitOfMeasure,
-                  quantity: '1',
-                  allocations: [],
-                  physical: [],
-                },
-              ]);
-              setDirty(true);
-              setReview(false);
-            }}
-          />
-          {lines.map((l, i) => (
-            <section className="catalog-panel" key={l.id}>
-              <h3>{l.productName}</h3>
-              <p>{l.presentation}</p>
-              <Field label={'Cantidad · ' + quantityLabels[l.unitOfMeasure]}>
-                <input
-                  inputMode="decimal"
-                  value={l.quantity}
-                  onChange={(e) => changeLine(i, { ...l, quantity: e.target.value })}
-                />
-              </Field>
-              <StockChoice
-                productId={l.productId}
-                value={l}
-                change={(next) => changeLine(i, next)}
-              />
+          </fieldset>
+          <div className="actions">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={frozen || !customer}
+              onClick={save}
+            >
+              {busy ? 'Guardando…' : 'Guardar borrador'}
+            </button>
+            {doc && (
               <button
                 type="button"
-                className="text-button"
-                onClick={() => {
-                  setLines((previous) => previous.filter((item) => item.id !== l.id));
-                  setDirty(true);
-                  setReview(false);
-                }}
+                className="primary-button"
+                disabled={frozen || dirty || !printReady}
+                onClick={() => setReview(true)}
               >
-                Quitar producto
+                Revisar y confirmar salida
+              </button>
+            )}
+          </div>
+          {dirty && (
+            <p role="status">
+              Hay cambios sin guardar. Guardá el borrador antes de confirmar o salir.
+            </p>
+          )}
+          {review && !dirty && (
+            <section className="catalog-panel" role="region" aria-label="Revisar salida">
+              <h2>4. Revisar y confirmar salida</h2>
+              <p>
+                Al confirmar, la mercadería se descontará del stock y el remito ya no podrá
+                editarse.
+              </p>
+              <p>Comprobá el número del talonario y los lotes o series físicos elegidos.</p>
+              <p>
+                <strong>
+                  Remito físico: {prefix}-{number}
+                </strong>{' '}
+                · {customer?.name}
+              </p>
+              {lines.map((line) => (
+                <div className="delivery-position" key={line.id}>
+                  <strong>
+                    {line.productName} · {line.quantity} {quantityLabels[line.unitOfMeasure]}
+                  </strong>
+                  {line.physical.map((a) => (
+                    <p key={a.positionId}>
+                      {a.quantity} · {a.lotNumber ? 'Lote ' + a.lotNumber : 'Sin lote'}
+                      {a.expirationDate ? ' · Vence ' + a.expirationDate : ''}
+                      {a.serialNumber ? ' · Serie ' + a.serialNumber : ''}
+                    </p>
+                  ))}
+                </div>
+              ))}
+              <button
+                className="primary-button"
+                type="button"
+                disabled={frozen || !printReady}
+                onClick={confirm}
+              >
+                Sí, confirmar salida
+              </button>{' '}
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={busy}
+                onClick={() => setReview(false)}
+              >
+                Seguir revisando
               </button>
             </section>
-          ))}
-        </section>
-        <Field label="Observaciones del remito">
-          <textarea
-            rows={3}
-            maxLength={1000}
-            value={notes}
-            onChange={(e) => {
-              setNotes(e.target.value);
-              setDirty(true);
-              setReview(false);
-            }}
-          />
-        </Field>
-      </fieldset>
-      <div className="actions">
-        <button
-          type="button"
-          className="primary-button"
-          disabled={frozen || !customer}
-          onClick={save}
-        >
-          {busy ? 'Guardando…' : 'Guardar borrador'}
-        </button>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={busy}
-          onClick={() => setPreview(!preview)}
-        >
-          Resumen de datos
-        </button>
-        {doc && (
-          <button
-            type="button"
-            className="primary-button"
-            disabled={frozen || dirty || !printReady}
-            onClick={() => setReview(true)}
-          >
-            Confirmar salida
-          </button>
-        )}
+          )}
+          {doc && isAdmin && (
+            <details>
+              <summary>Cancelar borrador</summary>
+              <p>Se conservará el número asignado. No se modificará el stock.</p>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={frozen}
+                onClick={() => {
+                  if (guard.current) return;
+                  attempt.current = {
+                    path: doc.id + '/cancel',
+                    method: 'POST',
+                    body: { expectedVersion: doc.version },
+                  };
+                  void run();
+                }}
+              >
+                Confirmar cancelación del borrador
+              </button>
+            </details>
+          )}
+        </div>
+        <LiveDeliveryPreview
+          configurationLink={
+            isAdmin ? <Link href="/remitos/impresion">Preparar plantilla</Link> : undefined
+          }
+          onValidation={setPrintReady}
+          input={{
+            ...(customer ? { customerId: customer.id } : {}),
+            ...(date ? { documentDate: date } : {}),
+            documentPrefix: prefix || null,
+            documentNumber: number || null,
+            patientName: patient || null,
+            affiliateNumber: affiliate || null,
+            notes: notes || null,
+            lines: lines.map((l) => ({
+              productId: l.productId,
+              quantity: l.quantity.replace(',', '.'),
+              allocations: l.allocations,
+            })),
+          }}
+        />
       </div>
-      {dirty && (
-        <p role="status">Hay cambios sin guardar. Guardá el borrador antes de confirmar o salir.</p>
-      )}
-      {preview && (
-        <section className="catalog-panel">
-          <h2>Resumen de datos</h2>
-          <p>
-            Para ver el formulario físico, guardá el borrador y abrí la vista previa de impresión.
-          </p>
-          <p>
-            {customer?.name} · {prefix}-{number} · {date}
-          </p>
-          {patient && <p>Paciente: {patient}</p>}
-          {affiliate && <p>N.º afiliado: {affiliate}</p>}
-          {lines.map((l) => (
-            <div key={l.id}>
-              <strong>
-                {l.productName} · {l.quantity} {quantityLabels[l.unitOfMeasure]}
-              </strong>
-              {l.physical.map((a) => (
-                <p key={a.positionId}>
-                  {a.quantity} · {a.lotNumber ? 'Lote ' + a.lotNumber : 'Sin lote'} ·{' '}
-                  {a.expirationDate ?? 'Sin vencimiento'}
-                  {a.serialNumber ? ' · Serie ' + a.serialNumber : ''}
-                </p>
-              ))}
-            </div>
-          ))}
-          <p>{notes}</p>
-        </section>
-      )}
-      {doc && !dirty && <DeliveryPrintPanel doc={doc} onValidation={setPrintReady} />}
-      {review && !dirty && (
-        <section className="catalog-panel" role="region" aria-label="Revisar salida">
-          <h2>Revisar y confirmar</h2>
-          <p>
-            Al confirmar, la mercadería se descontará del stock y el remito ya no podrá editarse.
-          </p>
-          <p>Comprobá el número del talonario y los lotes o series físicos elegidos.</p>
-          {doc && <ReadOnly doc={doc} />}
-          <button
-            className="primary-button"
-            type="button"
-            disabled={frozen || !printReady}
-            onClick={confirm}
-          >
-            Sí, confirmar salida
-          </button>{' '}
-          <button
-            className="secondary-button"
-            type="button"
-            disabled={busy}
-            onClick={() => setReview(false)}
-          >
-            Seguir revisando
-          </button>
-        </section>
-      )}
-      {doc && isAdmin && (
-        <details>
-          <summary>Cancelar borrador</summary>
-          <p>Se conservará el número asignado. No se modificará el stock.</p>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={frozen}
-            onClick={() => {
-              if (guard.current) return;
-              attempt.current = {
-                path: doc.id + '/cancel',
-                method: 'POST',
-                body: { expectedVersion: doc.version },
-              };
-              void run();
-            }}
-          >
-            Confirmar cancelación del borrador
-          </button>
-        </details>
-      )}
     </>
   );
 }

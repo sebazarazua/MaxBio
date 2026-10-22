@@ -7,10 +7,11 @@ export class PrintRequestError extends Error {
     super(message);
   }
 }
-export async function printingRequest(path: string, body?: unknown) {
+export async function printingRequest(path: string, body?: unknown, signal?: AbortSignal) {
   const r = await fetch('/api/printing/' + path, {
     method: body === undefined ? 'GET' : 'POST',
     cache: 'no-store',
+    signal,
     headers: body === undefined ? {} : { 'Content-Type': 'application/json', 'X-Maxbio-Csrf': '1' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -27,11 +28,12 @@ export async function printingJson<T>(
   path: string,
   schema: { parse(input: unknown): T },
   body?: unknown,
+  signal?: AbortSignal,
 ) {
-  return schema.parse(await (await printingRequest(path, body)).json());
+  return schema.parse(await (await printingRequest(path, body, signal)).json());
 }
-export async function printingPdf(path: string, body?: unknown) {
-  const r = await printingRequest(path, body);
+export async function printingPdf(path: string, body?: unknown, signal?: AbortSignal) {
+  const r = await printingRequest(path, body, signal);
   if (!r.headers.get('content-type')?.startsWith('application/pdf'))
     throw new Error('No recibimos un PDF válido.');
   return new Uint8Array(await r.arrayBuffer());

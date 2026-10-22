@@ -1,8 +1,9 @@
+import type { PrintDocument } from '../domain/print-document.js';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { PDFDocument, PrintScaling, rgb, type PDFFont } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import type { DeliveryNoteView, PrintTemplate, PrintCalibration } from '@maxbio/contracts';
+import type { PrintTemplate, PrintCalibration } from '@maxbio/contracts';
 import {
   layoutDocument,
   printingEnvelopes,
@@ -39,7 +40,7 @@ export function loadPrintMetrics() {
   return (metricsPromise ??= PDFDocument.create().then(async (doc) => pdfMetrics(await font(doc))));
 }
 export async function evaluatePrint(
-  doc: DeliveryNoteView,
+  doc: PrintDocument,
   template: PrintTemplate,
   calibration: PrintCalibration | null,
 ) {
@@ -47,11 +48,12 @@ export async function evaluatePrint(
 }
 export async function renderPdf(input: {
   template: PrintTemplate;
-  document: DeliveryNoteView;
+  document: PrintDocument;
   calibration: PrintCalibration | null;
   mode: 'PREVIEW' | 'PRINT_OVERLAY';
   background?: Uint8Array;
   guides?: boolean;
+  previewBadge?: boolean;
 }): Promise<{ bytes: Uint8Array; layout: Layout }> {
   const pdf = await PDFDocument.create(),
     embedded = await font(pdf);
@@ -96,19 +98,27 @@ export async function renderPdf(input: {
           borderOpacity: 0.85,
         });
       }
-    const badge =
-      input.document.status === 'DRAFT'
-        ? 'BORRADOR / VISTA PREVIA'
-        : 'VISTA PREVIA / NO IMPRIMIR EN TALONARIO';
-    const size = Math.min(10, page.getWidth() / 35);
-    page.drawRectangle({
-      x: 0,
-      y: height - 16,
-      width: page.getWidth(),
-      height: 16,
-      color: rgb(1, 0.96, 0.8),
-    });
-    page.drawText(badge, { x: 4, y: height - 12, size, font: embedded, color: rgb(0.45, 0.18, 0) });
+    if (input.previewBadge !== false) {
+      const badge =
+        input.document.status === 'DRAFT'
+          ? 'BORRADOR / VISTA PREVIA'
+          : 'VISTA PREVIA / NO IMPRIMIR EN TALONARIO';
+      const size = Math.min(10, page.getWidth() / 35);
+      page.drawRectangle({
+        x: 0,
+        y: height - 16,
+        width: page.getWidth(),
+        height: 16,
+        color: rgb(1, 0.96, 0.8),
+      });
+      page.drawText(badge, {
+        x: 4,
+        y: height - 12,
+        size,
+        font: embedded,
+        color: rgb(0.45, 0.18, 0),
+      });
+    }
   }
   return { bytes: await pdf.save(), layout };
 }

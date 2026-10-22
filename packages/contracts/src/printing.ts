@@ -1,4 +1,27 @@
 import { z } from 'zod';
+import { deliveryNoteCreateSchema, deliveryNoteLineInputSchema } from './delivery-notes.js';
+
+// Partial, transient document data only. No template override or browser-supplied names.
+export const printDraftPreviewInputSchema = z
+  .object(deliveryNoteCreateSchema.shape)
+  .omit({ id: true })
+  .partial()
+  .extend({
+    lines: z
+      .array(deliveryNoteLineInputSchema.omit({ id: true }))
+      .max(50)
+      .default([]),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.lines.reduce((n, line) => n + line.allocations.length, 0) > 500)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Máximo 500 existencias por remito.',
+        path: ['lines'],
+      });
+  });
+export type PrintDraftPreviewInput = z.infer<typeof printDraftPreviewInputSchema>;
 
 const mm = z.number().finite().min(0).max(1000);
 const sizeMm = z.number().finite().min(0.5).max(1000);
@@ -260,6 +283,12 @@ export const printArtifactSchema = z
     reprintOfId: z.uuidv4().nullable(),
   })
   .strict();
+export const printDraftPreviewSchema = z
+  .object({
+    pdfBase64: z.string().min(1),
+    evaluation: printEvaluationSchema,
+  })
+  .strict();
 export const printArtifactListSchema = z.object({ items: z.array(printArtifactSchema) }).strict();
 export type PrintTemplateCreate = z.infer<typeof printTemplateCreateSchema>;
 export type PrintTemplate = z.infer<typeof printTemplateSchema>;
@@ -319,6 +348,8 @@ export function printingRouteContract(path: string, method: string) {
   const json = (body: z.ZodType | null, response: z.ZodType) => ({ body, response, binary: null });
   const binary = (body: z.ZodType | null, mime: string) => ({ body, response: null, binary: mime });
   if (path === 'config' && method === 'GET') return json(null, printConfigSchema);
+  if (path === 'draft-preview' && method === 'POST')
+    return json(printDraftPreviewInputSchema, printDraftPreviewSchema);
   if (path === 'templates') {
     if (method === 'GET') return json(null, printTemplateListSchema);
     if (method === 'POST') return json(printTemplateCreateSchema, printTemplateSchema);
