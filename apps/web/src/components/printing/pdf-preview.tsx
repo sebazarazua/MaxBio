@@ -1,7 +1,16 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 
-export function PdfPreview({ bytes }: { bytes: Uint8Array }) {
+export function PdfPreview({
+  bytes,
+  children,
+  onReady,
+}: {
+  bytes: Uint8Array;
+  children?: ReactNode;
+  onReady?: () => void;
+}) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [zoom, setZoom] = useState(1),
     [error, setError] = useState('');
@@ -27,7 +36,10 @@ export function PdfPreview({ bytes }: { bytes: Uint8Array }) {
       target.style.height = viewport.height + 'px';
       await page.render({ canvas: target, viewport, transform: [ratio, 0, 0, ratio, 0, 0] })
         .promise;
-      if (!stopped) setError('');
+      if (!stopped) {
+        setError('');
+        onReady?.();
+      }
     })().catch(() => {
       if (!stopped) setError('No pudimos representar el PDF. Volvé a abrir la vista previa.');
     });
@@ -35,7 +47,7 @@ export function PdfPreview({ bytes }: { bytes: Uint8Array }) {
       stopped = true;
       if (destroy) void destroy().catch(() => {});
     };
-  }, [bytes, zoom]);
+  }, [bytes, zoom, onReady]);
   return (
     <div>
       <label className="print-zoom">
@@ -55,11 +67,14 @@ export function PdfPreview({ bytes }: { bytes: Uint8Array }) {
         </p>
       )}
       <div className="print-canvas-scroll">
-        <canvas
-          ref={canvas}
-          aria-label="Vista previa del formulario y datos del remito"
-          role="img"
-        />
+        <div style={{ position: 'relative', width: 'max-content' }}>
+          <canvas
+            ref={canvas}
+            aria-label="Vista previa del formulario y datos del remito"
+            role="img"
+          />
+          {children}
+        </div>
       </div>
     </div>
   );

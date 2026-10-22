@@ -3,7 +3,13 @@ import { createRequire } from 'node:module';
 import { PDFDocument, PrintScaling, rgb, type PDFFont } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import type { DeliveryNoteView, PrintTemplate, PrintCalibration } from '@maxbio/contracts';
-import { layoutDocument, mmToPt, type Layout, type Metrics } from '../domain/geometry.js';
+import {
+  layoutDocument,
+  printingEnvelopes,
+  mmToPt,
+  type Layout,
+  type Metrics,
+} from '../domain/geometry.js';
 
 const require = createRequire(import.meta.url);
 let fontBytes: Promise<Buffer> | undefined, metricsPromise: Promise<Metrics> | undefined;
@@ -71,28 +77,24 @@ export async function renderPdf(input: {
     });
   if (input.mode === 'PREVIEW') {
     if (input.guides)
-      for (const b of layout.bounds) {
-        for (const [r, color] of [
-          [b.outer, rgb(0.8, 0.2, 0.2)],
-          [b.safe, rgb(0.1, 0.5, 0.3)],
-        ] as const)
-          page.drawRectangle({
-            x: mmToPt(r.xMm),
-            y: height - mmToPt(r.yMm + r.heightMm),
-            width: mmToPt(r.widthMm),
-            height: mmToPt(r.heightMm),
-            borderWidth: 0.4,
-            borderColor: color,
-          });
-        if (b.text)
-          page.drawRectangle({
-            x: mmToPt(b.text.xMm - t.safeToleranceXmm),
-            y: height - mmToPt(b.text.yMm + b.text.heightMm + t.safeToleranceYmm),
-            width: mmToPt(b.text.widthMm + 2 * t.safeToleranceXmm),
-            height: mmToPt(b.text.heightMm + 2 * t.safeToleranceYmm),
-            borderWidth: 0.3,
-            borderColor: rgb(0.2, 0.3, 0.8),
-          });
+      for (const { rect: r, state } of printingEnvelopes(layout, t)) {
+        const color =
+          state === 'SAFE'
+            ? rgb(0.1, 0.55, 0.25)
+            : state === 'WARNING'
+              ? rgb(0.85, 0.5, 0.02)
+              : rgb(0.85, 0.12, 0.12);
+        page.drawRectangle({
+          x: mmToPt(r.xMm),
+          y: height - mmToPt(r.yMm + r.heightMm),
+          width: mmToPt(r.widthMm),
+          height: mmToPt(r.heightMm),
+          borderWidth: 0.5,
+          borderColor: color,
+          color,
+          opacity: 0.08,
+          borderOpacity: 0.85,
+        });
       }
     const badge =
       input.document.status === 'DRAFT'

@@ -11,11 +11,16 @@ const label = z
 export const printBindingSchema = z.enum([
   'document.number',
   'document.date',
+  'document.dateDay',
+  'document.dateMonth',
+  'document.dateYear',
   'customer.name',
   'customer.legalName',
   'customer.cuit',
   'customer.taxCondition',
   'customer.address',
+  'customer.addressLine',
+  'customer.locality',
   'patient.name',
   'patient.affiliateNumber',
   'notes',
@@ -268,6 +273,45 @@ export type PrintGenerateInput = z.infer<typeof printGenerateInputSchema>;
 export type PrintEvaluation = z.infer<typeof printEvaluationSchema>;
 export type PrintArtifactView = z.infer<typeof printArtifactSchema>;
 
+// An unsaved geometry preview is ADMIN-only. The stored revision supplies page size,
+// tolerances, private background and calibration compatibility.
+export const printGeometryInputSchema = printRenderInputSchema
+  .omit({ guides: true })
+  .extend({
+    definition: printDefinitionSchema,
+  })
+  .strict();
+const geometryRectSchema = z
+  .object({
+    xMm: z.number().finite(),
+    yMm: z.number().finite(),
+    widthMm: z.number().finite().nonnegative(),
+    heightMm: z.number().finite().nonnegative(),
+  })
+  .strict();
+export const printGeometryPreviewSchema = z
+  .object({
+    pdfBase64: z.string().min(1),
+    evaluation: printEvaluationSchema,
+    envelopes: z.array(
+      z
+        .object({
+          region: z.string(),
+          rect: geometryRectSchema,
+          state: z.enum(['SAFE', 'WARNING', 'BLOCKED']),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export type PrintGeometryInput = z.infer<typeof printGeometryInputSchema>;
+export type PrintGeometryPreview = z.infer<typeof printGeometryPreviewSchema>;
+export const printSampleGeometryInputSchema = printGeometryInputSchema.omit({
+  templateRevisionId: true,
+  expectedVersion: true,
+});
+export type PrintSampleGeometryInput = z.infer<typeof printSampleGeometryInputSchema>;
+
 // BFF allowlist: binary responses are explicit and never parsed as JSON.
 export function printingRouteContract(path: string, method: string) {
   const uuid =
@@ -281,6 +325,8 @@ export function printingRouteContract(path: string, method: string) {
   }
   if (new RegExp(`^templates/${uuid}/publish$`).test(path) && method === 'POST')
     return json(printTemplatePublishSchema, printTemplateSchema);
+  if (new RegExp(`^templates/${uuid}/geometry-preview$`).test(path) && method === 'POST')
+    return json(printSampleGeometryInputSchema, printGeometryPreviewSchema);
   if (path === 'calibrations' && method === 'POST')
     return json(printCalibrationCreateSchema, printCalibrationSchema);
   if (path === 'calibration-test' && method === 'POST')
@@ -292,6 +338,8 @@ export function printingRouteContract(path: string, method: string) {
     return json(printRenderInputSchema, printEvaluationSchema);
   if (new RegExp(`^delivery-notes/${uuid}/preview$`).test(path) && method === 'POST')
     return binary(printRenderInputSchema, 'application/pdf');
+  if (new RegExp(`^delivery-notes/${uuid}/geometry-preview$`).test(path) && method === 'POST')
+    return json(printGeometryInputSchema, printGeometryPreviewSchema);
   if (new RegExp(`^delivery-notes/${uuid}/artifacts$`).test(path)) {
     if (method === 'POST') return json(printGenerateInputSchema, printArtifactSchema);
     if (method === 'GET') return json(null, printArtifactListSchema);

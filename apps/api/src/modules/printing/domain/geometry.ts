@@ -26,6 +26,32 @@ export type PlacedText = {
 };
 export type Bounds = { region: string; outer: Rect; safe: Rect; text: Rect | null };
 export type Layout = { evaluation: PrintEvaluation; texts: PlacedText[]; bounds: Bounds[] };
+export function printingEnvelopes(layout: Layout, template: PrintTemplate) {
+  return layout.bounds.flatMap(({ region, text }) => {
+    if (!text) return [];
+    const issues = layout.evaluation.issues.filter(
+      (i) =>
+        i.region === region ||
+        (region.startsWith('row-') && (i.region === 'products' || i.region.startsWith('product-'))),
+    );
+    return [
+      {
+        region,
+        rect: {
+          xMm: text.xMm - template.safeToleranceXmm,
+          yMm: text.yMm - template.safeToleranceYmm,
+          widthMm: text.widthMm + 2 * template.safeToleranceXmm,
+          heightMm: text.heightMm + 2 * template.safeToleranceYmm,
+        },
+        state: issues.some((i) => i.state === 'BLOCKED')
+          ? ('BLOCKED' as const)
+          : issues.length
+            ? ('WARNING' as const)
+            : ('SAFE' as const),
+      },
+    ];
+  });
+}
 export type ProductRow = Record<PrintColumn['binding'], string>;
 const unitLabels = {
   UNIT: 'Un.',
@@ -51,6 +77,9 @@ export function fieldValue(doc: DeliveryNoteView, binding: PrintField['binding']
   const values = {
     'document.number': doc.documentNumber ? `${doc.documentPrefix}-${doc.documentNumber}` : '',
     'document.date': doc.documentDate,
+    'document.dateDay': doc.documentDate.slice(8, 10),
+    'document.dateMonth': doc.documentDate.slice(5, 7),
+    'document.dateYear': doc.documentDate.slice(0, 4),
     'customer.name': c.name,
     'customer.legalName': c.legalName,
     'customer.cuit': c.cuit,
@@ -58,6 +87,8 @@ export function fieldValue(doc: DeliveryNoteView, binding: PrintField['binding']
     'customer.address': [c.addressLine, c.locality, c.province, c.postalCode]
       .filter(Boolean)
       .join(' · '),
+    'customer.addressLine': c.addressLine,
+    'customer.locality': c.locality,
     'patient.name': doc.patientName,
     'patient.affiliateNumber': doc.affiliateNumber,
     notes: doc.notes,

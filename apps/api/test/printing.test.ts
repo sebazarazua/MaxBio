@@ -6,6 +6,8 @@ import {
   printTemplateCreateSchema,
   printRenderInputSchema,
   printingRouteContract,
+  bourbonProvisionalTemplate,
+  printTemplateSchema,
 } from '@maxbio/contracts';
 import {
   mmToPt,
@@ -13,6 +15,8 @@ import {
   layoutDocument,
   formatPrintValue,
   projectRows,
+  fieldValue,
+  printingEnvelopes,
 } from '../src/modules/printing/domain/geometry.js';
 import {
   loadPrintMetrics,
@@ -20,6 +24,7 @@ import {
   renderCalibrationTest,
 } from '../src/modules/printing/infrastructure/pdf-renderer.js';
 import { LocalPrivatePrintStorage } from '../src/modules/printing/infrastructure/private-print-storage.js';
+import { printSampleDocument } from '../src/modules/printing/domain/sample-document.js';
 import {
   printingTemplate,
   printingTemplateInput,
@@ -221,8 +226,8 @@ test('PDF: página custom, fuente embebida, fondo solo PREVIEW, texto, una pági
     background: printingPng(),
   });
   const plainPreview = await PDFDocument.load(withoutGuides.bytes);
-  assert.match(operators(p), /\bS\b/);
-  assert.doesNotMatch(operators(plainPreview), /\bS\b/);
+  assert.match(operators(p), /\bB\b/);
+  assert.doesNotMatch(operators(plainPreview), /\bS\b|\bB\b/);
   const fontObjects = o.context
     .enumerateIndirectObjects()
     .map(([, v]) => v)
@@ -341,4 +346,155 @@ test('Storage privado: traversal y claves no scoped se rechazan antes de leer', 
   const storage = new LocalPrivatePrintStorage();
   assert.throws(() => storage.read('../public/file'), /Invalid/);
   assert.throws(() => storage.read(randomUUID()), /Invalid/);
+});
+
+test('Bourbon: bindings de fecha sin zona horaria y domicilio desde el snapshot existente', () => {
+  const d = printingDocument();
+  for (const date of ['2024-02-29', '2026-01-01', '2026-12-31']) {
+    d.documentDate = date;
+    assert.equal(fieldValue(d, 'document.dateDay'), date.slice(8, 10));
+    assert.equal(fieldValue(d, 'document.dateMonth'), date.slice(5, 7));
+    assert.equal(fieldValue(d, 'document.dateYear'), date.slice(0, 4));
+    assert.equal(fieldValue(d, 'document.date'), date);
+  }
+  d.customer.addressLine = 'AV. DE MAYO 930';
+  d.customer.locality = 'CABA';
+  d.customer.province = 'Buenos Aires';
+  assert.equal(fieldValue(d, 'customer.addressLine'), 'AV. DE MAYO 930');
+  assert.equal(fieldValue(d, 'customer.locality'), 'CABA');
+  assert.equal(fieldValue(d, 'customer.address'), 'AV. DE MAYO 930 · CABA · Buenos Aires');
+  d.customer.addressLine = null;
+  d.customer.locality = null;
+  assert.equal(fieldValue(d, 'customer.addressLine'), '');
+  assert.equal(fieldValue(d, 'customer.locality'), '');
+});
+
+function bourbonTemplate() {
+  return printTemplateSchema.parse({
+    ...printingTemplate(),
+    ...bourbonProvisionalTemplate(randomUUID(), randomUUID()),
+    status: 'DRAFT',
+    publishedAt: null,
+  });
+}
+test('Bourbon: envolvente única usa bbox PDF, ±4/±3, fuente, contenido, multiline y calibración', async () => {
+  const t = bourbonTemplate(),
+    d = printingDocument(),
+    metrics = await loadPrintMetrics();
+  const f = t.definition.fields.find((f) => f.id === 'customer')!;
+  f.fontSizePt = 9;
+  d.customer.name = 'OSDE';
+  function measure() {
+    const layout = layoutDocument(d, t, metrics);
+    const bound = layout.bounds.find((b) => b.region === f.id)!;
+    const envelope = printingEnvelopes(layout, t).find((e) => e.region === f.id)!;
+    assert.ok(bound.text);
+    assert.equal(envelope.rect.xMm, bound.text.xMm - 4);
+    assert.equal(envelope.rect.yMm, bound.text.yMm - 3);
+    assert.equal(envelope.rect.widthMm, bound.text.widthMm + 8);
+    assert.equal(envelope.rect.heightMm, bound.text.heightMm + 6);
+    return { layout, envelope };
+  }
+  const nominal = measure();
+  assert.ok(Math.abs(nominal.envelope.rect.widthMm - ptToMm(metrics.width('OSDE', 9)) - 8) < 1e-9);
+  f.fontSizePt = 12;
+  const larger = measure();
+  assert.ok(larger.envelope.rect.widthMm > nominal.envelope.rect.widthMm);
+  assert.ok(larger.envelope.rect.heightMm > nominal.envelope.rect.heightMm);
+  f.fontSizePt = 9;
+  d.customer.name = 'OSUTHGRA';
+  assert.ok(measure().envelope.rect.widthMm > nominal.envelope.rect.widthMm);
+  d.customer.name = 'OSDE\nOSUTHGRA';
+  f.heightMm = 14;
+  f.maxLines = 2;
+  const multiline = measure();
+  assert.ok(multiline.envelope.rect.heightMm > nominal.envelope.rect.heightMm);
+  assert.equal(multiline.layout.texts.filter((p) => p.region === f.id).length, 2);
+  assert.equal(printingEnvelopes(multiline.layout, t).filter((e) => e.region === f.id).length, 1);
+  f.maxLines = 1;
+  assert.equal(measure().envelope.state, 'BLOCKED');
+  const shifted = printingEnvelopes(
+    layoutDocument(d, t, metrics, { offsetXmm: 1.2, offsetYmm: -0.7 }),
+    t,
+  ).find((e) => e.region === f.id)!;
+  assert.ok(Math.abs(shifted.rect.xMm - multiline.envelope.rect.xMm - 1.2) < 1e-9);
+  assert.ok(Math.abs(shifted.rect.yMm - multiline.envelope.rect.yMm + 0.7) < 1e-9);
+  assert.equal(shifted.rect.widthMm, multiline.envelope.rect.widthMm);
+  assert.equal(shifted.rect.heightMm, multiline.envelope.rect.heightMm);
+  d.customer.name = 'OSDE OSUTHGRA OSDE OSUTHGRA';
+  f.widthMm = 35;
+  f.heightMm = 30;
+  f.maxLines = 5;
+  assert.ok(measure().layout.texts.filter((p) => p.region === f.id).length > 1);
+  const beforeStep = measure().envelope.rect.heightMm;
+  f.lineHeightPt = 17;
+  assert.ok(measure().envelope.rect.heightMm > beforeStep);
+});
+
+test('Bourbon: 203×271, no número/preimpresos, un recuadro por texto y overlay sin cajas', async () => {
+  const template = bourbonTemplate(),
+    document = printingDocument();
+  assert.equal(template.name, 'Bourbon Remito 203x271 - Provisional');
+  assert.equal(template.status, 'DRAFT');
+  assert.equal(template.safeToleranceXmm, 4);
+  assert.equal(template.safeToleranceYmm, 3);
+  assert.equal(
+    template.definition.fields.some((f) => f.binding === 'document.number'),
+    false,
+  );
+  const preview = await renderPdf({
+    template,
+    document,
+    calibration: null,
+    mode: 'PREVIEW',
+    guides: true,
+  });
+  const pdf = await PDFDocument.load(preview.bytes);
+  // Filled-and-stroked paths are the envelopes. The preview banner is fill-only.
+  assert.equal(
+    (operators(pdf).match(/\bB\b/g) ?? []).length,
+    printingEnvelopes(preview.layout, template).length,
+  );
+  assert.equal(
+    printingEnvelopes(preview.layout, template).length,
+    preview.layout.bounds.filter((b) => b.text).length,
+  );
+  assert.equal(
+    new Set(printingEnvelopes(preview.layout, template).map((e) => e.region)).size,
+    printingEnvelopes(preview.layout, template).length,
+  );
+  assert.ok(preview.layout.bounds.filter((b) => b.region.startsWith('row-')).length >= 10);
+  const result = await renderPdf({
+    template,
+    document,
+    calibration: null,
+    mode: 'PRINT_OVERLAY',
+    guides: true,
+    background: printingPng(),
+  });
+  const overlay = await PDFDocument.load(result.bytes);
+  assert.equal(overlay.getPage(0).getWidth(), mmToPt(203));
+  assert.equal(overlay.getPage(0).getHeight(), mmToPt(271));
+  assert.equal(imageCount(overlay), 0);
+  assert.doesNotMatch(operators(overlay), /\bre\b|\bDo\b|\bS\b|\bB\b|\bm\b|\bl\b/);
+  assert.doesNotMatch(await content(result.bytes), /00003897|Bourbon|REMITO|COD 91|CAI/);
+});
+
+test('Bourbon: referencia revisada, fecha en encabezado y paciente/afiliado dentro del área libre', async () => {
+  const template = bourbonTemplate();
+  const sample = printSampleDocument();
+  const layout = layoutDocument(sample, template, await loadPrintMetrics());
+  assert.equal(layout.evaluation.rowCount, 2);
+  assert.equal(layout.evaluation.maxRows, 5);
+  assert.equal(sample.documentNumber, null);
+  assert.equal(sample.customer.name, 'OSUTHGRA');
+  assert.equal(sample.lines[0]!.allocations.length, 2);
+  const year = template.definition.fields.find((f) => f.id === 'year')!;
+  assert.equal(year.yMm, 28.3);
+  for (const id of ['patient', 'affiliate']) {
+    const field = template.definition.fields.find((f) => f.id === id)!;
+    assert.ok(field.yMm >= 186.8 && field.yMm + field.heightMm <= 214);
+  }
+  assert.ok(layout.texts.some((t) => t.region === 'row-1-serialNumber'));
+  assert.ok(layout.texts.some((t) => t.region === 'row-2-lotNumber'));
 });

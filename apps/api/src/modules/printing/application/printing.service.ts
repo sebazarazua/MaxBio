@@ -19,6 +19,10 @@ import {
   type PrintRenderInput,
   type PrintGenerateInput,
   type DeliveryNoteView,
+  type PrintGeometryInput,
+  type PrintSampleGeometryInput,
+  type PrintTemplate,
+  type PrintCalibration,
 } from '@maxbio/contracts';
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
 import type { RequestActorContext } from '../../../common/auth/request-context.js';
@@ -32,6 +36,8 @@ import {
   type PrivatePrintStorage,
 } from '../infrastructure/private-print-storage.js';
 import { evaluatePrint, renderPdf, renderCalibrationTest } from '../infrastructure/pdf-renderer.js';
+import { printingEnvelopes } from '../domain/geometry.js';
+import { printSampleDocument } from '../domain/sample-document.js';
 
 type Tx = Prisma.TransactionClient;
 type TemplateRow = Prisma.PrintTemplateGetPayload<object>;
@@ -426,6 +432,69 @@ export class PrintingService {
     const background = await this.background(c, context.template.backgroundAssetId);
     return (await renderPdf({ ...context, mode: 'PREVIEW', background, guides: input.guides }))
       .bytes;
+  }
+  async geometryPreview(c: RequestActorContext, id: string, input: PrintGeometryInput) {
+    if (c.role !== 'ADMIN') throw new ForbiddenException();
+    const context = await this.context(c, id, { ...input, guides: true }, false);
+    return this.renderGeometry(c, {
+      ...context,
+      template: { ...context.template, definition: input.definition },
+    });
+  }
+  async sampleGeometryPreview(c: RequestActorContext, id: string, input: PrintSampleGeometryInput) {
+    const context = await this.write(
+      c,
+      async (tx) => ({
+        template: await this.template(tx, c, id, false),
+        calibration: await this.calibration(tx, c, id, input.calibrationId),
+        document: printSampleDocument(),
+      }),
+      true,
+    );
+    return this.renderGeometry(c, {
+      ...context,
+      template: { ...context.template, definition: input.definition },
+    });
+  }
+  private async renderGeometry(
+    c: RequestActorContext,
+    context: {
+      template: PrintTemplate;
+      calibration: PrintCalibration | null;
+      document: DeliveryNoteView;
+    },
+  ) {
+    const { template } = context;
+    const validated = printTemplateCreateSchema.safeParse({
+      id: template.id,
+      name: template.name,
+      pageWidthMm: template.pageWidthMm,
+      pageHeightMm: template.pageHeightMm,
+      safeToleranceXmm: template.safeToleranceXmm,
+      safeToleranceYmm: template.safeToleranceYmm,
+      backgroundAssetId: template.backgroundAssetId,
+      definition: template.definition,
+    });
+    if (!validated.success)
+      throw new BadRequestException(
+        validated.error.issues
+          .slice(0, 3)
+          .map((i) => i.message)
+          .join(' '),
+      );
+    const background = await this.background(c, template.backgroundAssetId);
+    const { bytes, layout } = await renderPdf({
+      ...context,
+      template,
+      background,
+      mode: 'PREVIEW',
+      guides: true,
+    });
+    return {
+      pdfBase64: Buffer.from(bytes).toString('base64'),
+      evaluation: layout.evaluation,
+      envelopes: printingEnvelopes(layout, template),
+    };
   }
   async testCalibration(
     c: RequestActorContext,

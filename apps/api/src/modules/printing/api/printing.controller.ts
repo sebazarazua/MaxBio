@@ -23,6 +23,8 @@ import {
   printGenerateInputSchema,
   printTestInputSchema,
   printReprintInputSchema,
+  printGeometryInputSchema,
+  printSampleGeometryInputSchema,
 } from '@maxbio/contracts';
 import type { AuthenticatedRequest } from '../../../common/auth/request-context.js';
 import { Roles } from '../../../common/auth/roles.decorator.js';
@@ -77,6 +79,17 @@ export class PrintingController {
   ) {
     return this.service.publish(actor(r), id, parse(printTemplatePublishSchema, body).activate);
   }
+  @Post('templates/:id/geometry-preview') @HttpCode(200) @Roles('ADMIN') sampleGeometry(
+    @Req() r: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.sampleGeometryPreview(
+      actor(r),
+      id,
+      parse(printSampleGeometryInputSchema, body),
+    );
+  }
   @Post('calibrations') @HttpCode(200) @Roles('ADMIN') calibration(
     @Req() r: AuthenticatedRequest,
     @Body() body: unknown,
@@ -124,6 +137,13 @@ export class PrintingController {
     @Body() body: unknown,
   ) {
     return this.service.generate(actor(r), id, parse(printGenerateInputSchema, body));
+  }
+  @Post('delivery-notes/:id/geometry-preview') @HttpCode(200) @Roles('ADMIN') geometry(
+    @Req() r: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.geometryPreview(actor(r), id, parse(printGeometryInputSchema, body));
   }
   @Get('delivery-notes/:id/artifacts') history(
     @Req() r: AuthenticatedRequest,

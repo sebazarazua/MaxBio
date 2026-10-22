@@ -9,6 +9,7 @@ import {
   printCalibrationSchema,
   printAssetSchema,
   deliveryNoteSchema,
+  bourbonProvisionalTemplate,
   type PrintTemplate,
   type DeliveryNoteView,
 } from '@maxbio/contracts';
@@ -18,6 +19,7 @@ import { useWorkspace } from '../workspace';
 import { Field } from '../catalog/common';
 import { DeliveryPrintPanel } from './delivery-print-panel';
 import { TestDeliveryNotePicker } from './test-delivery-note-picker';
+import { PrintGeometryEditor } from './geometry-editor';
 
 const emptyDefinition = JSON.stringify(
   {
@@ -59,6 +61,7 @@ export function PrintTemplateManager() {
   const [dx, setDx] = useState('0'),
     [dy, setDy] = useState('0');
   const [note, setNote] = useState<DeliveryNoteView>();
+  const [useSample, setUseSample] = useState(false);
   const guard = useRef(false);
   const template = templates.find((t) => t.id === selected);
   useEffect(() => {
@@ -189,6 +192,20 @@ export function PrintTemplateManager() {
                     <button
                       type="button"
                       className="text-button"
+                      disabled={busy}
+                      onClick={() => {
+                        setSelected(t.id);
+                        setCalibrationId('');
+                        setMessage(
+                          'Elegí un remito guardado para editar la geometría sobre el fondo.',
+                        );
+                      }}
+                    >
+                      Editar geometría
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
                       disabled={busy || config?.activeTemplate?.id === t.id}
                       onClick={() =>
                         void run(async () => {
@@ -214,6 +231,27 @@ export function PrintTemplateManager() {
       </section>
       <section className="catalog-panel">
         <h2>{sourceId ? 'Crear nueva revisión' : 'Preparar primer formulario'}</h2>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy}
+          onClick={() => {
+            const preset = bourbonProvisionalTemplate(crypto.randomUUID(), crypto.randomUUID());
+            setSourceId('');
+            setAssetId('');
+            setName(preset.name);
+            setWidth('203');
+            setHeight('271');
+            setTx('4');
+            setTy('3');
+            setDefinition(JSON.stringify(preset.definition, null, 2));
+            setMessage(
+              'Base provisional Bourbon preparada. Cargá el PNG real y guardá el borrador. Las posiciones iniciales requieren revisión contra la imagen y prueba física.',
+            );
+          }}
+        >
+          Preparar Bourbon Remito 203x271 - Provisional
+        </button>
         <p>
           Las cajas describen espacios en blanco disponibles. Incluí la tolerancia de alimentación y
           un margen interno. La configuración geométrica inicial es técnica.
@@ -338,10 +376,11 @@ export function PrintTemplateManager() {
               />
             </Field>
             <p className="muted">
-              Bindings permitidos: document.number, document.date, customer.name,
-              customer.legalName, customer.cuit, customer.taxCondition, customer.address,
-              patient.name, patient.affiliateNumber, notes. Fuente: NotoSans; geometría en mm,
-              tipografía e interlineado en pt.
+              Bindings permitidos: document.number, document.date, document.dateDay,
+              document.dateMonth, document.dateYear, customer.name, customer.legalName,
+              customer.cuit, customer.taxCondition, customer.address, customer.addressLine,
+              customer.locality, patient.name, patient.affiliateNumber, notes. Fuente: NotoSans;
+              geometría en mm, tipografía e interlineado en pt.
             </p>
             <button className="primary-button" type="submit">
               Guardar revisión en borrador
@@ -499,13 +538,46 @@ export function PrintTemplateManager() {
               onSelect={(id) =>
                 void run(async () => {
                   setNote(undefined);
+                  setUseSample(false);
                   setNote(await catalogFetch(id, deliveryNoteSchema, { scope: 'delivery-notes' }));
                 })
               }
             />
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => {
+                setNote(undefined);
+                setUseSample(true);
+              }}
+            >
+              Usar datos de prueba para editar geometría
+            </button>
           </>
         )}
       </section>
+      {template && (note || useSample) && (
+        <PrintGeometryEditor
+          key={'geometry:' + template.id + ':' + (note?.id ?? 'sample')}
+          template={template}
+          note={note}
+          calibration={
+            config?.calibrations.find(
+              (c) => c.id === calibrationId && c.templateRevisionId === template.id,
+            ) ?? null
+          }
+          onSaved={(saved) => {
+            setTemplates((items) => [saved, ...items]);
+            setSelected(saved.id);
+            setCalibrationId('');
+            setRevision((r) => r + 1);
+            setMessage(
+              'Geometría guardada como nueva revisión DRAFT. Calibración nominal 0 / 0; prueba física pendiente.',
+            );
+          }}
+        />
+      )}
       {template && note && (
         <DeliveryPrintPanel
           key={template.id + ':' + note.id}

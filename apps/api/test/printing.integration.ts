@@ -14,6 +14,7 @@ import {
   printArtifactSchema,
   printCalibrationSchema,
   printEvaluationSchema,
+  printGeometryPreviewSchema,
   deliveryNoteSchema,
   deliveryNoteListSchema,
   inventoryDocumentSchema,
@@ -284,6 +285,86 @@ test('Printing HTTP: PNG privado, roles, tenant, formatos y proporción', async 
     400,
   );
 });
+test('Editor HTTP: geometría no guardada ADMIN, aislamiento, versión y nueva revisión DRAFT exacta', async () => {
+  const template = printTemplateSchema.parse(
+    await checked(await request('printing/templates', 'POST', printingTemplateInput(background))),
+  );
+  const d = await draft();
+  const physicalBefore = await physicalState();
+  const noteBefore = await client.deliveryNote.findUnique({ where: { id: d.id } });
+  const definition = structuredClone(template.definition);
+  definition.fields[0]!.xMm += 0.5;
+  const input = {
+    templateRevisionId: template.id,
+    expectedVersion: d.version,
+    calibrationId: null,
+    definition,
+  };
+  const route = `printing/delivery-notes/${d.id}/geometry-preview`;
+  const result = printGeometryPreviewSchema.parse(
+    await checked(await request(route, 'POST', input)),
+  );
+  assert.equal(Buffer.from(result.pdfBase64, 'base64').subarray(0, 5).toString(), '%PDF-');
+  assert.equal(result.envelopes.filter((e) => e.region === definition.fields[0]!.id).length, 1);
+  assert.equal(result.evaluation.state, 'SAFE');
+  assert.deepEqual(
+    (await client.printTemplate.findUnique({ where: { id: template.id } }))!.definition,
+    template.definition,
+  );
+  await checked(await request(route, 'POST', input, 1), 403);
+  await checked(await request(route, 'POST', input, 2), 404);
+  await checked(await request(route, 'POST', { ...input, expectedVersion: d.version + 1 }), 409);
+  await checked(await request(route, 'POST', { ...input, calibrationId: randomUUID() }), 404);
+  const invalid = structuredClone(definition);
+  invalid.fields[0]!.xMm = 179;
+  await checked(await request(route, 'POST', { ...input, definition: invalid }), 400);
+  await checked(await request(route, 'POST', { ...input, zoom: 2 }), 400);
+  const saved = printTemplateSchema.parse(
+    await checked(
+      await request('printing/templates', 'POST', {
+        ...printingTemplateInput(background),
+        sourceTemplateId: template.id,
+        definition,
+      }),
+    ),
+  );
+  assert.equal(saved.status, 'DRAFT');
+  assert.equal(saved.publishedAt, null);
+  assert.equal(saved.familyId, template.familyId);
+  assert.deepEqual(saved.definition, definition);
+  assert.deepEqual(await client.deliveryNote.findUnique({ where: { id: d.id } }), noteBefore);
+  assert.deepEqual(await physicalState(), physicalBefore);
+});
+
+test('Editor HTTP: muestra en memoria sin remito guardado, privada y solo ADMIN', async () => {
+  const before = {
+    physical: await physicalState(),
+    notes: await client.deliveryNote.count(),
+    assets: await client.printAsset.count(),
+    templates: await client.printTemplate.count(),
+  };
+  const route = `printing/templates/${template.id}/geometry-preview`;
+  const input = { calibrationId: null, definition: template.definition };
+  const response = printGeometryPreviewSchema.parse(
+    await checked(await request(route, 'POST', input)),
+  );
+  assert.equal(response.evaluation.rowCount, 2);
+  assert.equal(Buffer.from(response.pdfBase64, 'base64').subarray(0, 5).toString(), '%PDF-');
+  await checked(await request(route, 'POST', input, 1), 403);
+  await checked(await request(route, 'POST', input, 2), 404);
+  await checked(await request(route, 'POST', { ...input, calibrationId: randomUUID() }), 404);
+  await checked(await request(route, 'POST', { ...input, documentNumber: 'evil' }), 400);
+  assert.deepEqual(
+    {
+      physical: await physicalState(),
+      notes: await client.deliveryNote.count(),
+      assets: await client.printAsset.count(),
+      templates: await client.printTemplate.count(),
+    },
+    before,
+  );
+});
+
 test('Printing HTTP: preview DRAFT, guías, evaluación, overlay exige CONFIRMED y PUBLISHED', async () => {
   const d = await draft();
   const physicalBefore = await physicalState();
@@ -796,6 +877,49 @@ test(
         await checked(await bff(`delivery-notes/${confirmed.id}/evaluate`, input)),
       );
       assert.equal(result.state, 'SAFE');
+      const definition = structuredClone(template.definition);
+      definition.fields[0]!.xMm += 0.1;
+      const geometryInput = {
+        templateRevisionId: template.id,
+        expectedVersion: confirmed.version,
+        calibrationId: null,
+        definition,
+      };
+      const geometryRoute = `delivery-notes/${confirmed.id}/geometry-preview`;
+      const geometryResponse = await bff(geometryRoute, geometryInput, cookies[0]!);
+      assert.match(geometryResponse.headers.get('cache-control')!, /private, no-store/);
+      const geometry = printGeometryPreviewSchema.parse(await checked(geometryResponse));
+      assert.equal(Buffer.from(geometry.pdfBase64, 'base64').subarray(0, 5).toString(), '%PDF-');
+      assert.equal(
+        geometry.envelopes.filter((e) => e.region === definition.fields[0]!.id).length,
+        1,
+      );
+      await checked(await bff(geometryRoute, geometryInput), 403);
+      const savedGeometry = printTemplateSchema.parse(
+        await checked(
+          await bff(
+            'templates',
+            {
+              ...printingTemplateInput(background),
+              sourceTemplateId: template.id,
+              definition,
+            },
+            cookies[0]!,
+          ),
+        ),
+      );
+      assert.equal(savedGeometry.status, 'DRAFT');
+      assert.deepEqual(savedGeometry.definition, definition);
+      const sampleResponse = printGeometryPreviewSchema.parse(
+        await checked(
+          await bff(
+            `templates/${savedGeometry.id}/geometry-preview`,
+            { definition, calibrationId: null },
+            cookies[0]!,
+          ),
+        ),
+      );
+      assert.equal(sampleResponse.evaluation.rowCount, 2);
       const preview = await bff(`delivery-notes/${confirmed.id}/preview`, input);
       assert.equal(preview.status, 200, logs);
       assert.match(preview.headers.get('content-type')!, /application\/pdf/);

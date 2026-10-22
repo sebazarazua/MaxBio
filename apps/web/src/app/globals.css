@@ -1273,6 +1273,22 @@ h2 {
   font-size: 0.85rem;
   tab-size: 2;
 }
+.print-geometry-hits {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+.print-geometry-hits rect {
+  cursor: move;
+  outline: none;
+}
+.print-geometry-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
 .print-panel .check-field {
   display: flex;
   flex-direction: row;
