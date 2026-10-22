@@ -16,11 +16,6 @@ const text = (max: number) =>
     )
     .nullable()
     .default(null);
-const digits = z
-  .string()
-  .regex(/^[0-9]{1,12}$/)
-  .nullable()
-  .default(null);
 const positive = inventoryQuantitySchema.refine(
   (v) => v !== '0' && BigInt(v.split('.')[0]!) <= 1000000000n,
   'Revisá la cantidad.',
@@ -37,8 +32,6 @@ export const deliveryNoteLineInputSchema = z
 const fields = {
   customerId: z.uuidv4(),
   documentDate: z.iso.date(),
-  documentPrefix: digits,
-  documentNumber: digits,
   patientName: text(160),
   affiliateNumber: text(80),
   notes: text(1000),
@@ -46,18 +39,10 @@ const fields = {
 };
 function validate(
   v: {
-    documentPrefix: string | null;
-    documentNumber: string | null;
     lines: { id: string; allocations: unknown[] }[];
   },
   ctx: z.RefinementCtx,
 ) {
-  if ((v.documentPrefix === null) !== (v.documentNumber === null))
-    ctx.addIssue({
-      code: 'custom',
-      message: 'Completá ambas partes del número.',
-      path: ['documentNumber'],
-    });
   if (new Set(v.lines.map((l) => l.id)).size !== v.lines.length)
     ctx.addIssue({ code: 'custom', message: 'Hay líneas repetidas.', path: ['lines'] });
   if (v.lines.reduce((n, l) => n + l.allocations.length, 0) > 500)
@@ -76,6 +61,26 @@ export const deliveryNoteUpdateSchema = z
   .object({ expectedVersion: versionInputSchema.shape.expectedVersion, ...fields })
   .strict()
   .superRefine(validate);
+export const deliveryNoteNumberingInputSchema = z
+  .object({
+    prefix: z.string().regex(/^[0-9]{1,12}$/),
+    nextNumber: z.string().regex(/^[0-9]{1,12}$/),
+    expectedVersion: z.number().int().nonnegative(),
+  })
+  .strict();
+export const deliveryNoteNumberingSchema = z
+  .object({
+    configured: z.boolean(),
+    prefix: z.string().nullable(),
+    nextNumber: z.string().nullable(),
+    numberWidth: z.number().int().min(1).max(12).nullable(),
+    version: z.number().int().nonnegative(),
+    suggestedNumber: z.string().nullable(),
+    displayNumber: z.string().nullable(),
+  })
+  .strict();
+export type DeliveryNoteNumberingInput = z.infer<typeof deliveryNoteNumberingInputSchema>;
+export type DeliveryNoteNumberingView = z.infer<typeof deliveryNoteNumberingSchema>;
 export const deliveryNoteConfirmSchema = z
   .object({ operationId: z.uuidv4(), expectedVersion: versionInputSchema.shape.expectedVersion })
   .strict();
@@ -168,6 +173,15 @@ export type DeliveryNoteConfirm = z.infer<typeof deliveryNoteConfirmSchema>;
 export type DeliveryNoteView = z.infer<typeof deliveryNoteSchema>;
 export function deliveryNoteRouteContract(path: string, method: string) {
   const id = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}';
+  if (path === 'delivery-notes/numbering') {
+    if (method === 'GET') return { body: null, query: null, response: deliveryNoteNumberingSchema };
+    if (method === 'PUT')
+      return {
+        body: deliveryNoteNumberingInputSchema,
+        query: null,
+        response: deliveryNoteNumberingSchema,
+      };
+  }
   if (path === 'delivery-notes' && method === 'GET')
     return { body: null, query: deliveryNoteListQuerySchema, response: deliveryNoteListSchema };
   if (path === 'delivery-notes/search' && method === 'POST')

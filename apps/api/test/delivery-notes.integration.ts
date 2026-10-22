@@ -15,6 +15,7 @@ import {
   deliveryNoteListSchema,
   type DeliveryNoteView,
   deliveryNoteCreateSchema,
+  deliveryNoteNumberingSchema,
   deliveryNoteUpdateSchema,
   type InventoryDocument,
 } from '@maxbio/contracts';
@@ -153,6 +154,10 @@ before(
         data: { name: 'Private inventory', slug: 'inventory-' + randomUUID() },
       })
     ).id;
+    for (const organizationId of [org, foreignOrg])
+      await client.deliveryNoteNumbering.create({
+        data: { organizationId, prefix: '00001', nextNumber: 1n, numberWidth: 8 },
+      });
     for (const [organizationId, role] of [
       [org, 'ADMIN'],
       [org, 'OPERATOR'],
@@ -230,15 +235,12 @@ after(async () => {
 async function note(r: Promise<Response>) {
   return deliveryNoteSchema.parse(await checked(await r));
 }
-let sequence = 0;
 async function draft(lines: object[] = [], extra: object = {}) {
   return note(
     request('delivery-notes', 'POST', {
       id: randomUUID(),
       customerId: customer,
       documentDate: '2026-10-08',
-      documentPrefix: '00001',
-      documentNumber: String(++sequence).padStart(8, '0'),
       lines,
       ...extra,
     }),
@@ -257,8 +259,6 @@ function editPayload(d: DeliveryNoteView, extra: object = {}) {
     expectedVersion: d.version,
     customerId: d.customer.id,
     documentDate: d.documentDate,
-    documentPrefix: d.documentPrefix,
-    documentNumber: d.documentNumber,
     patientName: d.patientName,
     affiliateNumber: d.affiliateNumber,
     notes: d.notes,
@@ -487,10 +487,6 @@ test('CONFIRM: un OUTBOUND exacto, snapshot congelado, trazabilidad bidirecciona
 test('CONFIRM: vacío, sin número, sin stock, allocation incompleta, entero y decimal', async () => {
   await checked(await outbound(await draft()), 400);
   const a = await supply();
-  await checked(
-    await outbound(await draft([a.row()], { documentPrefix: null, documentNumber: null })),
-    400,
-  );
   await checked(await outbound(await draft([a.row('6')])), 409);
   const incomplete = await draft([
     { ...a.row('2'), allocations: [{ positionId: a.positions[0]!.id, quantity: '1' }] },
@@ -633,15 +629,13 @@ test('Concurrencia real: número documental, creación estable y edición vs con
     id: randomUUID(),
     customerId: customer,
     documentDate: '2026-10-08',
-    documentPrefix: '00009',
-    documentNumber: '00000001',
   };
   const numberRace = await Promise.all([
     request('delivery-notes', 'POST', input),
     request('delivery-notes', 'POST', { ...input, id: randomUUID() }),
   ]);
-  assert.deepEqual(numberRace.map((r) => r.status).sort(), [200, 409]);
-  const stable = { ...input, id: randomUUID(), documentNumber: '00000002' };
+  assert.deepEqual(numberRace.map((r) => r.status).sort(), [200, 200]);
+  const stable = { ...input, id: randomUUID() };
   const createRace = await Promise.all([
     request('delivery-notes', 'POST', stable),
     request('delivery-notes', 'POST', stable),
@@ -778,7 +772,7 @@ test('Tenant isolation: documento, cliente, producto y posiciones; permisos canc
       documentPrefix: d.documentPrefix,
       documentNumber: d.documentNumber,
     }),
-    409,
+    400,
   );
 });
 test('Auditoría fallida revierte salida y snapshot; Inventory fallido revierte confirmación', async () => {
@@ -851,4 +845,188 @@ test('DB: confirmed sin movimiento y movimiento sin confirmed imposibles; FK ten
     }),
   );
   await projection();
+});
+
+test('Numeración: históricos numéricos, sugerencia sin reserva, ceros, salto y estados usados', async () => {
+  const configure = async (prefix: string, nextNumber: string) => {
+    const current = deliveryNoteNumberingSchema.parse(
+      await checked(await request('delivery-notes/numbering')),
+    );
+    return deliveryNoteNumberingSchema.parse(
+      await checked(
+        await request(
+          'delivery-notes/numbering',
+          'PUT',
+          { prefix, nextNumber, expectedVersion: current.version },
+          0,
+        ),
+      ),
+    );
+  };
+  await configure('0088', '00000398');
+  const numberedStock = await supply('UNIT', '1');
+  const movementBefore = await client.inventoryMovement.count();
+  const saved = [];
+  for (let n = 0; n < 3; n++) saved.push(await draft(n === 2 ? [numberedStock.row()] : []));
+  assert.deepEqual(
+    saved.map((d) => d.documentNumber),
+    ['00000398', '00000399', '00000400'],
+  );
+  assert.ok(saved.every((d) => d.documentPrefix === '0088'));
+  await checked(
+    await request(`delivery-notes/${saved[1]!.id}/cancel`, 'POST', { expectedVersion: 1 }, 0),
+  );
+  const numberedConfirmed = await note(outbound(saved[2]!));
+  assert.equal(numberedConfirmed.status, 'CONFIRMED');
+  // Historical numeric import variants are compared numerically, never lexicographically.
+  await client.deliveryNoteNumbering.delete({ where: { organizationId: org } });
+  const recordsBefore = await client.deliveryNote.count();
+  for (let n = 0; n < 10; n++) {
+    const suggestion = deliveryNoteNumberingSchema.parse(
+      await checked(await request('delivery-notes/numbering')),
+    );
+    assert.equal(suggestion.prefix, '0088');
+    assert.equal(suggestion.suggestedNumber, '00000401');
+    assert.equal(suggestion.version, 0);
+  }
+  assert.equal(await client.deliveryNoteNumbering.count({ where: { organizationId: org } }), 0);
+  assert.equal(await client.deliveryNote.count(), recordsBefore);
+  const next = await draft();
+  assert.equal(next.documentNumber, '00000401');
+  await client.deliveryNoteNumbering.update({
+    where: { organizationId: org },
+    data: { nextNumber: 398n },
+  });
+  const skipped = await draft();
+  assert.equal(skipped.documentNumber, '00000402');
+  assert.equal(await client.inventoryMovement.count(), movementBefore + 1);
+  assert.equal(
+    (await client.deliveryNoteNumbering.findUniqueOrThrow({ where: { organizationId: org } }))
+      .nextNumber,
+    403n,
+  );
+  // Versioned administration: advance once, then forbid accidental rewind.
+  const advanced = await configure('0088', '00000410');
+  const advancedDoc = await draft();
+  assert.equal(advancedDoc.documentNumber, '00000410');
+  await checked(
+    await request(
+      'delivery-notes/numbering',
+      'PUT',
+      { prefix: '0088', nextNumber: '00000398', expectedVersion: advanced.version },
+      0,
+    ),
+    409,
+  );
+  const switched = await configure('0089', '00000001');
+  assert.equal(switched.displayNumber, '0089-00000001');
+  const switchedDoc = await draft();
+  assert.equal(switchedDoc.documentPrefix, '0089');
+  assert.equal(switchedDoc.documentNumber, '00000001');
+  assert.equal(
+    (await client.deliveryNote.findUniqueOrThrow({ where: { id: saved[0]!.id } })).documentPrefix,
+    '0088',
+  );
+  const foreign = deliveryNoteNumberingSchema.parse(
+    await checked(await request('delivery-notes/numbering', 'GET', undefined, 2)),
+  );
+  assert.equal(foreign.prefix, '00001');
+  await checked(
+    await request(
+      'delivery-notes/numbering',
+      'PUT',
+      { prefix: '123', nextNumber: '1', expectedVersion: switched.version },
+      1,
+    ),
+    403,
+  );
+  const audits = await client.auditEvent.findMany({
+    where: { organizationId: org, action: 'DELIVERY_NOTE_NUMBERING_CHANGED' },
+  });
+  assert.ok(audits.length >= 3);
+  assert.ok(audits.every((a) => a.actorUserId === actors[0]!.userId));
+});
+
+test('Numeración: 24 creates concurrentes, sugerencia stale, retries y rollback de secuencia', async () => {
+  const before = await client.deliveryNoteNumbering.findUniqueOrThrow({
+    where: { organizationId: org },
+  });
+  const stockBefore = await client.inventoryBalance.findMany();
+  const movementBefore = await client.inventoryMovement.count();
+  const inputs = Array.from({ length: 24 }, () => ({
+    id: randomUUID(),
+    customerId: customer,
+    documentDate: '2026-10-22',
+  }));
+  const docs = await Promise.all(
+    inputs.map((input) => note(request('delivery-notes', 'POST', input))),
+  );
+  assert.equal(new Set(docs.map((d) => d.documentNumber)).size, 24);
+  assert.deepEqual(
+    docs.map((d) => BigInt(d.documentNumber!)).sort((a, b) => (a < b ? -1 : 1)),
+    Array.from({ length: 24 }, (_, i) => before.nextNumber + BigInt(i)),
+  );
+  const after = await client.deliveryNoteNumbering.findUniqueOrThrow({
+    where: { organizationId: org },
+  });
+  assert.equal(after.nextNumber, before.nextNumber + 24n);
+  const retries = await Promise.all(
+    Array.from({ length: 6 }, () => note(request('delivery-notes', 'POST', inputs[0]!))),
+  );
+  assert.ok(retries.every((d) => d.replayed && d.documentNumber === docs[0]!.documentNumber));
+  assert.equal(
+    (await client.deliveryNoteNumbering.findUniqueOrThrow({ where: { organizationId: org } }))
+      .nextNumber,
+    after.nextNumber,
+  );
+  await checked(
+    await request('delivery-notes', 'POST', { ...inputs[0], notes: 'Otro contenido' }),
+    409,
+  );
+  await checked(
+    await request('delivery-notes', 'POST', {
+      ...inputs[0],
+      id: randomUUID(),
+      customerId: randomUUID(),
+    }),
+    404,
+  );
+  assert.equal(
+    (await client.deliveryNoteNumbering.findUniqueOrThrow({ where: { organizationId: org } }))
+      .nextNumber,
+    after.nextNumber,
+  );
+  assert.deepEqual(await client.inventoryBalance.findMany(), stockBefore);
+  assert.equal(await client.inventoryMovement.count(), movementBefore);
+  await checked(
+    await request(`delivery-notes/${docs[0]!.id}`, 'PATCH', {
+      ...editPayload(docs[0]!),
+      documentNumber: '1',
+    }),
+    400,
+  );
+});
+
+test('Numeración sin históricos: no inventa prefijo; OPERATOR no configura ni crea hasta preparación ADMIN', async () => {
+  await client.deliveryNoteNumbering.delete({ where: { organizationId: foreignOrg } });
+  const before = await client.deliveryNote.count();
+  const state = deliveryNoteNumberingSchema.parse(
+    await checked(await request('delivery-notes/numbering', 'GET', undefined, 2)),
+  );
+  assert.equal(state.configured, false);
+  assert.equal(state.prefix, null);
+  assert.equal(state.suggestedNumber, null);
+  const foreignCustomer = await client.customer.create({
+    data: { organizationId: foreignOrg, name: 'Sin talonario', kind: 'OTHER' },
+  });
+  await checked(
+    await request(
+      'delivery-notes',
+      'POST',
+      { id: randomUUID(), customerId: foreignCustomer.id, documentDate: '2026-10-22' },
+      2,
+    ),
+    409,
+  );
+  assert.equal(await client.deliveryNote.count(), before);
 });

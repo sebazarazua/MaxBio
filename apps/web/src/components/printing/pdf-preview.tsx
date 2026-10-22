@@ -30,7 +30,7 @@ export function PdfPreview({
       const page = await pdf.getPage(1);
       if (stopped || !canvas.current) return;
       const viewport = page.getViewport({ scale: (zoom * 96) / 72 });
-      const target = canvas.current,
+      const target = document.createElement('canvas'),
         ratio = window.devicePixelRatio || 1;
       target.width = Math.ceil(viewport.width * ratio);
       target.height = Math.ceil(viewport.height * ratio);
@@ -39,6 +39,13 @@ export function PdfPreview({
       await page.render({ canvas: target, viewport, transform: [ratio, 0, 0, ratio, 0, 0] })
         .promise;
       if (!stopped) {
+        const visible = canvas.current;
+        if (!visible) return;
+        visible.width = target.width;
+        visible.height = target.height;
+        visible.style.width = viewport.width + 'px';
+        visible.style.height = viewport.height + 'px';
+        visible.getContext('2d')!.drawImage(target, 0, 0);
         setError('');
         onReady?.();
       }

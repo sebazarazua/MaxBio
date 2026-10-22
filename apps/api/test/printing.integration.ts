@@ -64,7 +64,6 @@ async function checked(r: Response, status = 200) {
   assert.equal(r.status, status, JSON.stringify(data));
   return data;
 }
-let seq = 0;
 async function draft(extra: object = {}) {
   return deliveryNoteSchema.parse(
     await checked(
@@ -75,8 +74,6 @@ async function draft(extra: object = {}) {
           id: randomUUID(),
           customerId: customer,
           documentDate: '2026-10-19',
-          documentPrefix: '00001',
-          documentNumber: String(++seq).padStart(8, '0'),
           patientName: 'PACIENTE PRIVADO',
           affiliateNumber: 'AF-PRIVADO',
           lines: [
@@ -150,6 +147,9 @@ before(
         requestId: randomUUID(),
       });
     }
+    await client.deliveryNoteNumbering.create({
+      data: { organizationId: org, prefix: '00001', nextNumber: 1n, numberWidth: 8 },
+    });
     customer = (
       await client.customer.create({
         data: {

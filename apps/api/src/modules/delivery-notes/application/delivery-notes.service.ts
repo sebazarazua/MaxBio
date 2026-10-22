@@ -13,6 +13,7 @@ import {
   type DeliveryNoteCreate,
   type DeliveryNoteUpdate,
   type DeliveryNoteConfirm,
+  type DeliveryNoteNumberingInput,
 } from '@maxbio/contracts';
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
 import { AuditService } from '../../audit/audit.service.js';
@@ -27,6 +28,7 @@ import {
   customerView,
 } from './delivery-note-view.js';
 import { PrintingService } from '../../printing/application/printing.service.js';
+import { numberingLock, loadNumbering, numberingView, allocateNumber } from './numbering.js';
 type Tx = Prisma.TransactionClient;
 const hash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 type Record = Prisma.DeliveryNoteGetPayload<{ include: typeof include }>;
@@ -137,8 +139,6 @@ export class DeliveryNotesService {
     return {
       customerId: input.customerId,
       documentDate: new Date(input.documentDate + 'T00:00:00Z'),
-      documentPrefix: input.documentPrefix,
-      documentNumber: input.documentNumber,
       patientName: input.patientName,
       affiliateNumber: input.affiliateNumber,
       notes: input.notes,
@@ -148,6 +148,66 @@ export class DeliveryNotesService {
     return this.db.client.$transaction(async (tx) => view(await this.record(tx, c, id)), {
       isolationLevel: 'RepeatableRead',
     });
+  }
+  async numbering(c: RequestActorContext) {
+    return this.db.client.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        return numberingView(tx, c.organizationId, await loadNumbering(tx, c.organizationId));
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+  }
+  async configureNumbering(c: RequestActorContext, input: DeliveryNoteNumberingInput) {
+    return this.write(
+      c,
+      async (tx) => {
+        await numberingLock(tx, c.organizationId);
+        const current = await loadNumbering(tx, c.organizationId);
+        if ((current?.version ?? 0) !== input.expectedVersion)
+          throw new ConflictException('La numeración cambió. Volvé a cargarla antes de guardar.');
+        if (current?.prefix === input.prefix && BigInt(input.nextNumber) < current.nextNumber)
+          throw new ConflictException(
+            'El próximo número no puede retroceder. Elegí uno igual o superior.',
+          );
+        const state = await tx.deliveryNoteNumbering.upsert({
+          where: { organizationId: c.organizationId },
+          create: {
+            organizationId: c.organizationId,
+            prefix: input.prefix,
+            nextNumber: BigInt(input.nextNumber),
+            numberWidth: input.nextNumber.length,
+          },
+          update: {
+            prefix: input.prefix,
+            nextNumber: BigInt(input.nextNumber),
+            numberWidth: input.nextNumber.length,
+            version: { increment: 1 },
+          },
+        });
+        await this.audit.append(
+          {
+            organizationId: c.organizationId,
+            actorUserId: c.userId,
+            sessionId: c.sessionId,
+            requestId: c.requestId,
+            action: 'DELIVERY_NOTE_NUMBERING_CHANGED',
+            resourceType: 'DeliveryNoteNumbering',
+            resourceId: c.organizationId,
+            result: 'SUCCESS',
+            metadata: {
+              previousPrefix: current?.prefix,
+              prefix: state.prefix,
+              previousNextNumber: current?.nextNumber.toString(),
+              nextNumber: state.nextNumber.toString(),
+            },
+          },
+          tx,
+        );
+        return numberingView(tx, c.organizationId, state);
+      },
+      true,
+    );
   }
   async create(c: RequestActorContext, input: DeliveryNoteCreate) {
     return this.write(c, async (tx) => {
@@ -160,6 +220,8 @@ export class DeliveryNotesService {
           throw new ConflictException('Este remito ya fue creado con otros datos. Cargá su ficha.');
         return view(prior, true);
       }
+      await numberingLock(tx, c.organizationId);
+      const number = await allocateNumber(tx, c.organizationId);
       await this.inventory.lockDeliveryProducts(
         tx,
         c,
@@ -172,6 +234,7 @@ export class DeliveryNotesService {
           organizationId: c.organizationId,
           creationHash: digest,
           ...this.fields(input),
+          ...number,
         },
       });
       await this.lines(tx, c, input.id, input.lines);
@@ -181,6 +244,7 @@ export class DeliveryNotesService {
   }
   async update(c: RequestActorContext, id: string, input: DeliveryNoteUpdate) {
     return this.write(c, async (tx) => {
+      await numberingLock(tx, c.organizationId);
       // Same order as posting. Never acquire a Product/Customer lock after the document.
       await this.inventory.lockDeliveryProducts(
         tx,
@@ -190,6 +254,7 @@ export class DeliveryNotesService {
       await this.customer(tx, c, input.customerId);
       const d = await this.lock(tx, c, id);
       this.editable(d, input.expectedVersion);
+      const number = d.documentNumber ? {} : await allocateNumber(tx, c.organizationId);
       await tx.deliveryNoteAllocation.deleteMany({
         where: { organizationId: c.organizationId, line: { deliveryNoteId: id } },
       });
@@ -199,7 +264,7 @@ export class DeliveryNotesService {
       await this.lines(tx, c, id, input.lines);
       await tx.deliveryNote.update({
         where: { organizationId_id: { organizationId: c.organizationId, id } },
-        data: { ...this.fields(input), version: { increment: 1 } },
+        data: { ...this.fields(input), ...number, version: { increment: 1 } },
       });
       await this.audit.success(c, 'DELIVERY_NOTE_UPDATED', 'DeliveryNote', id, tx);
       return view(await this.record(tx, c, id));

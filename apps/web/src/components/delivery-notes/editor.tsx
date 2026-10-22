@@ -7,6 +7,7 @@ import {
   productListSchema,
   scanResultSchema,
   deliveryNoteSchema,
+  deliveryNoteNumberingSchema,
   deliveryNoteCreateSchema,
   deliveryNoteUpdateSchema,
   inventoryStockDetailSchema,
@@ -464,8 +465,13 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
   const [printReady, setPrintReady] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(doc?.customer ?? null);
   const [date, setDate] = useState(doc?.documentDate ?? '');
-  const [prefix, setPrefix] = useState(doc?.documentPrefix ?? ''),
-    [number, setNumber] = useState(doc?.documentNumber ?? '');
+  const numbering = useResource(
+    doc?.documentNumber ? null : 'numbering',
+    deliveryNoteNumberingSchema,
+    'delivery-notes',
+  );
+  const prefix = doc?.documentPrefix ?? numbering.data?.prefix ?? '';
+  const number = doc?.documentNumber ?? numbering.data?.suggestedNumber ?? '';
   const [patient, setPatient] = useState(doc?.patientName ?? ''),
     [affiliate, setAffiliate] = useState(doc?.affiliateNumber ?? ''),
     [notes, setNotes] = useState(doc?.notes ?? '');
@@ -537,8 +543,6 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
     const fields = {
       customerId: customer?.id,
       documentDate: date,
-      documentPrefix: prefix || null,
-      documentNumber: number || null,
       patientName: patient || null,
       affiliateNumber: affiliate || null,
       notes: notes || null,
@@ -553,9 +557,7 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
       ? deliveryNoteUpdateSchema.safeParse({ ...fields, expectedVersion: doc.version })
       : deliveryNoteCreateSchema.safeParse({ ...fields, id: id.current });
     if (!parsed.success) {
-      setError(
-        'Revisá el cliente, la fecha, las cantidades y ambas partes del número del talonario.',
-      );
+      setError('Revisá el cliente, la fecha y las cantidades.');
       return;
     }
     attempt.current = { path: doc?.id ?? '', method: doc ? 'PATCH' : 'POST', body: parsed.data };
@@ -658,32 +660,6 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
                     required
                   />
                 </Field>
-                <Field label="Prefijo del talonario">
-                  <input
-                    inputMode="numeric"
-                    maxLength={12}
-                    value={prefix}
-                    onChange={(e) => {
-                      setPrefix(e.target.value);
-                      setDirty(true);
-                      setReview(false);
-                    }}
-                    placeholder="0002"
-                  />
-                </Field>
-                <Field label="Número del talonario">
-                  <input
-                    inputMode="numeric"
-                    maxLength={12}
-                    value={number}
-                    onChange={(e) => {
-                      setNumber(e.target.value);
-                      setDirty(true);
-                      setReview(false);
-                    }}
-                    placeholder="00003897"
-                  />
-                </Field>
               </div>
               <details
                 open={patientOpen}
@@ -715,11 +691,24 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
                   </Field>
                 </div>
               </details>
+              {!doc?.documentNumber && <Feedback {...numbering} reload={numbering.reload} />}
+              {!number && numbering.data && (
+                <p role="status">
+                  {numbering.data.configured
+                    ? 'Se agotó la numeración del talonario.'
+                    : 'Un administrador debe configurar la numeración una sola vez.'}{' '}
+                  {isAdmin && <Link href="/remitos#numeracion">Configurar numeración</Link>}
+                </p>
+              )}
               {(prefix || number) && (
                 <p className="print-number">
                   Remito físico: {prefix || '…'}-{number || '…'}
                 </p>
               )}
+              <p className="muted">
+                MaxBio asigna el número automáticamente.
+                {!doc?.documentNumber && ' El número definitivo se asigna al guardar.'}
+              </p>
             </section>
             <section>
               <h2>3. Productos</h2>
@@ -790,7 +779,7 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
             <button
               type="button"
               className="primary-button"
-              disabled={frozen || !customer}
+              disabled={frozen || !customer || (!doc?.documentNumber && !number)}
               onClick={save}
             >
               {busy ? 'Guardando…' : 'Guardar borrador'}

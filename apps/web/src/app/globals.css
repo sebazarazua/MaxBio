@@ -622,10 +622,16 @@
   margin-bottom: 24px;
 }
 .auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   color: var(--accent);
   font-size: 23px;
   font-weight: 700;
   margin-bottom: 28px;
+}
+.auth-brand .brand-logo {
+  width: 80px;
 }
 .auth-card form {
   display: flex;
@@ -777,16 +783,12 @@ p {
   line-height: 1.25;
   letter-spacing: -0.8px;
 }
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
-  background: var(--accent);
-  color: white;
-  font-size: 25px;
-  font-weight: 700;
+.brand-logo {
+  display: block;
+  flex: none;
+  width: 56px;
+  height: auto;
+  object-fit: contain;
 }
 .brand-description {
   display: block;
@@ -1434,5 +1436,109 @@ main:has(.template-current) {
   }
   .geometry-workspace .print-canvas-scroll {
     max-height: 70vh;
+  }
+}
+
+/* Wider paper workspaces, scoped to remito entry and the visual template editor. */
+main:has(.delivery-workspace),
+main:has(.geometry-workspace) {
+  max-width: none;
+  padding-inline: 20px;
+  padding-top: 28px;
+}
+.delivery-workspace {
+  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.6fr);
+  gap: 20px;
+}
+.delivery-live-preview {
+  padding: 12px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.delivery-live-preview .print-canvas-fit {
+  padding: 0;
+  max-width: 780px;
+  margin-inline: auto;
+}
+.delivery-live-preview .live-background {
+  max-width: 780px;
+  margin-inline: auto;
+}
+.geometry-workspace {
+  grid-template-columns: minmax(0, 2.6fr) minmax(240px, 1fr);
+  gap: 20px;
+}
+.geometry-workspace .print-canvas-fit {
+  padding: 0;
+}
+.print-geometry-hits.is-dragging,
+.print-geometry-hits.is-dragging rect {
+  cursor: grabbing;
+}
+.print-warning-details {
+  margin-top: 12px;
+}
+.print-warning-details summary {
+  font-weight: 600;
+  cursor: pointer;
+  padding: 10px 0;
+}
+.remito-expanded-dialog {
+  width: min(1200px, calc(100vw - 32px));
+  max-width: none;
+  height: calc(100dvh - 32px);
+  max-height: none;
+  padding: 16px;
+  border: 0;
+  border-radius: 12px;
+  background: #edf0ef;
+}
+.remito-expanded-dialog::backdrop {
+  background: #102820c9;
+}
+.remito-expanded-dialog header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  position: sticky;
+  top: -16px;
+  z-index: 1;
+  background: #edf0ef;
+  padding: 12px 0;
+}
+.remito-expanded-dialog .print-canvas-fit {
+  max-width: 1040px;
+  margin-inline: auto;
+  padding: 0;
+}
+.remito-expanded-dialog button {
+  min-height: 48px;
+}
+@media (max-width: 1150px) and (min-width: 951px) {
+  .delivery-workspace {
+    grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.2fr);
+  }
+}
+@media (max-width: 950px) {
+  .delivery-workspace,
+  .geometry-workspace {
+    grid-template-columns: 1fr;
+  }
+  .delivery-live-preview {
+    max-height: none;
+    overflow: visible;
+  }
+}
+@media (max-width: 700px) {
+  main:has(.delivery-workspace),
+  main:has(.geometry-workspace) {
+    padding-inline: 12px;
+  }
+  .remito-expanded-dialog {
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+    padding: 10px;
   }
 }

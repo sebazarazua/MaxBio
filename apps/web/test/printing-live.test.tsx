@@ -34,13 +34,22 @@ const { LiveDeliveryPreview } = await import('../src/components/printing/live-de
 const { PrintGeometryEditor } = await import('../src/components/printing/geometry-editor.js');
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
   url: 'http://localhost:3000',
+  pretendToBeVisual: true,
 });
 Object.assign(globalThis, {
   window: dom.window,
   document: dom.window.document,
   HTMLElement: dom.window.HTMLElement,
+  requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
+  cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
   IS_REACT_ACT_ENVIRONMENT: true,
 });
+dom.window.HTMLDialogElement.prototype.showModal = function () {
+  this.open = true;
+};
+dom.window.HTMLDialogElement.prototype.close = function () {
+  this.open = false;
+};
 const originalFetch = globalThis.fetch;
 let root: Root | undefined;
 let container: HTMLDivElement;
@@ -202,7 +211,7 @@ test('Editor visual: nombres humanos, click, drag en mm y coordenadas dentro de 
     [...precise.querySelectorAll('label')].some((label) => label.textContent?.includes('X (mm)')),
   );
   await act(async () => {
-    await wait(220);
+    await wait(350);
   });
   const svg = container.querySelector('svg')!;
   svg.getBoundingClientRect = () => ({
@@ -232,7 +241,7 @@ test('Editor visual: nombres humanos, click, drag en mm y coordenadas dentro de 
     svg.dispatchEvent(new dom.window.MouseEvent('pointerup', { bubbles: true }));
   });
   await act(async () => {
-    await wait(220);
+    await wait(350);
   });
   const moved = bodies.at(-1)!.definition.fields.find((f) => f.id === 'customer')!;
   assert.equal(moved.xMm, 34);
@@ -256,4 +265,253 @@ test('Sin plantilla activa no usa borradores ni pide renders operativos', async 
   });
   assert.match(container.textContent!, /Todavía no hay una plantilla de remito lista para usar/);
   assert.equal(renders, 0);
+});
+
+function pointer(target: Element, type: string, x = 10, y = 20) {
+  target.dispatchEvent(
+    new dom.window.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }),
+  );
+}
+function svgSize() {
+  const svg = container.querySelector('svg')!;
+  svg.getBoundingClientRect = () => ({
+    width: 406,
+    height: 542,
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    right: 406,
+    bottom: 542,
+    toJSON: () => ({}),
+  });
+  svg.setPointerCapture = () => {};
+  svg.hasPointerCapture = () => false;
+  return svg;
+}
+function geometryReply(body: { definition: typeof template.definition }, letter = 'A') {
+  return {
+    ...result(letter),
+    envelopes: body.definition.fields.map((f) => ({
+      region: f.id,
+      rect: { xMm: f.xMm, yMm: f.yMm, widthMm: 30, heightMm: 10 },
+      state: 'SAFE',
+    })),
+  };
+}
+
+test('Drag stress: 120 movimientos sin requests, commit único, cancelaciones y clamp', async () => {
+  const bodies: { definition: typeof template.definition }[] = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    return Response.json(geometryReply(body));
+  };
+  await mount(<PrintGeometryEditor template={template} calibration={null} onSaved={() => {}} />);
+  await act(async () => {
+    await wait(350);
+  });
+  const svg = svgSize();
+  const customer = () => container.querySelector('[aria-label="Mover Cliente"]')!;
+  const initial = bodies[0]!.definition.fields.find((f) => f.id === 'customer')!;
+  await act(async () => {
+    pointer(customer(), 'pointerdown');
+  });
+  for (let n = 0; n < 120; n++)
+    await act(async () => {
+      pointer(svg, 'pointermove', n % 2 ? 10 + n : 10 - n, 20 + (n % 23));
+    });
+  await act(async () => {
+    pointer(svg, 'pointermove', 30, 40);
+    await wait(380);
+  });
+  assert.equal(bodies.length, 1, 'No geometry-preview mientras el pointer sigue capturado');
+  assert.equal(customer().getAttribute('aria-pressed'), 'true');
+  assert.equal(svg.style.pointerEvents, 'auto');
+  assert.equal(
+    Number(customer().getAttribute('x')),
+    Math.min(203 - initial.widthMm, initial.xMm + 10),
+  );
+  await act(async () => {
+    pointer(svg, 'pointerup', 30, 40);
+  });
+  await act(async () => {
+    await wait(350);
+  });
+  assert.equal(bodies.length, 2);
+  assert.equal(
+    bodies[1]!.definition.fields.find((f) => f.id === 'customer')!.xMm,
+    Math.min(203 - initial.widthMm, initial.xMm + 10),
+  );
+  for (const cancel of ['pointercancel', 'lostpointercapture', 'Escape', 'change-field']) {
+    await act(async () => {
+      pointer(customer(), 'pointerdown');
+      pointer(svg, 'pointermove', 200, 200);
+    });
+    await act(async () => {
+      if (cancel === 'Escape')
+        window.dispatchEvent(
+          new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+        );
+      else if (cancel === 'change-field') {
+        const select = container.querySelector('select')!;
+        select.value = 'products';
+        select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+      } else pointer(svg, cancel);
+    });
+    await act(async () => {
+      await wait(350);
+    });
+    assert.equal(bodies.length, 2, cancel);
+  }
+  await act(async () => {
+    pointer(customer(), 'pointerdown');
+    pointer(svg, 'pointermove', 10000, -10000);
+    pointer(svg, 'pointerup');
+  });
+  await act(async () => {
+    await wait(350);
+  });
+  const clamped = bodies.at(-1)!.definition.fields.find((f) => f.id === 'customer')!;
+  assert.ok(clamped.xMm + clamped.widthMm <= 203);
+  assert.equal(clamped.yMm, 0);
+});
+
+test('Productos resize local y spam de teclado: una reevaluación por commit', async () => {
+  const bodies: { definition: typeof template.definition }[] = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    return Response.json(geometryReply(body));
+  };
+  await mount(<PrintGeometryEditor template={template} calibration={null} onSaved={() => {}} />);
+  await act(async () => {
+    await wait(350);
+  });
+  const svg = svgSize();
+  await act(async () => {
+    const select = container.querySelector('select')!;
+    select.value = 'products';
+    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  });
+  await act(async () => {
+    pointer(container.querySelector('circle')!, 'pointerdown');
+    for (let n = 0; n < 120; n++) pointer(svg, 'pointermove', 10 + n, 20 + n);
+    await wait(380);
+  });
+  assert.equal(bodies.length, 1);
+  await act(async () => {
+    pointer(svg, 'pointerup');
+  });
+  await act(async () => {
+    await wait(350);
+  });
+  assert.equal(bodies.length, 2);
+  const r = bodies[1]!.definition.productRegion;
+  assert.deepEqual(r.columns, template.definition.productRegion.columns);
+  assert.equal(r.rowHeightMm, template.definition.productRegion.rowHeightMm);
+  assert.ok(r.widthMm + r.xMm <= 203);
+  assert.ok(r.heightMm + r.yMm <= 271);
+  const customer = container.querySelector('[aria-label="Mover Cliente"]')!;
+  await act(async () => {
+    for (let n = 0; n < 10; n++)
+      customer.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+      );
+  });
+  await act(async () => {
+    await wait(350);
+  });
+  assert.equal(bodies.length, 3);
+  assert.equal(
+    bodies.at(-1)!.definition.fields.find((f) => f.id === 'customer')!.yMm,
+    template.definition.fields.find((f) => f.id === 'customer')!.yMm + 5,
+  );
+});
+
+test('Vista ampliada con Escape y advertencias plegadas; BLOCKED visible', async () => {
+  globalThis.fetch = async (url) =>
+    String(url).endsWith('/config')
+      ? Response.json({ activeTemplate: template, calibrations: [] })
+      : Response.json({
+          ...result(),
+          evaluation: {
+            ...evaluation,
+            state: 'BLOCKED',
+            issues: [
+              { region: 'customer', state: 'WARNING', message: 'technical' },
+              { region: 'dateDay', state: 'WARNING', message: 'technical' },
+              { region: 'products', state: 'BLOCKED', message: 'technical' },
+            ],
+          },
+        });
+  await mount(<LiveDeliveryPreview input={{ lines: [] }} onValidation={() => {}} />);
+  await act(async () => {
+    await wait(260);
+  });
+  const details = container.querySelector('details')!;
+  assert.equal(details.open, false);
+  assert.match(details.textContent!, /Hay 2 datos/);
+  assert.match(container.querySelector('[role="alert"]')!.textContent!, /Hay más productos/);
+  await act(async () => {
+    (container.querySelector('button') as HTMLButtonElement).click();
+  });
+  const dialog = container.querySelector('dialog')!;
+  assert.equal(dialog.open, true);
+  assert.equal(document.body.style.overflow, 'hidden');
+  await act(async () => {
+    dialog.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  assert.equal(dialog.open, false);
+  assert.equal(document.body.style.overflow, '');
+});
+
+test('Editor latest-wins: une réponse vieja no reemplaza el PDF actual y refresh no corta interacción', async () => {
+  const pending: {
+    body: { definition: typeof template.definition };
+    signal: AbortSignal;
+    resolve: (r: Response) => void;
+  }[] = [];
+  let first = true;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (first) {
+      first = false;
+      return Response.json(geometryReply(body));
+    }
+    return new Promise<Response>((resolve) =>
+      pending.push({ body, signal: init!.signal!, resolve }),
+    );
+  };
+  await mount(<PrintGeometryEditor template={template} calibration={null} onSaved={() => {}} />);
+  await act(async () => {
+    await wait(350);
+  });
+  const svg = svgSize();
+  const customer = container.querySelector('[aria-label="Mover Cliente"]')!;
+  await act(async () => {
+    customer.dispatchEvent(
+      new dom.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    );
+  });
+  await act(async () => {
+    await wait(350);
+  });
+  assert.equal(svg.style.pointerEvents, 'auto');
+  await act(async () => {
+    customer.dispatchEvent(
+      new dom.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    );
+  });
+  await act(async () => {
+    await wait(350);
+  });
+  assert.equal(pending[0]!.signal.aborted, true);
+  await act(async () => {
+    pending[1]!.resolve(Response.json(geometryReply(pending[1]!.body, 'C')));
+  });
+  await act(async () => {
+    pending[0]!.resolve(Response.json(geometryReply(pending[0]!.body, 'B')));
+  });
+  assert.equal(container.querySelector('[data-pdf]')!.getAttribute('data-pdf'), 'C');
 });

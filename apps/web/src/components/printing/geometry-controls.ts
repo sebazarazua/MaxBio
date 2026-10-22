@@ -27,3 +27,29 @@ export function moveGeometry(
   }
   return next;
 }
+
+export function geometryBox(definition: PrintDefinition, region: string) {
+  return definition.fields.find((f) => f.id === region) ?? definition.productRegion;
+}
+export function resizeProducts(
+  definition: PrintDefinition,
+  dx: number,
+  dy: number,
+  width: number,
+  height: number,
+) {
+  const next = structuredClone(definition),
+    r = next.productRegion;
+  r.widthMm = Math.min(
+    width - r.xMm,
+    Math.max(
+      r.columns.reduce((n, c) => n + c.widthMm, 0),
+      Math.round((r.widthMm + dx) * 10) / 10,
+    ),
+  );
+  r.heightMm = Math.min(
+    height - r.yMm,
+    Math.max(r.rowHeightMm, Math.round((r.heightMm + dy) * 10) / 10),
+  );
+  return next;
+}

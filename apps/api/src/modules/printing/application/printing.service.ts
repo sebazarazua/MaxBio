@@ -580,7 +580,7 @@ export class PrintingService {
       template,
       background,
       mode: 'PREVIEW',
-      guides: true,
+      guides: false,
     });
     return {
       pdfBase64: Buffer.from(bytes).toString('base64'),

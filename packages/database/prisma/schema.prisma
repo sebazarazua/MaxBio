@@ -49,6 +49,7 @@ model Organization {
   inventoryCountLines     InventoryCountLine[]
   inventoryMovements      InventoryMovement[]
   inventoryMovementLines  InventoryMovementLine[]
+  deliveryNoteNumbering DeliveryNoteNumbering?
   deliveryNotes DeliveryNote[]
   deliveryNoteLines DeliveryNoteLine[]
   deliveryNoteAllocations DeliveryNoteAllocation[]
@@ -1087,4 +1088,15 @@ model PrintArtifact {
 
   @@unique([organizationId, id])
   @@index([organizationId, deliveryNoteId, generatedAt, id])
+}
+
+model DeliveryNoteNumbering {
+  organizationId String @id @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  prefix String @db.VarChar(12)
+  nextNumber BigInt
+  numberWidth Int
+  version Int @default(1)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 }

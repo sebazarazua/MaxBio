@@ -25,6 +25,10 @@ interface AuditInput {
     errors?: number;
     conflicts?: number;
     missing?: number;
+    previousPrefix?: string;
+    prefix?: string;
+    previousNextNumber?: string;
+    nextNumber?: string;
   };
 }
 
@@ -64,6 +68,15 @@ export class AuditService {
       if (event.metadata?.mode !== 'PARTIAL' && event.metadata?.mode !== 'COMPLETE')
         throw new Error('Invalid audit mode');
       metadata.mode = event.metadata.mode;
+    }
+    if (event.action === 'DELIVERY_NOTE_NUMBERING_CHANGED') {
+      for (const key of ['previousPrefix', 'prefix', 'previousNextNumber', 'nextNumber'] as const) {
+        const value = event.metadata?.[key];
+        if (value !== undefined) {
+          if (!/^[0-9]{1,13}$/.test(value)) throw new Error('Invalid numbering audit');
+          metadata[key] = value;
+        }
+      }
     }
     return tx.auditEvent.create({
       data: {

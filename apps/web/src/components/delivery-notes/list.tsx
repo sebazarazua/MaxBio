@@ -5,6 +5,7 @@ import { deliveryNoteListSchema } from '@maxbio/contracts';
 import { catalogFetch, humanError } from '@/lib/catalog-api';
 import { Feedback, Pagination, SearchBar, useSearch } from '../catalog/common';
 import { documentLabels } from '../inventory/common';
+import { DeliveryNoteNumberingSettings } from './numbering-settings';
 import { useWorkspace } from '../workspace';
 export function DeliveryNotesList() {
   const { isAdmin } = useWorkspace();
@@ -57,6 +58,7 @@ export function DeliveryNotesList() {
           <Link href="/remitos/impresion">Configurar impresión sobre talonario</Link>
         </p>
       )}
+      {isAdmin && <DeliveryNoteNumberingSettings />}
       <SearchBar
         state={search}
         placeholder="Número, cliente, CUIT, paciente, producto, lote o serie"

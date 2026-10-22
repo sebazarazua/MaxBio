@@ -10,6 +10,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
 } from '@nestjs/common';
@@ -20,6 +21,7 @@ import {
   deliveryNoteConfirmSchema,
   deliveryNoteListQuerySchema,
   versionInputSchema,
+  deliveryNoteNumberingInputSchema,
 } from '@maxbio/contracts';
 import type { AuthenticatedRequest } from '../../../common/auth/request-context.js';
 import { Roles } from '../../../common/auth/roles.decorator.js';
@@ -40,6 +42,15 @@ function actor(r: AuthenticatedRequest) {
 @Controller('delivery-notes')
 export class DeliveryNotesController {
   constructor(@Inject(DeliveryNotesService) private readonly service: DeliveryNotesService) {}
+  @Get('numbering') numbering(@Req() r: AuthenticatedRequest) {
+    return this.service.numbering(actor(r));
+  }
+  @Put('numbering') @Roles('ADMIN') configureNumbering(
+    @Req() r: AuthenticatedRequest,
+    @Body() body: unknown,
+  ) {
+    return this.service.configureNumbering(actor(r), parse(deliveryNoteNumberingInputSchema, body));
+  }
   @Post('search') @HttpCode(200) search(@Req() r: AuthenticatedRequest, @Body() body: unknown) {
     return this.service.list(actor(r), parse(deliveryNoteListQuerySchema, body));
   }

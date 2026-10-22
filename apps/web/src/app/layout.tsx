@@ -6,6 +6,10 @@ export const metadata: Metadata = {
   title: { default: 'MaxBio | Inicio', template: '%s | MaxBio' },
   description: 'Espacio de trabajo de MaxBio.',
   robots: { index: false, follow: false },
+  icons: {
+    icon: { url: '/brand/maxbio-logo.png', type: 'image/png' },
+    apple: { url: '/brand/maxbio-logo.png', type: 'image/png' },
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

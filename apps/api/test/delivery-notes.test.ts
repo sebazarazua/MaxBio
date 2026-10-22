@@ -39,12 +39,18 @@ test('Remitos: strict contracts, internal fields, dates, document number and qua
     { documentPrefix: 1, documentNumber: 3897 },
   ])
     assert.equal(deliveryNoteCreateSchema.safeParse({ ...v, ...fields }).success, false);
-  const parsed = deliveryNoteCreateSchema.parse({
-    ...v,
-    documentPrefix: '00001',
-    documentNumber: '00003897',
-  });
-  assert.equal(parsed.documentPrefix + '-' + parsed.documentNumber, '00001-00003897');
+  assert.equal(
+    deliveryNoteCreateSchema.safeParse({
+      ...v,
+      documentPrefix: '00001',
+      documentNumber: '00003897',
+    }).success,
+    false,
+  );
+  assert.equal(
+    deliveryNoteUpdateSchema.safeParse({ ...v, expectedVersion: 1, documentNumber: '1' }).success,
+    false,
+  );
   for (const quantity of ['0', '-1', '1e2', 'NaN', '1.0000001', '1000000001'])
     assert.equal(
       deliveryNoteCreateSchema.safeParse({

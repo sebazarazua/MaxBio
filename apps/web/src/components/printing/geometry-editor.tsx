@@ -1,6 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import {
   printGeometryPreviewSchema,
   printTemplateCreateSchema,
@@ -20,10 +26,17 @@ import {
 } from './print-labels.ts';
 import { printingJson } from '../../lib/printing-api.ts';
 import { PdfPreview } from './pdf-preview.tsx';
-import { moveGeometry, screenDeltaMm, selectedColumn } from './geometry-controls.ts';
+import {
+  moveGeometry,
+  screenDeltaMm,
+  selectedColumn,
+  geometryBox,
+  resizeProducts,
+} from './geometry-controls.ts';
 
 type Preview = {
   definition: PrintDefinition;
+  contextKey: string;
   calibrationId: string;
   data: PrintGeometryPreview;
   bytes: Uint8Array;
@@ -42,12 +55,21 @@ export function PrintGeometryEditor({
   const [definition, setDefinition] = useState(template.definition);
   const [selected, setSelected] = useState(template.definition.fields[0]?.id ?? 'products');
   const [preview, setPreview] = useState<Preview>();
-  const [rendered, setRendered] = useState<Uint8Array>();
+  const [displayed, setDisplayed] = useState<Preview>();
+  const [interaction, setInteraction] = useState<PrintDefinition>();
+  const [dragging, setDragging] = useState(false);
+  const sequence = useRef(0);
+  const validated = useRef<Preview>(undefined);
+  const frame = useRef<number | null>(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const saveGuard = useRef(false);
   const drag = useRef<{
+    pointerId: number;
+    svg: SVGSVGElement;
+    lastX: number;
+    lastY: number;
     x: number;
     y: number;
     width: number;
@@ -59,22 +81,35 @@ export function PrintGeometryEditor({
   const calibrationId = calibration?.id ?? '';
   const noteId = note?.id;
   const noteVersion = note?.version;
+  const contextKey = [template.id, noteId, noteVersion, calibrationId].join(':');
   useEffect(() => {
-    let alive = true;
+    const controller = new AbortController();
+    const request = ++sequence.current;
+    if (
+      dragging ||
+      (validated.current?.definition === definition && validated.current?.contextKey === contextKey)
+    )
+      return;
     const timer = setTimeout(() => {
       const path = noteId
         ? `delivery-notes/${noteId}/geometry-preview`
         : `templates/${template.id}/geometry-preview`;
-      void printingJson(path, printGeometryPreviewSchema, {
-        ...(noteId ? { templateRevisionId: template.id, expectedVersion: noteVersion } : {}),
-        calibrationId: calibrationId || null,
-        definition,
-      })
+      void printingJson(
+        path,
+        printGeometryPreviewSchema,
+        {
+          ...(noteId ? { templateRevisionId: template.id, expectedVersion: noteVersion } : {}),
+          calibrationId: calibrationId || null,
+          definition,
+        },
+        controller.signal,
+      )
         .then((data) => {
-          if (alive) {
+          if (!controller.signal.aborted && request === sequence.current) {
             setPreview({
               definition,
               calibrationId,
+              contextKey,
               data,
               bytes: Uint8Array.from(atob(data.pdfBase64), (c) => c.charCodeAt(0)),
             });
@@ -82,21 +117,101 @@ export function PrintGeometryEditor({
           }
         })
         .catch((e: unknown) => {
-          if (alive)
+          if (!controller.signal.aborted && request === sequence.current)
             setError(e instanceof Error ? e.message : 'No pudimos recalcular la geometría.');
         });
-    }, 180);
+    }, 300);
     return () => {
-      alive = false;
+      controller.abort();
       clearTimeout(timer);
     };
-  }, [definition, calibrationId, template.id, noteId, noteVersion]);
-  const bytes = preview?.bytes;
-  const onReady = useCallback(() => setRendered(bytes), [bytes]);
+  }, [definition, calibrationId, template.id, noteId, noteVersion, dragging, contextKey]);
+  const onReady = useCallback(() => {
+    if (!preview) return;
+    validated.current = preview;
+    setDisplayed(preview);
+  }, [preview]);
   const current =
-    preview?.definition === definition &&
-    preview?.calibrationId === calibrationId &&
-    rendered === bytes;
+    displayed?.definition === definition && displayed?.contextKey === contextKey && !dragging;
+  const visual = interaction ?? definition;
+  function cancelDrag() {
+    const start = drag.current;
+    drag.current = null;
+    if (frame.current !== null) {
+      cancelAnimationFrame(frame.current);
+      frame.current = null;
+    }
+    if (start && start.svg.hasPointerCapture(start.pointerId))
+      start.svg.releasePointerCapture(start.pointerId);
+    setInteraction(undefined);
+    setDragging(false);
+  }
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && drag.current) {
+        event.preventDefault();
+        cancelDrag();
+      }
+    };
+    window.addEventListener('keydown', escape);
+    return () => {
+      window.removeEventListener('keydown', escape);
+      const start = drag.current;
+      drag.current = null;
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      if (start?.svg.hasPointerCapture(start.pointerId))
+        start.svg.releasePointerCapture(start.pointerId);
+    };
+  }, []);
+  function selectRegion(region: string) {
+    if (drag.current) cancelDrag();
+    setSelected(region);
+  }
+  function beginDrag(event: ReactPointerEvent<SVGElement>, region: string, resize = false) {
+    if (saving || event.button !== 0) return;
+    event.preventDefault();
+    if (drag.current) cancelDrag();
+    setSelected(region);
+    const svg = event.currentTarget.ownerSVGElement!;
+    const size = svg.getBoundingClientRect();
+    if (!size.width || !size.height) return;
+    drag.current = {
+      pointerId: event.pointerId,
+      svg,
+      x: event.clientX,
+      y: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      width: size.width,
+      height: size.height,
+      region,
+      definition,
+      resize,
+    };
+    svg.setPointerCapture(event.pointerId);
+    setDragging(true);
+  }
+  function dragDefinition(start: NonNullable<typeof drag.current>) {
+    const dx = screenDeltaMm(start.lastX - start.x, start.width, template.pageWidthMm);
+    const dy = screenDeltaMm(start.lastY - start.y, start.height, template.pageHeightMm);
+    return start.resize
+      ? resizeProducts(start.definition, dx, dy, template.pageWidthMm, template.pageHeightMm)
+      : moveGeometry(
+          start.definition,
+          start.region,
+          dx,
+          dy,
+          template.pageWidthMm,
+          template.pageHeightMm,
+        );
+  }
+  function finishDrag(event: ReactPointerEvent<SVGSVGElement>) {
+    const start = drag.current;
+    if (!start || event.pointerId !== start.pointerId) return;
+    const next = dragDefinition(start);
+    cancelDrag();
+    if (JSON.stringify(next) !== JSON.stringify(start.definition)) setDefinition(next);
+  }
   const columnIndex = selectedColumn(definition, selected);
   const field = definition.fields.find((f) => f.id === selected);
   const box = field ?? definition.productRegion;
@@ -171,7 +286,7 @@ export function PrintGeometryEditor({
     }
   }
   const status = current
-    ? preview?.data.envelopes.find((e) => e.region === selected)?.state
+    ? displayed?.data.envelopes.find((e) => e.region === selected)?.state
     : undefined;
   return (
     <section className="catalog-panel">
@@ -213,152 +328,100 @@ export function PrintGeometryEditor({
               </p>
               <PdfPreview bytes={preview.bytes} onReady={onReady} fit>
                 <svg
-                  className="print-geometry-hits"
+                  className={'print-geometry-hits' + (dragging ? ' is-dragging' : '')}
                   viewBox={`0 0 ${template.pageWidthMm} ${template.pageHeightMm}`}
                   aria-label="Seleccionar y mover textos del remito"
-                  style={{ pointerEvents: current && !saving ? 'auto' : 'none' }}
+                  style={{ pointerEvents: saving ? 'none' : 'auto' }}
                   onPointerMove={(event) => {
                     const start = drag.current;
-                    if (!start) return;
-                    if (start.resize) {
-                      const next = structuredClone(start.definition);
-                      const r = next.productRegion;
-                      const dx = screenDeltaMm(
-                        event.clientX - start.x,
-                        start.width,
-                        template.pageWidthMm,
-                      );
-                      const dy = screenDeltaMm(
-                        event.clientY - start.y,
-                        start.height,
-                        template.pageHeightMm,
-                      );
-                      r.widthMm = Math.min(
-                        template.pageWidthMm - r.xMm,
-                        Math.max(
-                          r.columns.reduce((n, c) => n + c.widthMm, 0),
-                          r.widthMm + dx,
-                        ),
-                      );
-                      r.heightMm = Math.min(
-                        template.pageHeightMm - r.yMm,
-                        Math.max(r.rowHeightMm, r.heightMm + dy),
-                      );
-                      setDefinition(next);
-                      return;
-                    }
-                    setDefinition(
-                      moveGeometry(
-                        start.definition,
-                        start.region,
-                        screenDeltaMm(event.clientX - start.x, start.width, template.pageWidthMm),
-                        screenDeltaMm(event.clientY - start.y, start.height, template.pageHeightMm),
-                        template.pageWidthMm,
-                        template.pageHeightMm,
-                      ),
-                    );
+                    if (!start || event.pointerId !== start.pointerId) return;
+                    start.lastX = event.clientX;
+                    start.lastY = event.clientY;
+                    if (frame.current === null)
+                      frame.current = requestAnimationFrame(() => {
+                        frame.current = null;
+                        if (drag.current === start) setInteraction(dragDefinition(start));
+                      });
                   }}
-                  onPointerUp={(event) => {
-                    drag.current = null;
-                    if (event.currentTarget.hasPointerCapture(event.pointerId))
-                      event.currentTarget.releasePointerCapture(event.pointerId);
-                  }}
-                  onPointerCancel={() => {
-                    drag.current = null;
+                  onPointerUp={finishDrag}
+                  onPointerCancel={cancelDrag}
+                  onLostPointerCapture={() => {
+                    if (drag.current) cancelDrag();
                   }}
                 >
                   {selected === 'products' && (
                     <>
                       <rect
-                        x={definition.productRegion.xMm}
-                        y={definition.productRegion.yMm}
-                        width={definition.productRegion.widthMm}
-                        height={definition.productRegion.heightMm}
+                        x={visual.productRegion.xMm}
+                        y={visual.productRegion.yMm}
+                        width={visual.productRegion.widthMm}
+                        height={visual.productRegion.heightMm}
                         fill="transparent"
                         stroke="#1457b8"
                         strokeWidth="0.4"
                         strokeDasharray="2 1"
+                        onPointerDown={(event) => beginDrag(event, 'products')}
                       />
                       <circle
-                        cx={definition.productRegion.xMm + definition.productRegion.widthMm}
-                        cy={definition.productRegion.yMm + definition.productRegion.heightMm}
+                        cx={visual.productRegion.xMm + visual.productRegion.widthMm}
+                        cy={visual.productRegion.yMm + visual.productRegion.heightMm}
                         r="2"
                         fill="#1457b8"
                         role="button"
                         aria-label="Cambiar tamaño de Productos"
                         tabIndex={0}
-                        onPointerDown={(event) => {
-                          const svg = event.currentTarget.ownerSVGElement!;
-                          const size = svg.getBoundingClientRect();
-                          drag.current = {
-                            x: event.clientX,
-                            y: event.clientY,
-                            width: size.width,
-                            height: size.height,
-                            region: 'products',
-                            definition,
-                            resize: true,
-                          };
-                          svg.setPointerCapture(event.pointerId);
-                        }}
+                        onPointerDown={(event) => beginDrag(event, 'products', true)}
                       />
                     </>
                   )}
-                  {preview.data.envelopes.map(({ region, rect }) => (
-                    <rect
-                      key={region}
-                      x={rect.xMm}
-                      y={rect.yMm}
-                      width={rect.widthMm}
-                      height={rect.heightMm}
-                      fill="transparent"
-                      stroke={selected === region ? '#1457b8' : 'none'}
-                      strokeWidth={0.7}
-                      tabIndex={current ? 0 : -1}
-                      role="button"
-                      aria-label={`Mover ${printRegionLabel(region, template)}`}
-                      aria-pressed={selected === region}
-                      onFocus={() => setSelected(region)}
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        setSelected(region);
-                        event.currentTarget.focus();
-                        const svg = event.currentTarget.ownerSVGElement!;
-                        const size = svg.getBoundingClientRect();
-                        drag.current = {
-                          x: event.clientX,
-                          y: event.clientY,
-                          width: size.width,
-                          height: size.height,
-                          region,
-                          definition,
-                        };
-                        svg.setPointerCapture(event.pointerId);
-                      }}
-                      onKeyDown={(event) => {
-                        const deltas: Record<string, [number, number]> = {
-                          ArrowLeft: [-1, 0],
-                          ArrowRight: [1, 0],
-                          ArrowUp: [0, -1],
-                          ArrowDown: [0, 1],
-                        };
-                        const delta = deltas[event.key];
-                        if (!delta) return;
-                        event.preventDefault();
-                        const step = event.shiftKey ? 0.1 : 0.5;
-                        setDefinition(
-                          moveGeometry(
-                            definition,
-                            region,
-                            delta[0] * step,
-                            delta[1] * step,
-                            template.pageWidthMm,
-                            template.pageHeightMm,
-                          ),
-                        );
-                      }}
-                    />
-                  ))}
+                  {(displayed ?? preview).data.envelopes.map(({ region, rect, state }) => {
+                    const source = geometryBox((displayed ?? preview).definition, region);
+                    const target = geometryBox(visual, region);
+                    return (
+                      <rect
+                        key={region}
+                        x={rect.xMm + target.xMm - source.xMm}
+                        y={rect.yMm + target.yMm - source.yMm}
+                        width={rect.widthMm}
+                        height={rect.heightMm}
+                        fill={selected === region ? '#1457b8' : 'transparent'}
+                        fillOpacity={selected === region ? 0.12 : 0}
+                        stroke={{ SAFE: '#198038', WARNING: '#a96300', BLOCKED: '#c72c2c' }[state]}
+                        strokeWidth={selected === region ? 0.9 : 0.45}
+                        tabIndex={saving ? -1 : 0}
+                        role="button"
+                        aria-label={`Mover ${printRegionLabel(region, template)}`}
+                        aria-pressed={selected === region}
+                        onFocus={() => {
+                          if (drag.current?.region !== region) selectRegion(region);
+                        }}
+                        onPointerDown={(event) => beginDrag(event, region)}
+                        onKeyDown={(event) => {
+                          const deltas: Record<string, [number, number]> = {
+                            ArrowLeft: [-1, 0],
+                            ArrowRight: [1, 0],
+                            ArrowUp: [0, -1],
+                            ArrowDown: [0, 1],
+                          };
+                          const delta = deltas[event.key];
+                          if (!delta) return;
+                          event.preventDefault();
+                          const step = event.shiftKey ? 0.1 : 0.5;
+                          if (drag.current) cancelDrag();
+                          setDefinition((previous) =>
+                            moveGeometry(
+                              previous,
+                              region,
+                              delta[0] * step,
+                              delta[1] * step,
+                              template.pageWidthMm,
+                              template.pageHeightMm,
+                            ),
+                          );
+                        }}
+                      />
+                    );
+                  })}
                 </svg>
               </PdfPreview>
               {current && (
@@ -374,7 +437,7 @@ export function PrintGeometryEditor({
         <fieldset disabled={saving} className="print-geometry-controls">
           <label>
             Texto a ajustar
-            <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+            <select value={selected} onChange={(e) => selectRegion(e.target.value)}>
               {definition.fields.map((f) => (
                 <option key={f.id} value={f.id}>
                   {printLabels[f.binding]}
@@ -414,9 +477,9 @@ export function PrintGeometryEditor({
                   className="secondary-button"
                   aria-label={label}
                   onClick={() =>
-                    setDefinition(
+                    setDefinition((previous) =>
                       moveGeometry(
-                        definition,
+                        previous,
                         selected,
                         x,
                         y,
@@ -541,7 +604,7 @@ export function PrintGeometryEditor({
             type="button"
             className="primary-button"
             onClick={() => void save()}
-            disabled={!current}
+            disabled={!current || saving}
           >
             Guardar cambios en borrador
           </button>

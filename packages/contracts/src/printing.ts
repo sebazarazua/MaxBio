@@ -7,6 +7,16 @@ export const printDraftPreviewInputSchema = z
   .omit({ id: true })
   .partial()
   .extend({
+    documentPrefix: z
+      .string()
+      .regex(/^[0-9]{1,12}$/)
+      .nullable()
+      .optional(),
+    documentNumber: z
+      .string()
+      .regex(/^[0-9]{1,12}$/)
+      .nullable()
+      .optional(),
     lines: z
       .array(deliveryNoteLineInputSchema.omit({ id: true }))
       .max(50)
