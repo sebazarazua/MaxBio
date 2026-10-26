@@ -15,6 +15,8 @@ import type {
   InventoryConfirm,
   InventoryPolicyInput,
   InventoryAdjustment,
+  InventoryPhysicalMatch,
+  InventoryPhysicalMatchInput,
 } from '@maxbio/contracts';
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
 import { AuditService } from '../../audit/audit.service.js';
@@ -29,8 +31,12 @@ import {
   businessDate,
   EXPIRING_SOON_DAYS,
 } from '../domain/quantity.js';
+import { positionOutboundBlock } from '../domain/outbound.js';
 
 export type DocumentKind = 'receipts' | 'counts';
+type PhysicalMatchReason = InventoryPhysicalMatch['reasonCodes'][number];
+// One Product's positive positions for a lot/serial/date; bounded instead of silently truncated.
+const MAX_MATCH_POSITIONS = 2000;
 type Tx = Prisma.TransactionClient;
 const named = { id: true, name: true } as const;
 const productSelect = { id: true, name: true, unitOfMeasure: true } as const;
@@ -952,20 +958,27 @@ export class InventoryService {
           throw new BadRequestException('Revisá las cantidades seleccionadas.');
         if (b.productId !== p.id || b.organizationId !== c.organizationId)
           throw new NotFoundException();
-        if (b.location.archivedAt || b.condition !== 'USABLE')
-          throw new ConflictException('La existencia seleccionada no está disponible para salida.');
-        if (b.lot?.expirationDate && dateText(b.lot.expirationDate)! < day)
+        const block = positionOutboundBlock(
+          policy!,
+          {
+            locationArchived: Boolean(b.location.archivedAt),
+            condition: b.condition,
+            lotNumber: b.lot?.lotNumber ?? null,
+            expirationDate: dateText(b.lot?.expirationDate ?? null),
+            hasSerial: Boolean(b.serialId),
+          },
+          day,
+        );
+        if (block === 'EXPIRED')
           throw new ConflictException(
             'El lote seleccionado está vencido y no está disponible para salida.',
           );
-        if (
-          (policy!.lotRequired && !b.lot?.lotNumber) ||
-          (policy!.expirationRequired && !b.lot?.expirationDate) ||
-          policy!.serialRequired !== Boolean(b.serialId)
-        )
+        if (block === 'POLICY_MISMATCH')
           throw new ConflictException(
             'La existencia no cumple los datos físicos requeridos del producto.',
           );
+        if (block)
+          throw new ConflictException('La existencia seleccionada no está disponible para salida.');
         if (b.serialId) {
           if (q !== SCALE || serials.has(b.serialId))
             throw new BadRequestException(
@@ -1412,6 +1425,187 @@ export class InventoryService {
           page: q.page,
           limit: q.limit,
         };
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+  }
+  /**
+   * Exact physical match inside one tenant Product. Read-only proposal: it never creates lots,
+   * serials, balances, movements, scope claims, reservations or audit events. Delivery Note
+   * confirmation remains the authority and revalidates everything.
+   */
+  async physicalMatch(
+    c: RequestActorContext,
+    productId: string,
+    input: InventoryPhysicalMatchInput,
+  ): Promise<InventoryPhysicalMatch> {
+    const organizationId = c.organizationId;
+    const day = businessDate();
+    return this.db.client.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        const product = await tx.product.findFirst({
+          where: { organizationId, id: productId },
+          select: { id: true, archivedAt: true },
+        });
+        if (!product) throw new NotFoundException();
+        if (
+          input.locationId &&
+          !(await tx.inventoryLocation.findFirst({
+            where: { organizationId, id: input.locationId },
+            select: { id: true },
+          }))
+        )
+          throw new NotFoundException();
+        const pol = await tx.productInventoryPolicy.findUnique({
+          where: { organizationId_productId: { organizationId, productId } },
+        });
+        const result = (
+          status: InventoryPhysicalMatch['status'],
+          reasonCodes: PhysicalMatchReason[],
+          positions: InventoryPhysicalMatch['positions'] = [],
+          total = 0,
+          availableQuantity = '0',
+        ): InventoryPhysicalMatch => ({
+          status,
+          reasonCodes,
+          businessDate: day,
+          policy: pol ? this.policyView(pol) : null,
+          availableQuantity,
+          positions,
+          total,
+          page: input.page,
+          limit: input.limit,
+        });
+        // Lookups are exact on Inventory's own normalized keys; never global, contains or fuzzy.
+        const where: Prisma.InventoryBalanceWhereInput = {
+          organizationId,
+          productId,
+          quantity: { gt: 0 },
+          ...(input.locationId ? { locationId: input.locationId } : {}),
+        };
+        let conflict: PhysicalMatchReason | null = null;
+        let missing: PhysicalMatchReason = 'NO_MATCHING_STOCK';
+        if (input.serialNumber) {
+          const serial = await tx.inventorySerial.findUnique({
+            where: {
+              organizationId_productId_normalizedSerialNumber: {
+                organizationId,
+                productId,
+                normalizedSerialNumber: input.serialNumber,
+              },
+            },
+            select: { id: true },
+          });
+          if (!serial) return result('MISSING', ['SERIAL_NOT_FOUND']);
+          where.serialId = serial.id;
+          missing = 'SERIAL_NOT_IN_STOCK';
+        } else if (input.lotNumber) {
+          const lot = await tx.inventoryLot.findUnique({
+            where: {
+              organizationId_productId_normalizedLotNumber: {
+                organizationId,
+                productId,
+                normalizedLotNumber: input.lotNumber,
+              },
+            },
+          });
+          if (!lot) return result('MISSING', ['LOT_NOT_FOUND']);
+          if (input.expirationDate && dateText(lot.expirationDate) !== input.expirationDate)
+            conflict = 'LOT_EXPIRATION_CONFLICT';
+          where.lotId = lot.id;
+          missing = 'LOT_NOT_IN_STOCK';
+        } else
+          where.lot = { is: { expirationDate: new Date(input.expirationDate + 'T00:00:00.000Z') } };
+        const rows = await tx.inventoryBalance.findMany({
+          where,
+          include: {
+            location: { select: { id: true, name: true, archivedAt: true } },
+            lot: true,
+            serial: true,
+          },
+          orderBy: [{ lot: { expirationDate: { sort: 'asc', nulls: 'last' } } }, { id: 'asc' }],
+          take: MAX_MATCH_POSITIONS + 1,
+        });
+        if (rows.length > MAX_MATCH_POSITIONS)
+          throw new BadRequestException(
+            'Hay demasiadas existencias compatibles. Indicá el lote o la serie para acotar la búsqueda.',
+          );
+        if (!rows.length) return result('MISSING', [missing]);
+        if (input.serialNumber) {
+          const registered = rows[0]!;
+          if (input.lotNumber && registered.lot?.lotNumber !== input.lotNumber)
+            conflict = 'SERIAL_LOT_CONFLICT';
+          else if (
+            input.expirationDate &&
+            dateText(registered.lot?.expirationDate ?? null) !== input.expirationDate
+          )
+            conflict = 'SERIAL_EXPIRATION_CONFLICT';
+        }
+        const scopes = new Map(
+          (
+            await tx.inventoryStockScope.findMany({
+              where: { organizationId, productId },
+              select: { locationId: true, activeCountSessionId: true },
+            })
+          ).map((s) => [s.locationId, s]),
+        );
+        const positions = rows.map((b) => {
+          const expirationDate = dateText(b.lot?.expirationDate ?? null);
+          const scope = scopes.get(b.locationId);
+          const reason: PhysicalMatchReason | null =
+            conflict ??
+            (product.archivedAt
+              ? 'PRODUCT_ARCHIVED'
+              : !pol
+                ? 'NO_POLICY'
+                : (positionOutboundBlock(
+                    pol,
+                    {
+                      locationArchived: Boolean(b.location.archivedAt),
+                      condition: b.condition,
+                      lotNumber: b.lot?.lotNumber ?? null,
+                      expirationDate,
+                      hasSerial: Boolean(b.serialId),
+                    },
+                    day,
+                  ) ??
+                  (!scope ? 'STOCK_REVIEW' : scope.activeCountSessionId ? 'COUNT_ACTIVE' : null)));
+          return {
+            positionId: b.id,
+            quantity: quantity(amount(b.quantity.toString())),
+            location: { id: b.location.id, name: b.location.name },
+            lotId: b.lotId,
+            lotNumber: b.lot?.lotNumber ?? null,
+            expirationDate,
+            serialId: b.serialId,
+            serialNumber: b.serial?.serialNumber ?? null,
+            condition: b.condition,
+            eligible: reason === null,
+            unavailableReason: reason,
+          };
+        });
+        // Eligible first so the first page never hides a usable position behind unusable ones.
+        positions.sort((a, b) => Number(b.eligible) - Number(a.eligible));
+        const available = quantity(
+          positions.filter((p) => p.eligible).reduce((n, p) => n + amount(p.quantity), 0n),
+        );
+        const page = positions.slice((input.page - 1) * input.limit, input.page * input.limit);
+        if (conflict) return result('CONFLICT', [conflict], page, positions.length, '0');
+        if (!positions.some((p) => p.eligible))
+          return result(
+            'UNAVAILABLE',
+            [...new Set(positions.map((p) => p.unavailableReason!))],
+            page,
+            positions.length,
+          );
+        return result(
+          input.serialNumber ? 'EXACT' : 'CHOICES',
+          [],
+          page,
+          positions.length,
+          available,
+        );
       },
       { isolationLevel: 'RepeatableRead' },
     );

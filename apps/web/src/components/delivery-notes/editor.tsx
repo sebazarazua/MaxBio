@@ -11,12 +11,28 @@ import {
   deliveryNoteCreateSchema,
   deliveryNoteUpdateSchema,
   inventoryStockDetailSchema,
+  inventoryPhysicalMatchSchema,
+  physicalMatchReasonMessages,
   type DeliveryNoteView,
   type DeliveryNoteCreate,
   type ProductView,
   type InventoryStockDetail,
+  type InventoryPhysicalMatch,
+  type ScanInput,
+  type ScanInterpretation,
 } from '@maxbio/contracts';
 import { catalogFetch, CatalogHttpError, humanError } from '@/lib/catalog-api';
+import { inventoryFetch } from '@/lib/inventory-api';
+import { pastedReadingProblem } from '@/lib/gs1-capture';
+import {
+  allocatedByPosition,
+  decimal,
+  hasPhysicalData,
+  matchCriteria,
+  remaining,
+  selectionAllocations,
+  type Selection,
+} from '@/lib/delivery-match';
 import {
   Feedback,
   Field,
@@ -30,6 +46,8 @@ import { useWorkspace } from '../workspace';
 import { DeliveryPrintPanel } from '../printing/delivery-print-panel';
 import { LiveDeliveryPreview } from '../printing/live-delivery-preview';
 import { humanPrintMessage } from '../printing/print-labels';
+import { ProductIdentification } from '../catalog/identification';
+import { ScanDetails } from '../catalog/scan-details';
 type Line = DeliveryNoteCreate['lines'][number] & {
   productName: string;
   unitOfMeasure: ProductView['unitOfMeasure'];
@@ -275,12 +293,38 @@ function StockChoice({
   );
 }
 
-function ProductCapture({ add, returnTo }: { add: (p: ProductView) => void; returnTo?: string }) {
+type Linked = Pick<Line, 'quantity' | 'allocations' | 'physical'>;
+type Capture = {
+  input: ScanInput;
+  product: ProductView;
+  scan?: ScanInterpretation;
+  criteria: NonNullable<ReturnType<typeof matchCriteria>>;
+  match: InventoryPhysicalMatch | null;
+};
+const reasonList = (codes: InventoryPhysicalMatch['reasonCodes']) => [
+  ...new Set(codes.map((code) => physicalMatchReasonMessages[code])),
+];
+const positionText = (p: InventoryPhysicalMatch['positions'][number]) =>
+  [
+    p.lotNumber ? 'Lote ' + p.lotNumber : 'Sin lote',
+    p.expirationDate ? 'Vence ' + p.expirationDate.split('-').reverse().join('/') : null,
+    p.serialNumber ? 'Serie ' + p.serialNumber : null,
+    p.location.name,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+function ProductCapture({
+  add,
+  lines,
+}: {
+  add: (p: ProductView, linked?: Linked) => void;
+  lines: Line[];
+}) {
   const search = useSearch();
   const products = useResource('products?' + search.query, productListSchema);
   const [reading, setReading] = useState(''),
     [message, setMessage] = useState(''),
-    [unknown, setUnknown] = useState(false),
     [busy, setBusy] = useState(false);
   const [namespace, setNamespace] = useState<'AUTO' | 'INTERNAL_CODE'>('AUTO');
   const [supplier, setSupplier] = useState<{
@@ -288,64 +332,185 @@ function ProductCapture({ add, returnTo }: { add: (p: ProductView) => void; retu
     name: string;
     archivedAt: string | null;
   } | null>(null);
+  // Ephemeral GS1 capture: never in URL, storage, cookies or audit, and never persisted as trace.
+  const [readingScan, setReadingScan] = useState<ScanInterpretation | undefined>(undefined);
+  const [capture, setCapture] = useState<Capture | null>(null);
+  const [selection, setSelection] = useState<Selection>({});
+  const [selectionError, setSelectionError] = useState('');
+  const [pendingInput, setPendingInput] = useState<ScanInput | null>(null);
+  const [identifying, setIdentifying] = useState<ScanInput | null>(null);
   const input = useRef<HTMLInputElement>(null),
-    guard = useRef(false);
-  async function scan() {
-    if (guard.current || !reading.trim()) return;
+    guard = useRef(false),
+    attempt = useRef(0);
+  const allocated = allocatedByPosition(lines);
+  function focus() {
+    requestAnimationFrame(() => {
+      input.current?.focus();
+      input.current?.select();
+    });
+  }
+  function clearReading() {
+    attempt.current++;
+    setMessage('');
+    setReadingScan(undefined);
+    setPendingInput(null);
+    setIdentifying(null);
+  }
+  function finish(text: string) {
+    setCapture(null);
+    setSelection({});
+    setSelectionError('');
+    setReading('');
+    setMessage(text);
+    focus();
+  }
+  async function match(product: ProductView, criteria: Capture['criteria'], page: number) {
+    return inventoryFetch(`products/${product.id}/physical-match`, inventoryPhysicalMatchSchema, {
+      method: 'POST',
+      body: { ...criteria, page, limit: 20 },
+    });
+  }
+  async function resolve(value: ScanInput) {
+    if (guard.current) return;
     guard.current = true;
+    const current = ++attempt.current;
     setBusy(true);
     setMessage('');
-    setUnknown(false);
+    setReadingScan(undefined);
+    setPendingInput(null);
+    setIdentifying(null);
     try {
       const result = await catalogFetch('catalog-scans/resolve', scanResultSchema, {
         method: 'POST',
-        body: { value: reading, namespace, ...(supplier ? { supplierId: supplier.id } : {}) },
+        body: value,
       });
-      if (result.status === 'KNOWN') {
-        add(result.product);
-        const fields = result.scan?.fields;
-        // Until documentary traceability exists, scanned physical data is not kept by Remitos.
-        setMessage(
-          fields?.lotNumber || fields?.expirationDate || fields?.serialNumber
-            ? 'Producto agregado. El lote, vencimiento o serie leídos no se guardan ni se imprimen en el remito; si corresponde, elegí la existencia física en Stock.'
-            : 'Producto agregado. Elegí la existencia física.',
-        );
-        setReading('');
-      } else {
+      if (current !== attempt.current) return;
+      if (result.status !== 'KNOWN') {
         setMessage(
           result.status === 'UNKNOWN'
             ? 'Este código todavía no está identificado.'
             : result.message,
         );
-        setUnknown(['UNKNOWN', 'CANDIDATES'].includes(result.status));
+        if (result.status !== 'AMBIGUOUS') setReadingScan(result.scan);
+        if (result.status === 'UNKNOWN' || result.status === 'CANDIDATES') setPendingInput(value);
+        return;
       }
+      const criteria = matchCriteria(result.scan);
+      if (!criteria) {
+        // GTIN only (or month-only date): same flow as before, stock stays optional.
+        add(result.product);
+        setReadingScan(result.scan);
+        finish(
+          hasPhysicalData(result.scan)
+            ? 'Producto agregado. Los datos físicos escaneados no se guardarán en este Remito mientras no estén vinculados a Stock.'
+            : 'Producto agregado. Podés elegir la existencia física en Stock.',
+        );
+        return;
+      }
+      let found: InventoryPhysicalMatch | null = null;
+      try {
+        found = await match(result.product, criteria, 1);
+      } catch (e) {
+        setMessage(humanError(e) + ' Podés agregar el producto sin vincular Stock.');
+      }
+      if (current !== attempt.current) return;
+      setSelection({});
+      setSelectionError('');
+      setCapture({
+        input: value,
+        product: result.product,
+        scan: result.scan,
+        criteria,
+        match: found,
+      });
     } catch (e) {
       setMessage(humanError(e));
     } finally {
       guard.current = false;
       setBusy(false);
-      input.current?.focus();
-      input.current?.select();
+      focus();
     }
   }
+  async function scan() {
+    // Read the element itself: a scanner burst may finish after the last rendered state.
+    const value = input.current?.value ?? reading;
+    if (!value.trim()) return;
+    if (capture) {
+      setMessage(
+        'Resolvé la lectura anterior antes de escanear otra: vinculala, agregala sin vincular Stock o descartala.',
+      );
+      return;
+    }
+    await resolve({ value, namespace, ...(supplier ? { supplierId: supplier.id } : {}) });
+  }
+  async function page(next: number) {
+    if (!capture || guard.current) return;
+    guard.current = true;
+    setBusy(true);
+    try {
+      const found = await match(capture.product, capture.criteria, next);
+      setCapture({ ...capture, match: found });
+    } catch (e) {
+      setMessage(humanError(e));
+    } finally {
+      guard.current = false;
+      setBusy(false);
+    }
+  }
+  function link(selected: Selection) {
+    if (!capture?.match) return;
+    const built = selectionAllocations(
+      capture.match.positions,
+      selected,
+      allocated,
+      capture.product.unitOfMeasure,
+    );
+    if ('error' in built) {
+      setSelectionError(built.error ?? '');
+      return;
+    }
+    add(capture.product, built);
+    finish(
+      'Producto agregado con el Stock vinculado. La confirmación del Remito vuelve a validarlo.',
+    );
+  }
+  function withoutStock() {
+    if (!capture) return;
+    add(capture.product);
+    finish(
+      'Producto agregado sin vincular Stock. Los datos físicos escaneados no se guardaron en este Remito.',
+    );
+  }
+  const m = capture?.match;
+  const exact = m?.status === 'EXACT' ? m.positions[0] : undefined;
+  const exactLinked = exact ? remaining(exact, allocated) === 0n : false;
   return (
     <div className="catalog-panel">
-      <h3>Escanear o buscar producto</h3>
+      <h3>Escanear producto</h3>
       <Field label="Código del producto">
         <input
           ref={input}
           value={reading}
           maxLength={512}
           disabled={busy}
+          autoComplete="off"
+          spellCheck={false}
+          className="scanner-input code"
           onChange={(e) => {
             setReading(e.target.value);
-            setUnknown(false);
-            setMessage('');
+            clearReading();
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
-              void scan();
+              if (!e.nativeEvent.isComposing) void scan();
+            }
+          }}
+          onPaste={(e) => {
+            const problem = pastedReadingProblem(e.clipboardData.getData('text'));
+            if (problem) {
+              e.preventDefault();
+              setMessage(problem);
             }
           }}
           placeholder="Escaneá y presioná Enter"
@@ -367,11 +532,10 @@ function ProductCapture({ add, returnTo }: { add: (p: ProductView) => void; retu
             disabled={busy}
             onChange={(e) => {
               setNamespace(e.target.value as typeof namespace);
-              setUnknown(false);
-              setMessage('');
+              clearReading();
             }}
           >
-            <option value="AUTO">Código de barras</option>
+            <option value="AUTO">Código de barras (GTIN, GS1, MB- o externo)</option>
             <option value="INTERNAL_CODE">Código interno</option>
           </select>
         </Field>
@@ -379,18 +543,215 @@ function ProductCapture({ add, returnTo }: { add: (p: ProductView) => void; retu
           kind="suppliers"
           label="Proveedor del código externo"
           value={supplier}
-          change={setSupplier}
+          change={(s) => {
+            setSupplier(s);
+            clearReading();
+          }}
           allowCreate={false}
         />
       </details>
-      {message && <p role="status">{message}</p>}
-      {unknown && returnTo && (
-        <Link href={'/identificar?returnTo=' + encodeURIComponent(returnTo)}>
-          Identificar producto
-        </Link>
+      <div role="status" aria-live="polite">
+        {message && <p>{message}</p>}
+        <ScanDetails scan={readingScan} />
+        {pendingInput && !identifying && (
+          <p>
+            Primero identificá este producto; el remito en curso se conserva.{' '}
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => setIdentifying(pendingInput)}
+            >
+              Identificar producto
+            </button>
+          </p>
+        )}
+      </div>
+      {identifying && (
+        <section className="catalog-panel">
+          <h4>Identificar producto</h4>
+          <p>
+            El remito en curso se conserva mientras identificás el producto. Si recargás la página
+            tendrás que volver a escanear.
+          </p>
+          <ProductIdentification
+            embedded={{
+              scan: identifying,
+              supplier,
+              onIdentified: () => {
+                // The backend interprets the same reading again before matching Stock.
+                const value = identifying;
+                setIdentifying(null);
+                void resolve(value);
+              },
+              onCancel: () => {
+                clearReading();
+                focus();
+              },
+            }}
+          />
+        </section>
       )}
-      {unknown && !returnTo && (
-        <p>Guardá el borrador para ir a Identificar producto y poder volver al remito.</p>
+      {capture && (
+        <section className="identification-known" role="status" aria-live="polite">
+          <h4>
+            {capture.scan?.status === 'PARTIAL'
+              ? 'Producto reconocido; revisá estos datos'
+              : '✓ Producto reconocido'}
+          </h4>
+          <strong>{capture.product.name}</strong>
+          <ScanDetails scan={capture.scan} />
+          {m?.status === 'EXACT' && exact && (
+            <div className="delivery-position">
+              <p>
+                <strong>
+                  {exactLinked
+                    ? 'Esta unidad ya está vinculada en este Remito.'
+                    : 'Encontramos esta unidad en Stock.'}
+                </strong>
+              </p>
+              <p>Registrado en Stock: {positionText(exact)}</p>
+              {!exactLinked && (
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={busy}
+                  onClick={() => link({ [exact.positionId]: '1' })}
+                >
+                  Vincular al Remito
+                </button>
+              )}
+            </div>
+          )}
+          {m?.status === 'CHOICES' && (
+            <div>
+              <p>
+                <strong>
+                  Encontramos {m.total}{' '}
+                  {m.total === 1 ? 'existencia compatible' : 'existencias compatibles'} en Stock.
+                </strong>{' '}
+                Disponible: {m.availableQuantity} {quantityLabels[capture.product.unitOfMeasure]}.
+                La selección no reserva stock.
+              </p>
+              {m.positions.map((p) => {
+                const left = remaining(p, allocated);
+                return (
+                  <div className="delivery-position" key={p.positionId}>
+                    <p>
+                      {positionText(p)}
+                      <br />
+                      {p.eligible
+                        ? 'Disponible para este remito: ' + decimal(left)
+                        : physicalMatchReasonMessages[p.unavailableReason!]}
+                    </p>
+                    {p.eligible && left > 0n && p.serialId && (
+                      <label className="check-field">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(selection[p.positionId])}
+                          onChange={(e) =>
+                            setSelection({
+                              ...selection,
+                              [p.positionId]: e.target.checked ? '1' : '',
+                            })
+                          }
+                        />{' '}
+                        Elegir serie {p.serialNumber}
+                      </label>
+                    )}
+                    {p.eligible && left > 0n && !p.serialId && (
+                      <Field
+                        label={
+                          'Cantidad de ' + (p.lotNumber ? 'lote ' + p.lotNumber : 'esta existencia')
+                        }
+                      >
+                        <input
+                          inputMode="decimal"
+                          value={selection[p.positionId] ?? ''}
+                          placeholder="0"
+                          onChange={(e) =>
+                            setSelection({ ...selection, [p.positionId]: e.target.value })
+                          }
+                        />
+                      </Field>
+                    )}
+                    {p.eligible && left === 0n && <p>Ya vinculada en este Remito.</p>}
+                  </div>
+                );
+              })}
+              <Pagination
+                total={m.total}
+                page={m.page}
+                limit={m.limit}
+                change={(n) => void page(n)}
+              />
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy}
+                onClick={() => link(selection)}
+              >
+                Agregar con las existencias elegidas
+              </button>
+              {selectionError && <p role="alert">{selectionError}</p>}
+            </div>
+          )}
+          {m?.status === 'MISSING' && (
+            <p>
+              <strong>
+                El producto fue reconocido, pero esta unidad no está registrada en Stock de MaxBio.
+              </strong>{' '}
+              {reasonList(m.reasonCodes).join(' ')} Podés agregarlo igualmente al Remito.
+            </p>
+          )}
+          {m?.status === 'UNAVAILABLE' && (
+            <>
+              <p>
+                <strong>La unidad está registrada, pero no está disponible para salida.</strong>{' '}
+                {reasonList(m.reasonCodes).join(' ')}
+              </p>
+              {m.positions.map((p) => (
+                <p key={p.positionId}>Registrado en Stock: {positionText(p)}</p>
+              ))}
+            </>
+          )}
+          {m?.status === 'CONFLICT' && (
+            <>
+              <p>
+                <strong>Los datos escaneados no coinciden con los registrados en Stock.</strong>{' '}
+                {reasonList(m.reasonCodes).join(' ')} Revisá la etiqueta; no se corrige ningún dato
+                automáticamente.
+              </p>
+              {m.positions.map((p) => (
+                <p key={p.positionId}>Registrado en Stock: {positionText(p)}</p>
+              ))}
+            </>
+          )}
+          <p className="muted">
+            Los datos físicos escaneados no se guardarán en este Remito mientras no estén vinculados
+            a Stock.
+          </p>
+          <div className="actions">
+            <button
+              type="button"
+              className={m?.status === 'MISSING' ? 'primary-button' : 'secondary-button'}
+              disabled={busy}
+              onClick={withoutStock}
+            >
+              {m?.status === 'MISSING'
+                ? 'Agregar igualmente al Remito'
+                : 'Agregar sin vincular Stock'}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => finish('Lectura descartada. No se agregó nada al Remito.')}
+            >
+              Descartar lectura
+            </button>
+          </div>
+        </section>
       )}
       <Field label="Buscar producto por nombre o código">
         <input
@@ -736,8 +1097,8 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
             <section>
               <h2>3. Productos</h2>
               <ProductCapture
-                returnTo={doc && !dirty ? '/remitos/' + doc.id : undefined}
-                add={(p) => {
+                lines={lines}
+                add={(p, linked) => {
                   setLines((previous) => [
                     ...previous,
                     {
@@ -746,9 +1107,9 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
                       productName: p.name,
                       presentation: p.presentation,
                       unitOfMeasure: p.unitOfMeasure,
-                      quantity: '1',
-                      allocations: [],
-                      physical: [],
+                      quantity: linked?.quantity ?? '1',
+                      allocations: linked?.allocations ?? [],
+                      physical: linked?.physical ?? [],
                     },
                   ]);
                   setDirty(true);

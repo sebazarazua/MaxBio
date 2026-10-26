@@ -29,6 +29,7 @@ import {
   inventoryConfirmSchema,
   inventoryVersionSchema,
   inventoryAdjustmentSchema,
+  inventoryPhysicalMatchInputSchema,
 } from '@maxbio/contracts';
 import type { AuthenticatedRequest } from '../../../common/auth/request-context.js';
 import { Roles } from '../../../common/auth/roles.decorator.js';
@@ -69,6 +70,14 @@ export class InventoryController {
     @Query() q: unknown,
   ) {
     return this.inventory.history(actor(r), id, parse(catalogListQuerySchema, q));
+  }
+  // Read-only proposal; POST only because the criteria travel in a strict body.
+  @Post('products/:id/physical-match') @HttpCode(200) physicalMatch(
+    @Req() r: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() b: unknown,
+  ) {
+    return this.inventory.physicalMatch(actor(r), id, parse(inventoryPhysicalMatchInputSchema, b));
   }
   @Get('products/:id/policy') async policy(
     @Req() r: AuthenticatedRequest,

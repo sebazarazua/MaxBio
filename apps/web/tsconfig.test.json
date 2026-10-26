@@ -13,6 +13,8 @@
     "test/**/*.tsx",
     "src/components/catalog/catalog-import-preview-table.tsx",
     "src/lib/gs1-capture.ts",
-    "src/app/api/catalog/[...path]/route.ts"
+    "src/app/api/catalog/[...path]/route.ts",
+    "src/lib/delivery-match.ts",
+    "src/app/api/inventory/[...path]/route.ts"
   ]
 }

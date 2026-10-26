@@ -2,7 +2,7 @@
 
 Fecha: 26 de octubre de 2026. Estado: **diseño propuesto, no implementado**.
 
-Actualización: Stages 1–3 implementados sobre este diseño; Stages 4–5 siguen sin implementar. Ver [implementación y verificación](gs1-verification.md). El resto del documento se conserva como diseño.
+Actualización: Stages 1–4 implementados sobre este diseño; Stage 5 sigue sin implementar. Ver [implementación y verificación](gs1-verification.md). El resto del documento se conserva como diseño.
 
 HEAD analizado: `c34f8ff8ff2c3f8215348507c850b02b24bcd9a8`, branch `main`, commit `remito sin stock y mas`. Al comenzar, `git status` informó árbol limpio y branch sincronizada con `origin/main` según las referencias locales; no se hizo fetch. Commits anteriores revisados: `7bf06ba` (fix bug diseño), `3b6c938` (plantilla remitos 3), `96b797f` (plantilla remito 2), `5742465` (plantilla remito), `037476d` (Implementacion impresion sobre talonario).
 

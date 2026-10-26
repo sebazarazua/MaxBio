@@ -1,8 +1,8 @@
-# GS1 V1: implementación y verificación (Stages 1–3)
+# GS1 V1: implementación y verificación (Stages 1–4)
 
 Fecha: 26 de octubre de 2026. Base: HEAD `c34f8ff8ff2c3f8215348507c850b02b24bcd9a8` (`main`), árbol limpio salvo el diseño sin versionar. Diseño fuente: [gs1-design.md](gs1-design.md). Sin commit ni push.
 
-Implementado: **Stage 1** (parser puro + tests), **Stage 2** (Catalog / Product Identification) y **Stage 3** (Ingresar productos e Inventario inicial). **No implementado:** Stage 4 (scanner/matching en Remitos, `physical-match`) ni Stage 5 (DeliveryNoteLineTrace, migración, backfill, Printing con `physicalTraces`). Sin migraciones, sin cambios de schema y sin dependencias nuevas.
+Implementado: **Stage 1** (parser puro + tests), **Stage 2** (Catalog / Product Identification) y **Stage 3** (Ingresar productos e Inventario inicial). **Stage 4** (Remitos + matching físico exacto) se agregó después; ver §9. **No implementado:** Stage 5 (DeliveryNoteLineTrace, migración, backfill, Printing con `physicalTraces`). Sin migraciones, sin cambios de schema y sin dependencias nuevas.
 
 ## 1. Arquitectura
 
@@ -41,8 +41,8 @@ Detalles resueltos durante la implementación, sin cambiar el alcance:
 2. Un GS después de un elemento de longitud predefinida se tolera si le sigue otro AI.
 3. Variable vacía al final de un element string → `TRUNCATED_ELEMENT` (estructural); variable vacía delimitada o en HRI → `INVALID_FIELD_LENGTH` (PARTIAL si el GTIN es inequívoco). Variable > 20: `MISSING_SEPARATOR` en element string, `INVALID_FIELD_LENGTH` en HRI.
 4. INVALID/UNSUPPORTED pueden llevar `scan` para revisión efímera; KNOWN/UNKNOWN/CANDIDATES/ARCHIVED lo llevan cuando la lectura es GS1. AMBIGUOUS no cambia.
-5. Continuidad de producto desconocido: en Ingreso/Conteo la identificación se abre **dentro de la operación** (`ProductIdentification` embebido) y la captura queda en memoria; al confirmar, la misma lectura se vuelve a resolver en backend para el borrador vigente. Recargar pierde solo la captura efímera. Remitos conserva su enlace actual a `/identificar`.
-6. Editor de Remitos: único cambio, un mensaje que informa que lote/vencimiento/serie leídos no se guardan ni imprimen (§11.2). No se agregó scanner nuevo ni se tocaron líneas, allocations ni Printing.
+5. Continuidad de producto desconocido: en Ingreso/Conteo la identificación se abre **dentro de la operación** (`ProductIdentification` embebido) y la captura queda en memoria; al confirmar, la misma lectura se vuelve a resolver en backend para el borrador vigente. Recargar pierde solo la captura efímera. Remitos usa el mismo panel embebido desde Stage 4 (§9).
+6. Editor de Remitos (Stages 1–3): solo un mensaje que informaba que lote/vencimiento/serie leídos no se guardan ni imprimen (§11.2). Stage 4 lo reemplazó por el flujo de §9.
 7. Conflicto lote/vencimiento con un lote existente: lo detecta el backend actual al confirmar (409, sin sobrescribir). No se agregó consulta anticipada porque requeriría la consulta exacta de Stage 4.
 8. Perfil Tab como terminador: no implementado (no hay perfil HID homologado). Enter sigue siendo el terminador.
 
@@ -112,3 +112,70 @@ Series: lecturas del mismo grupo Product/lote/vencimiento se acumulan en la capt
 - El parser cubre solo 01/10/17/21; no es un validador GS1 completo ni certifica etiquetas, asignación de GTIN, autenticidad o cumplimiento sanitario.
 - Remitos no conserva lote/serie escaneados sin allocation hasta Stage 5.
 - Gate de colisiones: verificado solo en la base local.
+
+## 9. Stage 4: Remitos + matching físico exacto
+
+Fecha: 26 de octubre de 2026. Base: HEAD `fdbe3de8fc2279124f83ebbd6ac9528445a1a1ff` (`stage 123`), árbol limpio. Sin migración, sin cambios de schema, sin dependencias nuevas. Sin commit ni push.
+
+Principio que no cambia: **el Remito no depende de Inventory**. Cero, parte o todas las unidades pueden quedar vinculadas a Stock; sin allocations no hay movimiento. Stage 4 solo ayuda a proponer allocations reales (`DeliveryNoteAllocation`) a partir de una lectura.
+
+### 9.1 Caso de uso `physical-match`
+
+`POST /api/v1/inventory/products/:productId/physical-match` (BFF `/api/inventory/products/:id/physical-match`, alta explícita en `inventoryRouteContract`; POST solo porque los criterios viajan en un body estricto). Lectura pura: transacción `RepeatableRead` + `SET TRANSACTION READ ONLY`, sin locks, sin audit, sin crear lotes/series/balances/movimientos/scopes ni reservas. Mismos roles que la consulta de Stock (ADMIN y OPERATOR).
+
+- **Entrada** (`inventoryPhysicalMatchInputSchema`, strict): `lotNumber?`, `expirationDate?`, `serialNumber?`, `locationId?`, `page` (1), `limit` (20, máx. 100); al menos un criterio físico. No acepta organizationId, productId en body, GTIN, raw ni flags de confianza. Texto con la misma regla física de Inventory (trim, 1–128, sin controles).
+- **Scope:** `RequestActorContext.organizationId` + `productId` del path. Product o ubicación ajenos → 404. Serie/lote de otro Product u organización → `MISSING` dentro del scope pedido, sin revelar que existen en otro lado.
+- **Lookups exactos** sobre las claves normalizadas de Inventory (`normalizedSerialNumber`, `normalizedLotNumber`, únicas por org+Product): sin contains, sin case-insensitive, sin fuzzy. Fecha comparada como DATE de negocio (`YYYY-MM-DD`). Usa los índices existentes; no hizo falta ninguno nuevo.
+- **Serie:** desconocida → `MISSING SERIAL_NOT_FOUND`; sin saldo → `MISSING SERIAL_NOT_IN_STOCK`; lote o vencimiento escaneados distintos de los registrados → `CONFLICT SERIAL_LOT_CONFLICT` / `SERIAL_EXPIRATION_CONFLICT`; elegible → `EXACT` (cantidad 1).
+- **Lote sin serie:** inexistente → `MISSING LOT_NOT_FOUND`; sin saldo → `LOT_NOT_IN_STOCK`; vencimiento escaneado distinto del lote (incluido lote sin fecha) → `CONFLICT LOT_EXPIRATION_CONFLICT`; con existencias → `CHOICES` (nunca autovínculo, aunque haya una sola posición).
+- **Solo vencimiento:** filtra posiciones por fecha → `CHOICES` o `MISSING NO_MATCHING_STOCK`; nunca identifica una posición ni aplica FEFO.
+- **Elegibilidad:** la regla de posición se extrajo a `inventory/domain/outbound.ts` (`positionOutboundBlock`) y la usan tanto `postDeliveryNote` (autoridad, mismos mensajes y orden) como el match. Producto archivado, sin policy, ubicación archivada, DAMAGED, QUARANTINE, vencido, policy incompatible, conteo activo o scope faltante → posición no elegible; si ninguna es elegible → `UNAVAILABLE` con los motivos.
+- **Respuesta** (`inventoryPhysicalMatchSchema`, strict): `status`, `reasonCodes`, `businessDate`, `policy`, `availableQuantity` exacta (suma de posiciones elegibles), `positions` (positionId, quantity, location, lote, vencimiento, serie, condición, `eligible`, `unavailableReason`), `total`, `page`, `limit`. Se evalúan todas las posiciones coincidentes (máximo 2000, error explícito si se supera) y se ordenan elegibles primero antes de paginar: una posición en otra página nunca se informa como inexistente.
+
+### 9.2 Editor de Remitos
+
+El campo “Escanear producto” existente pasa a usar el flujo GS1 completo, sin parser propio: `catalog-scans/resolve` → Product + `scan`. Lectura HID, manual o pegada; Enter; sin listener global ni requests por carácter; Enter durante IME no envía; pegar varias líneas se rechaza.
+
+| Resultado                        | UI                                                                                                                                                                 |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Solo GTIN (o vencimiento día 00) | Igual que antes: agrega la línea; el selector de Stock sigue siendo opcional. Un vencimiento sin día no se usa como criterio exacto.                               |
+| EXACT                            | “Encontramos esta unidad en Stock.” + datos registrados + **Vincular al Remito** (línea cantidad 1 con su allocation).                                             |
+| CHOICES                          | “Encontramos N existencias compatibles”, ubicación/lote/vencimiento/cantidad, paginado; series por casilla, lotes con cantidad editable hasta lo disponible.       |
+| MISSING                          | “El producto fue reconocido, pero esta unidad no está registrada en Stock de MaxBio.” + **Agregar igualmente al Remito**.                                          |
+| UNAVAILABLE                      | “La unidad está registrada, pero no está disponible para salida.” + motivo humano + **Agregar sin vincular Stock**.                                                |
+| CONFLICT                         | “Los datos escaneados no coinciden con los registrados en Stock.” + datos registrados; no se corrige nada; **Agregar sin vincular Stock** o **Descartar lectura**. |
+| UNKNOWN / CANDIDATES             | **Identificar producto** abre la identificación embebida; el Remito (aunque no esté guardado) queda montado; al confirmar se vuelve a resolver la misma lectura.   |
+| INVALID / UNSUPPORTED / PARTIAL  | Mensaje humano y revisión con `ScanDetails`.                                                                                                                       |
+
+Siempre que no se vincula, la UI dice que “los datos físicos escaneados no se guardarán en este Remito mientras no estén vinculados a Stock”: **sin allocation no se persiste lote, vencimiento ni serie** (eso es Stage 5). Agregar sin Stock es siempre una acción explícita. Mientras una lectura con match está pendiente, otra lectura no la reemplaza: se pide vincularla, agregarla sin Stock o descartarla. Tras agregar, la captura se limpia y el foco vuelve al campo. Cada lectura agrega una línea nueva, como el editor actual (las líneas pueden repetirse); la cantidad documental se puede subir después y la allocation queda parcial. La disponibilidad mostrada descuenta lo ya vinculado en el propio borrador, y una serie ya vinculada no se vuelve a proponer. Respuestas tardías se descartan por número de intento.
+
+### 9.3 Confirmación y concurrencia
+
+Sin cambios de semántica: `postDeliveryNote` revalida tenant, Product, policy, ubicación, condición, vencimiento, series únicas, saldo agregado y conteo activo; crea como máximo un OUTBOUND, nunca negativos, idempotente y atómico. Un match no reserva stock: si otro Remito consumió la serie, la confirmación falla con 409 y el borrador conserva su allocation; nunca se convierte en salida sin Stock automáticamente.
+
+### 9.4 Tests Stage 4
+
+- `apps/api/test/physical-match.integration.ts` (base desechable): GS1 → resolve → EXACT → vinculación → MISSING (`SERIAL_NOT_IN_STOCK`), serie desconocida, case-sensitive, conflictos de lote y vencimiento; lote CHOICES paginado con elegibles primero, `locationId`, inexistente, conflicto de fecha, fecha sola, cantidad decimal exacta; UNAVAILABLE por DAMAGED, QUARANTINE, vencido, conteo activo, ubicación archivada y sin policy (el Remito documental igual confirma); aislamiento tenant/Product y 404; contrato estricto (400); OPERATOR y ADMIN; cero efectos laterales; Remito parcial, completo y sin stock; serie duplicada en borrador (400) y match obsoleto (409 sin degradar).
+- `apps/api/test/physical-match.test.ts`: orden de la regla de salida compartida y contrato/ruta.
+- `apps/web/test/delivery-match.test.tsx`: criterios desde el scan, aritmética exacta, disponible descontando el borrador, selección parcial/serie única, y BFF de Inventory real (allowlist, cuerpo estricto, CSRF, respuesta validada).
+
+Ubicaciones adicionales, ubicación archivada y stock sin policy se crean como fixtures directos en la base desechable porque V1 no tiene flujo multi-depósito ni permite archivar productos con stock.
+
+### 9.5 Limitaciones Stage 4
+
+- El editor de Remitos no se monta en tests de componente: el harness web compila sin el alias `@/` que usa ese editor. Su lógica está en helpers puros testeados y los flujos completos se verifican por API.
+- Hardware sin verificar, igual que en Stages 1–3.
+- Stage 5 (trazabilidad documental sin Inventory, `DeliveryNoteLineTrace`, Printing con traces) no implementado.
+
+### 9.6 QA Stage 4 (26/10/2026)
+
+| Comando              | Resultado                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| `pnpm lint`          | OK                                                                                          |
+| `pnpm format:check`  | OK                                                                                          |
+| `pnpm typecheck`     | OK                                                                                          |
+| `pnpm test`          | API 106/106, web 32/32                                                                      |
+| `pnpm test:database` | 170 tests: 168 OK, 0 fallos, 2 skipped opt-in preexistentes (Printing BFF real, aceptación) |
+| `pnpm build`         | OK                                                                                          |
+
+`packages/database` (schema y migraciones) y los módulos de Printing sin cambios; no se ejecutó `db push`.

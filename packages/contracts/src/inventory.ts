@@ -222,6 +222,92 @@ export const inventoryAdjustmentSchema = z
 export const inventoryAdjustmentResultSchema = z
   .object({ movementId: z.uuid(), replayed: z.boolean() })
   .strict();
+// Exact physical match for one already-resolved Product. Read-only proposal; never reserves stock.
+export const inventoryPhysicalMatchInputSchema = z
+  .object({
+    lotNumber: physicalText.optional(),
+    expirationDate: date.optional(),
+    serialNumber: physicalText.optional(),
+    locationId: z.uuid().optional(),
+    page: z.number().int().min(1).max(10000).default(1),
+    limit: z.number().int().min(1).max(100).default(20),
+  })
+  .strict()
+  .refine((v) => v.lotNumber || v.expirationDate || v.serialNumber, {
+    message: 'Indicá lote, vencimiento o serie.',
+  });
+export const physicalMatchReasonSchema = z.enum([
+  'SERIAL_NOT_FOUND',
+  'SERIAL_NOT_IN_STOCK',
+  'LOT_NOT_FOUND',
+  'LOT_NOT_IN_STOCK',
+  'NO_MATCHING_STOCK',
+  'SERIAL_LOT_CONFLICT',
+  'SERIAL_EXPIRATION_CONFLICT',
+  'LOT_EXPIRATION_CONFLICT',
+  'PRODUCT_ARCHIVED',
+  'NO_POLICY',
+  'LOCATION_ARCHIVED',
+  'DAMAGED',
+  'QUARANTINED',
+  'EXPIRED',
+  'POLICY_MISMATCH',
+  'COUNT_ACTIVE',
+  'STOCK_REVIEW',
+]);
+export const inventoryPhysicalMatchSchema = z
+  .object({
+    status: z.enum(['EXACT', 'CHOICES', 'MISSING', 'CONFLICT', 'UNAVAILABLE']),
+    reasonCodes: z.array(physicalMatchReasonSchema),
+    businessDate: date,
+    policy: inventoryPolicySchema.nullable(),
+    availableQuantity: exactResult,
+    positions: z.array(
+      z
+        .object({
+          positionId: z.uuid(),
+          quantity: exactResult,
+          location,
+          lotId: z.uuid().nullable(),
+          lotNumber: z.string().nullable(),
+          expirationDate: date.nullable(),
+          serialId: z.uuid().nullable(),
+          serialNumber: z.string().nullable(),
+          condition: inventoryConditionSchema,
+          eligible: z.boolean(),
+          unavailableReason: physicalMatchReasonSchema.nullable(),
+        })
+        .strict(),
+    ),
+    total: z.number().int().nonnegative(),
+    page: z.number().int().positive(),
+    limit: z.number().int().positive(),
+  })
+  .strict();
+export const physicalMatchReasonMessages: Record<
+  z.infer<typeof physicalMatchReasonSchema>,
+  string
+> = {
+  SERIAL_NOT_FOUND: 'Esta serie no está registrada en Stock para este producto.',
+  SERIAL_NOT_IN_STOCK: 'Esta serie ya no tiene existencia en Stock.',
+  LOT_NOT_FOUND: 'Este lote no está registrado en Stock para este producto.',
+  LOT_NOT_IN_STOCK: 'Este lote no tiene existencias en Stock.',
+  NO_MATCHING_STOCK: 'No hay existencias en Stock con ese vencimiento.',
+  SERIAL_LOT_CONFLICT: 'La serie está registrada en Stock con otro lote.',
+  SERIAL_EXPIRATION_CONFLICT: 'La serie está registrada en Stock con otro vencimiento.',
+  LOT_EXPIRATION_CONFLICT: 'El lote está registrado en Stock con otro vencimiento.',
+  PRODUCT_ARCHIVED: 'El producto está archivado.',
+  NO_POLICY: 'Un administrador debe revisar los datos físicos del producto.',
+  LOCATION_ARCHIVED: 'La ubicación está archivada.',
+  DAMAGED: 'La existencia está dañada.',
+  QUARANTINED: 'La existencia está en cuarentena.',
+  EXPIRED: 'La existencia está vencida.',
+  POLICY_MISMATCH: 'La existencia no cumple los datos físicos requeridos del producto.',
+  COUNT_ACTIVE: 'El producto está en conteo.',
+  STOCK_REVIEW: 'El stock de este producto necesita revisión.',
+};
+export type InventoryPhysicalMatch = z.infer<typeof inventoryPhysicalMatchSchema>;
+export type InventoryPhysicalMatchInput = z.infer<typeof inventoryPhysicalMatchInputSchema>;
 export type InventoryLineInput = z.infer<typeof inventoryLineInputSchema>;
 export type InventoryDocument = z.infer<typeof inventoryDocumentSchema>;
 export type InventoryConfirm = z.infer<typeof inventoryConfirmSchema>;
@@ -263,6 +349,8 @@ export function inventoryRouteContract(path: string, method: string) {
       return write(inventoryVersionSchema);
     if (path === 'adjustments')
       return write(inventoryAdjustmentSchema, inventoryAdjustmentResultSchema);
+    if (new RegExp(`^products/${id}/physical-match$`).test(path))
+      return write(inventoryPhysicalMatchInputSchema, inventoryPhysicalMatchSchema);
   }
   if (method === 'PATCH' && new RegExp(`^(receipts|counts)/${id}$`).test(path))
     return write(inventoryHeaderSchema);
