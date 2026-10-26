@@ -86,7 +86,7 @@ Se conserva scanner/búsqueda y la selección física existente. Cada producto m
 
 ## 13. Confirmación
 
-«Revisar y confirmar salida» abre una revisión compacta con cliente, número del papel, productos y lotes/series. El papel permanece al lado. Una advertencia explícita informa que se descontará stock y que el documento dejará de ser editable. El último botón confirma la salida existente. Se conserva el control de versión, idempotencia y exactamente un OUTBOUND. El confirmado queda en solo lectura, con vista automática y acciones «Generar para imprimir», «Descargar nuevamente» y «Registrar reimpresión». Se mantiene «Colocá el remito …» antes de imprimir; la plantilla Bourbon conserva el número preimpreso fuera del overlay.
+«Revisar y confirmar salida» abre una revisión compacta con cliente, número del papel, productos y lotes/series. El papel permanece al lado. Una advertencia explícita informa que solo se descontarán las cantidades vinculadas al stock y que el documento dejará de ser editable. El último botón confirma la salida existente. Se conserva el control de versión, idempotencia y cero o un OUTBOUND según existan allocations. El confirmado queda en solo lectura, con vista automática y acciones «Generar para imprimir», «Descargar nuevamente» y «Registrar reimpresión». Se mantiene «Colocá el remito …» antes de imprimir; la plantilla Bourbon conserva el número preimpreso fuera del overlay.
 
 ## 14. Pantalla simple de plantilla
 

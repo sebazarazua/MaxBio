@@ -112,7 +112,7 @@ function StockChoice({
   change: (l: Line) => void;
 }) {
   const [page, setPage] = useState(1);
-  const [choosing, setChoosing] = useState(value.allocations.length === 0);
+  const [choosing, setChoosing] = useState(false);
   const result = useResource(
     `products/${productId}?page=${page}`,
     inventoryStockDetailSchema,
@@ -139,12 +139,15 @@ function StockChoice({
     }
     change({ ...value, allocations, physical });
   }
-  if (!choosing && value.allocations.length > 0)
+  if (!choosing)
     return (
       <div className="delivery-selected-stock">
         <p>
-          <strong>Existencias elegidas</strong>
+          <strong>Stock registrado en MaxBio · Opcional</strong>
         </p>
+        {value.allocations.length === 0 && d?.summary.available === '0' && (
+          <p>No hay stock registrado para este producto. Podés continuar con el remito.</p>
+        )}
         {value.physical.map((a) => (
           <p key={a.positionId}>
             {a.quantity} · {a.lotNumber ? 'Lote ' + a.lotNumber : 'Sin lote'}
@@ -153,12 +156,13 @@ function StockChoice({
           </p>
         ))}
         <button type="button" className="secondary-button" onClick={() => setChoosing(true)}>
-          Cambiar lote o serie
+          Vincular stock / lote / serie
         </button>
       </div>
     );
   return (
     <div>
+      <h4>Stock registrado en MaxBio · Opcional</h4>
       <Feedback {...result} reload={result.reload} />
       {d && (
         <>
@@ -170,19 +174,29 @@ function StockChoice({
             . La selección no reserva stock.
           </p>
           {!d.policy && (
-            <p role="alert">
-              Un administrador debe revisar los datos físicos del producto antes de confirmar.
+            <p>
+              Para vincular stock, un administrador debe revisar los datos físicos del producto.
+              Podés continuar sin vincular stock.
             </p>
           )}
           {d.summary.countInProgress && (
-            <p role="alert">Producto en conteo. Esperá a que termine antes de confirmar.</p>
+            <p>
+              Producto en conteo. Podés continuar sin vincular stock; para usar estas existencias,
+              esperá a que termine.
+            </p>
           )}
-          {d.summary.available === '0' && <p>Sin stock disponible</p>}
+          {d.summary.available === '0' && (
+            <p>No hay stock registrado para este producto. Podés continuar con el remito.</p>
+          )}
           <p>
             Existencias ordenadas por vencimiento. Elegí el lote o la serie que tenés físicamente.
           </p>
           {d.positions.map((p) => {
-            const eligible = !p.expired && p.condition === 'USABLE' && !d.summary.countInProgress;
+            const eligible =
+              Boolean(d.policy) &&
+              !p.expired &&
+              p.condition === 'USABLE' &&
+              !d.summary.countInProgress;
             const a = value.allocations.find((a) => a.positionId === p.id);
             return (
               <div className="delivery-position" key={p.id}>
@@ -442,7 +456,7 @@ function ReadOnly({ doc }: { doc: DeliveryNoteView }) {
               {a.serialNumber ? ' · Serie ' + a.serialNumber : ''} · {a.location.name}
             </p>
           ))}
-          {doc.movementId && (
+          {doc.movementId && l.allocations.length > 0 && (
             <Link href={'/stock/' + l.productId + '#movimiento-' + doc.movementId}>
               Ver movimiento de stock relacionado
             </Link>
@@ -454,6 +468,9 @@ function ReadOnly({ doc }: { doc: DeliveryNoteView }) {
         <p>
           Confirmó {doc.confirmedBy} · {new Date(doc.confirmedAt).toLocaleString('es-AR')}
         </p>
+      )}
+      {doc.status === 'CONFIRMED' && !doc.movementId && (
+        <p className="muted">Sin movimiento de stock asociado</p>
       )}
       {doc.status === 'CONFIRMED' && <p>Este remito ya fue confirmado y no puede modificarse.</p>}
     </section>
@@ -743,6 +760,10 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
                       onChange={(e) => changeLine(i, { ...l, quantity: e.target.value })}
                     />
                   </Field>
+                  <p className="muted">
+                    La vinculación de stock es opcional. Podés documentar toda la cantidad aunque no
+                    esté registrada en MaxBio.
+                  </p>
                   <StockChoice
                     productId={l.productId}
                     value={l}
@@ -804,8 +825,8 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
             <section className="catalog-panel" role="region" aria-label="Revisar salida">
               <h2>4. Revisar y confirmar salida</h2>
               <p>
-                Al confirmar, la mercadería se descontará del stock y el remito ya no podrá
-                editarse.
+                Al confirmar, solo las cantidades vinculadas se descontarán del stock. El remito ya
+                no podrá editarse.
               </p>
               <p>Comprobá el número del talonario y los lotes o series físicos elegidos.</p>
               <p>

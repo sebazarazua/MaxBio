@@ -18,7 +18,7 @@ import {
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
 import { AuditService } from '../../audit/audit.service.js';
 import { InventoryService } from '../../inventory/application/inventory.service.js';
-import { validQuantity } from '../../inventory/domain/quantity.js';
+import { amount, validQuantity } from '../../inventory/domain/quantity.js';
 import type { RequestActorContext } from '../../../common/auth/request-context.js';
 import { textContains } from '../../catalog/domain/catalog-search.js';
 
@@ -104,6 +104,8 @@ export class DeliveryNotesService {
       try {
         validQuantity(l.quantity, p.unitOfMeasure);
         for (const a of l.allocations) validQuantity(a.quantity, p.unitOfMeasure);
+        if (l.allocations.reduce((sum, a) => sum + amount(a.quantity), 0n) > amount(l.quantity))
+          throw new Error('El stock vinculado supera la cantidad documental.');
       } catch (e) {
         throw new BadRequestException(e instanceof Error ? e.message : 'Revisá la cantidad.');
       }
@@ -226,6 +228,7 @@ export class DeliveryNotesService {
         tx,
         c,
         input.lines.map((l) => l.productId),
+        input.lines.filter((l) => l.allocations.length).map((l) => l.productId),
       );
       await this.customer(tx, c, input.customerId);
       await tx.deliveryNote.create({
@@ -250,6 +253,7 @@ export class DeliveryNotesService {
         tx,
         c,
         input.lines.map((l) => l.productId),
+        input.lines.filter((l) => l.allocations.length).map((l) => l.productId),
       );
       await this.customer(tx, c, input.customerId);
       const d = await this.lock(tx, c, id);
@@ -288,6 +292,7 @@ export class DeliveryNotesService {
         tx,
         c,
         initial.lines.map((l) => l.productId),
+        initial.lines.filter((l) => l.allocations.length).map((l) => l.productId),
       );
       const customer = await this.customer(tx, c, initial.customer.id);
       const d = await this.lock(tx, c, id);

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join, sep } from 'node:path';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
+import { PDFDocument, PDFDict, PDFName } from 'pdf-lib';
 import { createDatabaseClient } from '@maxbio/database';
 import {
   printTemplateSchema,
@@ -284,6 +285,86 @@ test('Printing HTTP: PNG privado, roles, tenant, formatos y proporción', async 
       pageHeightMm: 500,
     }),
     400,
+  );
+});
+
+test('PRINT TEST HTTP: same overlay for sample and document, preview background, isolated calibration and no writes', async () => {
+  const d = await draft({
+    lines: [{ id: randomUUID(), productId: product, quantity: '5', allocations: [] }],
+  });
+  const before = {
+    physical: await physicalState(),
+    artifacts: await client.printArtifact.count(),
+    assets: await client.printAsset.count(),
+    audits: await client.auditEvent.count(),
+    disk: await readdir(join(folder, org)),
+  };
+  const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const inspect = async (path: string, body: object) => {
+    const response = await request('printing/' + path, 'POST', body);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'application/pdf');
+    assert.match(response.headers.get('cache-control')!, /no-store/);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false });
+    try {
+      const pdf = await task.promise;
+      const text = (await (await pdf.getPage(1)).getTextContent()).items
+        .flatMap((i) => ('str' in i ? [i.str] : []))
+        .join(' ');
+      const structure = await PDFDocument.load(bytes);
+      assert.equal(structure.getPageCount(), 1);
+      assert.equal(structure.catalog.getOrCreateViewerPreferences().getPrintScaling(), 'None');
+      assert.ok(
+        Math.abs(structure.getPage(0).getWidth() - (template.pageWidthMm * 72) / 25.4) < 1e-6,
+      );
+      const images =
+        structure.getPage(0).node.Resources()?.lookup(PDFName.of('XObject'), PDFDict)?.keys()
+          .length ?? 0;
+      return { text, images };
+    } finally {
+      await task.destroy();
+    }
+  };
+  const body = { templateRevisionId: template.id, calibrationId: null };
+  for (const extra of [{}, { document: { id: d.id, expectedVersion: d.version } }]) {
+    const overlay = await inspect('print-test', { ...body, ...extra });
+    assert.equal(overlay.images, 0);
+    assert.match(overlay.text, /Producto X/);
+    assert.doesNotMatch(overlay.text, /PRUEBA|TAMANO REAL|X 0 mm|BORRADOR|VISTA PREVIA/);
+    const preview = await inspect('print-test-preview', { ...body, ...extra });
+    assert.equal(preview.images, 1);
+    assert.equal(preview.text, overlay.text);
+  }
+  const calibration = await inspect('calibration-test', body);
+  assert.match(calibration.text, /PRUEBA - TAMANO REAL 100%/);
+  assert.match(calibration.text, /X 0 mm \/ Y 0 mm/);
+  await checked(await request('printing/print-test', 'POST', body, 1), 403);
+  await checked(await request('printing/print-test', 'POST', body, 2), 404);
+  await checked(
+    await request('printing/print-test', 'POST', {
+      ...body,
+      document: { id: randomUUID(), expectedVersion: 1 },
+    }),
+    404,
+  );
+  await checked(
+    await request('printing/print-test', 'POST', {
+      ...body,
+      document: { id: d.id, expectedVersion: 99 },
+    }),
+    409,
+  );
+  await checked(await request('printing/print-test', 'POST', { ...body, guides: true }), 400);
+  assert.deepEqual(
+    {
+      physical: await physicalState(),
+      artifacts: await client.printArtifact.count(),
+      assets: await client.printAsset.count(),
+      audits: await client.auditEvent.count(),
+      disk: await readdir(join(folder, org)),
+    },
+    before,
   );
 });
 test('Editor HTTP: geometría no guardada ADMIN, aislamiento, versión y nueva revisión DRAFT exacta', async () => {
@@ -851,6 +932,22 @@ test(
       const before = await physicalState();
       const noteCount = await client.deliveryNote.count();
       const artifactCount = await client.printArtifact.count();
+      for (const path of ['print-test', 'print-test-preview', 'calibration-test']) {
+        const response = await bff(
+          path,
+          { templateRevisionId: template.id, calibrationId: null },
+          cookies[0]!,
+        );
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get('content-type'), 'application/pdf');
+        assert.match(response.headers.get('cache-control')!, /private, no-store/);
+        assert.equal(
+          Buffer.from(await response.arrayBuffer())
+            .subarray(0, 5)
+            .toString(),
+          '%PDF-',
+        );
+      }
       for (const body of [
         {},
         {
@@ -1166,4 +1263,29 @@ test('Preview efímera HTTP: parcial, datos autoritativos, OPERATOR, tenant y ce
       await request(`printing/templates/${template.id}/publish`, 'POST', { activate: true }),
     );
   }
+});
+
+test('Operational overlay without Inventory uses confirmed document and published template', async () => {
+  const d = await draft({
+    lines: [{ id: randomUUID(), productId: product, quantity: '5', allocations: [] }],
+  });
+  const confirmedNoStock = deliveryNoteSchema.parse(
+    await checked(
+      await request(
+        `delivery-notes/${d.id}/confirm`,
+        'POST',
+        { operationId: randomUUID(), expectedVersion: d.version },
+        1,
+      ),
+    ),
+  );
+  assert.equal(confirmedNoStock.movementId, null);
+  await checked(
+    await request(
+      `printing/delivery-notes/${d.id}/artifacts`,
+      'POST',
+      { id: randomUUID(), ...renderInput(confirmedNoStock), guides: undefined },
+      1,
+    ),
+  );
 });

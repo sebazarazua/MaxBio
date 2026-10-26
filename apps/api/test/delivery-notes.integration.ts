@@ -491,7 +491,7 @@ test('CONFIRM: vacío, sin número, sin stock, allocation incompleta, entero y d
   const incomplete = await draft([
     { ...a.row('2'), allocations: [{ positionId: a.positions[0]!.id, quantity: '1' }] },
   ]);
-  await checked(await outbound(incomplete), 400);
+  assert.equal((await note(outbound(incomplete))).status, 'CONFIRMED');
   await checked(
     await request(
       'delivery-notes',
@@ -510,12 +510,12 @@ test('CONFIRM: vacío, sin número, sin stock, allocation incompleta, entero y d
     await outbound(
       await draft([{ id: randomUUID(), productId: p.id, quantity: '1', allocations: [] }]),
     ),
-    400,
+    200,
   );
   const b = await supply('METER', '0.123456');
   await note(outbound(await draft([b.row('0.000001')])));
   assert.equal((await stock(b.p)).summary.physical, '0.123455');
-  assert.equal((await stock(a.p)).summary.physical, '5');
+  assert.equal((await stock(a.p)).summary.physical, '4');
   await projection();
 });
 test('Lotes: FEFO explícito, elección alternativa válida, vencidos y condiciones bloqueados', async () => {
@@ -682,11 +682,17 @@ test('Revalidación: stock cambió, cliente archivado, producto archivado y falt
   const unreviewed = await client.product.create({
     data: { organizationId: org, name: 'Sin revisión', unitOfMeasure: 'UNIT' },
   });
-  await checked(
-    await outbound(
-      await draft([{ id: randomUUID(), productId: unreviewed.id, quantity: '1', allocations: [] }]),
-    ),
-    409,
+  assert.equal(
+    (
+      await note(
+        outbound(
+          await draft([
+            { id: randomUUID(), productId: unreviewed.id, quantity: '1', allocations: [] },
+          ]),
+        ),
+      )
+    ).status,
+    'CONFIRMED',
   );
   await projection();
 });
@@ -809,7 +815,7 @@ test('Auditoría fallida revierte salida y snapshot; Inventory fallido revierte 
   assert.equal((await stock(a.p)).summary.physical, '5');
   await projection();
 });
-test('DB: confirmed sin movimiento y movimiento sin confirmed imposibles; FK tenant real', async () => {
+test('DB: allocations requieren movimiento, movimiento requiere confirmed; FK tenant real', async () => {
   const a = await supply(),
     d = await draft([a.row()]);
   await assert.rejects(
@@ -845,6 +851,161 @@ test('DB: confirmed sin movimiento y movimiento sin confirmed imposibles; FK ten
     }),
   );
   await projection();
+});
+
+test('Optional Inventory: no stock/policy, all snapshots, no physical writes, concurrent retry and search', async () => {
+  const p = await client.product.create({
+    data: {
+      organizationId: org,
+      name: 'Contra pedido ' + randomUUID(),
+      presentation: 'Caja',
+      unitOfMeasure: 'UNIT',
+    },
+  });
+  await client.productIdentifier.create({
+    data: {
+      organizationId: org,
+      productId: p.id,
+      kind: 'GTIN',
+      value: '4006381333931',
+      normalizedValue: '04006381333931',
+    },
+  });
+  const d = await draft([{ id: randomUUID(), productId: p.id, quantity: '5', allocations: [] }]);
+  const before = await client.inventoryBalance.findMany({ orderBy: { id: 'asc' } });
+  const movements = await client.inventoryMovement.count();
+  const scopes = await client.inventoryStockScope.findMany({ orderBy: { id: 'asc' } });
+  const operationId = randomUUID();
+  const results = await Promise.all([
+    note(outbound(d, operationId)),
+    note(outbound(d, operationId)),
+  ]);
+  assert.ok(results.some((r) => r.replayed));
+  for (const result of results) {
+    assert.equal(result.status, 'CONFIRMED');
+    assert.equal(result.movementId, null);
+    assert.equal(result.lines[0]!.quantity, '5');
+    assert.equal(result.lines[0]!.productName, p.name);
+    assert.equal(result.lines[0]!.presentation, 'Caja');
+    assert.equal(result.lines[0]!.unitOfMeasure, 'UNIT');
+    assert.equal(result.lines[0]!.gtin, '04006381333931');
+  }
+  const replay = await note(outbound(d, operationId));
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.movementId, null);
+  await checked(
+    await request(`delivery-notes/${d.id}/confirm`, 'POST', { operationId, expectedVersion: 99 }),
+    409,
+  );
+  assert.equal(await client.inventoryMovement.count(), movements);
+  assert.deepEqual(await client.inventoryBalance.findMany({ orderBy: { id: 'asc' } }), before);
+  assert.deepEqual(await client.inventoryStockScope.findMany({ orderBy: { id: 'asc' } }), scopes);
+  assert.equal(
+    await client.auditEvent.count({
+      where: { resourceId: d.id, action: 'DELIVERY_NOTE_CONFIRMED' },
+    }),
+    1,
+  );
+  await client.product.update({
+    where: { id: p.id },
+    data: { name: 'Renamed', presentation: null },
+  });
+  assert.equal((await note(request('delivery-notes/' + d.id))).lines[0]!.productName, p.name);
+  for (const q of [p.name, d.documentPrefix + '-' + d.documentNumber, d.customer.name]) {
+    const found = deliveryNoteListSchema.parse(
+      await checked(await request('delivery-notes/search', 'POST', { q, limit: '100' })),
+    );
+    assert.ok(
+      found.items.some((row) => row.id === d.id),
+      q,
+    );
+  }
+  await projection();
+});
+
+test('Optional Inventory: partial allocation, exact ledger/history, retries and policy stays mandatory for selected stock', async () => {
+  const a = await supply('UNIT', '2');
+  const d = await draft([
+    { ...a.row('5'), allocations: [{ positionId: a.positions[0]!.id, quantity: '2' }] },
+  ]);
+  const operationId = randomUUID();
+  const result = await note(outbound(d, operationId));
+  assert.equal(result.status, 'CONFIRMED');
+  assert.equal(result.lines[0]!.quantity, '5');
+  assert.ok(result.movementId);
+  const movement = await client.inventoryMovement.findUniqueOrThrow({
+    where: { id: result.movementId },
+    include: { lines: true },
+  });
+  assert.equal(movement.type, 'OUTBOUND');
+  assert.deepEqual(
+    movement.lines.map((l) => l.quantityDelta.toString()),
+    ['-2'],
+  );
+  assert.equal((await stock(a.p)).summary.physical, '0');
+  assert.equal((await note(outbound(d, operationId))).movementId, result.movementId);
+  assert.equal(await client.inventoryMovement.count({ where: { deliveryNoteId: d.id } }), 1);
+  const history = inventoryHistorySchema.parse(
+    await checked(await request('inventory/products/' + a.p.id + '/history')),
+  );
+  assert.ok(JSON.stringify(history).includes('-2'));
+  await checked(
+    await request('delivery-notes', 'POST', {
+      id: randomUUID(),
+      customerId: customer,
+      documentDate: '2026-10-26',
+      lines: [{ ...a.row('1'), allocations: [{ positionId: a.positions[0]!.id, quantity: '2' }] }],
+    }),
+    400,
+  );
+  const p = await client.product.create({
+    data: { organizationId: org, name: 'No physical policy', unitOfMeasure: 'UNIT' },
+  });
+  const position = await client.inventoryBalance.create({
+    data: {
+      organizationId: org,
+      productId: p.id,
+      locationId: a.positions[0]!.location.id,
+      condition: 'USABLE',
+      quantity: 0,
+    },
+  });
+  const selected = await draft([
+    {
+      id: randomUUID(),
+      productId: p.id,
+      quantity: '5',
+      allocations: [{ positionId: position.id, quantity: '1' }],
+    },
+  ]);
+  const failure = await checked(await outbound(selected), 409);
+  assert.match(JSON.stringify(failure), /datos físicos/);
+  assert.equal(await client.inventoryMovement.count({ where: { deliveryNoteId: selected.id } }), 0);
+  await projection();
+});
+
+test('Optional Inventory: failed audit rolls back confirmation and every snapshot without movement', async () => {
+  const p = await product();
+  const d = await draft([{ id: randomUUID(), productId: p.id, quantity: '5', allocations: [] }]);
+  const audit = app.get(AuditService),
+    original = audit.success.bind(audit);
+  audit.success = (...args: Parameters<AuditService['success']>) => {
+    if (args[1] === 'DELIVERY_NOTE_CONFIRMED') throw new Error('Injected no-stock audit failure');
+    return original(...args);
+  };
+  try {
+    await checked(await outbound(d), 500);
+  } finally {
+    audit.success = original;
+  }
+  const persisted = await client.deliveryNote.findUniqueOrThrow({
+    where: { id: d.id },
+    include: { lines: true },
+  });
+  assert.equal(persisted.status, 'DRAFT');
+  assert.equal(persisted.customerSnapshot, null);
+  assert.equal(persisted.lines[0]!.productNameSnapshot, null);
+  assert.equal(await client.inventoryMovement.count({ where: { deliveryNoteId: d.id } }), 0);
 });
 
 test('Numeración: históricos numéricos, sugerencia sin reserva, ceros, salto y estados usados', async () => {

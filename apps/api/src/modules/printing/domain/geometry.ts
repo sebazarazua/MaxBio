@@ -113,11 +113,13 @@ export function projectRows(doc: PrintDocument, columns: PrintColumn[]) {
           }; no se puede omitir esa información física.`,
         });
     }
-    if (l.allocations.reduce((n, a) => n + amount(a.quantity), 0n) !== amount(l.quantity))
+    const allocated = l.allocations.reduce((n, a) => n + amount(a.quantity), 0n);
+    const remainder = amount(l.quantity) - allocated;
+    if (remainder < 0n)
       issues.push({
         state: 'BLOCKED',
         region,
-        message: 'Las existencias seleccionadas no cubren exactamente la cantidad documental.',
+        message: 'El stock vinculado supera la cantidad documental.',
       });
     const base = {
       quantity: l.quantity,
@@ -128,7 +130,7 @@ export function projectRows(doc: PrintDocument, columns: PrintColumn[]) {
       expirationDate: '',
       serialNumber: '',
     };
-    if (physical && l.allocations.length)
+    if (physical && l.allocations.length) {
       for (const a of l.allocations) {
         if (a.serialNumber && amount(a.quantity) !== 1000000n)
           issues.push({
@@ -144,7 +146,8 @@ export function projectRows(doc: PrintDocument, columns: PrintColumn[]) {
           serialNumber: a.serialNumber ?? '',
         });
       }
-    else rows.push(base);
+      if (remainder > 0n) rows.push({ ...base, quantity: quantity(remainder) });
+    } else rows.push(base);
   }
   return { rows, issues };
 }

@@ -8,6 +8,34 @@ import {
   deliveryNoteRouteContract,
 } from '@maxbio/contracts';
 const minimal = () => ({ id: randomUUID(), customerId: randomUUID(), documentDate: '2026-10-08' });
+
+test('Remitos: allocations optional, partial and complete; never above documentary quantity', () => {
+  for (const quantities of [[], ['2'], ['2', '3'], ['0.000001', '4.999999']]) {
+    const line = {
+      id: randomUUID(),
+      productId: randomUUID(),
+      quantity: '5',
+      allocations: quantities.map((quantity) => ({ positionId: randomUUID(), quantity })),
+    };
+    assert.equal(deliveryNoteCreateSchema.safeParse({ ...minimal(), lines: [line] }).success, true);
+    assert.equal(
+      deliveryNoteUpdateSchema.safeParse({
+        customerId: randomUUID(),
+        documentDate: '2026-10-26',
+        expectedVersion: 1,
+        lines: [line],
+      }).success,
+      true,
+    );
+  }
+  const line = {
+    id: randomUUID(),
+    productId: randomUUID(),
+    quantity: '5',
+    allocations: ['2', '3.000001'].map((quantity) => ({ positionId: randomUUID(), quantity })),
+  };
+  assert.equal(deliveryNoteCreateSchema.safeParse({ ...minimal(), lines: [line] }).success, false);
+});
 test('Remitos: strict contracts, internal fields, dates, document number and quantities', () => {
   const v = minimal();
   assert.equal(deliveryNoteCreateSchema.parse(v).lines.length, 0);

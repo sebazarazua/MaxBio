@@ -886,8 +886,14 @@ export class InventoryService {
   deliveryTransaction<T>(c: RequestActorContext, fn: (tx: Tx) => Promise<T>, admin = false) {
     return this.write(c, fn, admin);
   }
-  lockDeliveryProducts(tx: Tx, c: RequestActorContext, ids: string[]) {
-    return this.lockProducts(tx, c, ids);
+  async lockDeliveryProducts(tx: Tx, c: RequestActorContext, ids: string[], stockIds = ids) {
+    const physical = new Set(stockIds);
+    for (const id of [...new Set(ids)].sort()) {
+      if (physical.has(id)) await this.lockProducts(tx, c, [id]);
+      // Catalog snapshot stability only; no stock/scopes/positions are locked for these lines.
+      else
+        await tx.$queryRaw`SELECT id FROM "Product" WHERE "organizationId"=${c.organizationId}::uuid AND id=${id}::uuid FOR SHARE`;
+    }
   }
   /** Products must already be locked in sorted order, before the source document lock. */
   async postDeliveryNote(tx: Tx, c: RequestActorContext, deliveryNoteId: string) {
@@ -925,7 +931,7 @@ export class InventoryService {
       const p = l.product,
         policy = p.inventoryPolicy;
       if (p.archivedAt) throw new ConflictException('Este producto está archivado.');
-      if (!policy)
+      if (l.allocations.length && !policy)
         throw new ConflictException(
           'Un administrador debe revisar los datos físicos de este producto.',
         );
@@ -937,8 +943,8 @@ export class InventoryService {
           error instanceof Error ? error.message : 'Revisá la cantidad.',
         );
       }
-      if (l.allocations.reduce((n, a) => n + amount(a.quantity.toString()), 0n) !== requested)
-        throw new BadRequestException('Elegí existencias para toda la cantidad de cada producto.');
+      if (l.allocations.reduce((n, a) => n + amount(a.quantity.toString()), 0n) > requested)
+        throw new BadRequestException('El stock vinculado supera la cantidad documental.');
       for (const a of l.allocations) {
         const b = a.position;
         const q = amount(a.quantity.toString());
@@ -953,9 +959,9 @@ export class InventoryService {
             'El lote seleccionado está vencido y no está disponible para salida.',
           );
         if (
-          (policy.lotRequired && !b.lot?.lotNumber) ||
-          (policy.expirationRequired && !b.lot?.expirationDate) ||
-          policy.serialRequired !== Boolean(b.serialId)
+          (policy!.lotRequired && !b.lot?.lotNumber) ||
+          (policy!.expirationRequired && !b.lot?.expirationDate) ||
+          policy!.serialRequired !== Boolean(b.serialId)
         )
           throw new ConflictException(
             'La existencia no cumple los datos físicos requeridos del producto.',
@@ -1015,6 +1021,7 @@ export class InventoryService {
         },
       });
     }
+    if (!lines.length) return null;
     const movementId = await this.applyMovement(tx, c, { type: 'OUTBOUND', deliveryNoteId }, lines);
     for (const id of [...scopes].sort())
       await tx.inventoryStockScope.update({ where: { id }, data: { version: { increment: 1 } } });

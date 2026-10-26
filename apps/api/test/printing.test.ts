@@ -138,13 +138,117 @@ test('Printing: allocations múltiples, series, reconciliación, columnas faltan
     ).issues.some((i) => i.state === 'BLOCKED'),
   );
   d.lines[0]!.quantity = '3';
-  assert.ok(projectRows(d, columns).issues.some((i) => i.message.includes('exactamente')));
+  assert.equal(projectRows(d, columns).issues.length, 0);
+  assert.deepEqual(
+    projectRows(d, columns).rows.map((r) => r.quantity),
+    ['1', '1', '1'],
+  );
+  d.lines[0]!.quantity = '1';
+  assert.ok(projectRows(d, columns).issues.some((i) => i.state === 'BLOCKED'));
   d.lines[0]!.quantity = '2';
   t.definition.productRegion.heightMm = t.definition.productRegion.rowHeightMm;
   const evaluated = layoutDocument(d, t, await loadPrintMetrics()).evaluation;
   assert.equal(evaluated.state, 'BLOCKED');
   assert.equal(evaluated.rowCount, 2);
   assert.equal(evaluated.maxRows, 1);
+});
+
+test('Printing: no stock and partial stock preserve all documentary rows in preview and overlay', async () => {
+  const template = printingTemplate(),
+    document = printingDocument();
+  document.lines[0]!.quantity = '5';
+  document.lines[0]!.allocations = [];
+  for (const mode of ['PREVIEW', 'PRINT_OVERLAY'] as const) {
+    const result = await renderPdf({
+      template,
+      document,
+      calibration: null,
+      mode,
+      background: printingPng(),
+    });
+    assert.equal(result.layout.evaluation.state, 'SAFE');
+    assert.match(await content(result.bytes), /Producto X/);
+    assert.deepEqual(
+      projectRows(document, template.definition.productRegion.columns).rows.map((r) => [
+        r.quantity,
+        r.lotNumber,
+        r.expirationDate,
+        r.serialNumber,
+      ]),
+      [['5', '', '', '']],
+    );
+  }
+  document.lines[0]!.allocations = printingDocument().lines[0]!.allocations.slice(0, 1);
+  const projection = projectRows(document, template.definition.productRegion.columns);
+  assert.deepEqual(
+    projection.rows.map((r) => [r.quantity, r.lotNumber]),
+    [
+      ['2', 'A'],
+      ['3', ''],
+    ],
+  );
+  assert.equal(
+    projection.rows.reduce((sum, r) => sum + Number(r.quantity), 0),
+    5,
+  );
+  assert.equal(projection.issues.length, 0);
+  document.lines[0]!.quantity = '1.999999';
+  assert.ok(
+    projectRows(document, template.definition.productRegion.columns).issues.some(
+      (i) => i.state === 'BLOCKED',
+    ),
+  );
+});
+
+test('PRINT_OVERLAY: Bourbon page, only variable text, no background or technical operators', async () => {
+  const template = printTemplateSchema.parse({
+    ...printingTemplate(),
+    ...bourbonProvisionalTemplate(randomUUID(), randomUUID()),
+  });
+  const document = printSampleDocument();
+  const result = await renderPdf({
+    template,
+    document,
+    calibration: null,
+    mode: 'PRINT_OVERLAY',
+    background: printingPng(),
+    guides: true,
+  });
+  assert.notEqual(
+    result.layout.evaluation.state,
+    'BLOCKED',
+    JSON.stringify(result.layout.evaluation),
+  );
+  const pdf = await PDFDocument.load(result.bytes);
+  assert.equal(pdf.getPageCount(), 1);
+  assert.equal(pdf.getPage(0).getWidth(), mmToPt(203));
+  assert.equal(pdf.getPage(0).getHeight(), mmToPt(271));
+  assert.equal(pdf.catalog.getOrCreateViewerPreferences().getPrintScaling(), 'None');
+  assert.equal(imageCount(pdf), 0);
+  assert.doesNotMatch(operators(pdf), /\bre\b|\bDo\b|\bS\b|\bB\b/);
+  const text = await content(result.bytes);
+  for (const value of [
+    'OSUTHGRA',
+    'AV. DE MAYO',
+    'CABA',
+    '20-12345678-6',
+    'CORIA',
+    '20-91552262-6/01',
+    'ABC-001',
+    '31/12/2028',
+  ])
+    assert.ok(text.includes(value), value);
+  assert.doesNotMatch(
+    text,
+    /PRUEBA|TAMANO REAL|X \/ Y|X\/Y|offset|safe|guide|BORRADOR|VISTA PREVIA/i,
+  );
+});
+
+test('CALIBRATION SHEET: technical text and measurement crosses stay present', async () => {
+  const bytes = await renderCalibrationTest(printingTemplate(), null);
+  assert.match(await content(bytes), /PRUEBA - TAMANO REAL 100%/);
+  assert.match(await content(bytes), /X 0 mm \/ Y 0 mm/);
+  assert.match(operators(await PDFDocument.load(bytes)), /\bS\b/);
 });
 async function content(pdf: Uint8Array) {
   const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');

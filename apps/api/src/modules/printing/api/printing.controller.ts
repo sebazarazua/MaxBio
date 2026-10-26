@@ -22,6 +22,7 @@ import {
   printRenderInputSchema,
   printGenerateInputSchema,
   printTestInputSchema,
+  printTrialInputSchema,
   printReprintInputSchema,
   printGeometryInputSchema,
   printSampleGeometryInputSchema,
@@ -122,6 +123,20 @@ export class PrintingController {
     @Res() res: Response,
   ) {
     binary(res, await this.service.testCalibration(actor(r), parse(printTestInputSchema, body)));
+  }
+  @Post('print-test') @HttpCode(200) @Roles('ADMIN') async printTest(
+    @Req() r: AuthenticatedRequest,
+    @Body() body: unknown,
+    @Res() res: Response,
+  ) {
+    binary(res, await this.service.printTest(actor(r), parse(printTrialInputSchema, body)));
+  }
+  @Post('print-test-preview') @HttpCode(200) @Roles('ADMIN') async printTestPreview(
+    @Req() r: AuthenticatedRequest,
+    @Body() body: unknown,
+    @Res() res: Response,
+  ) {
+    binary(res, await this.service.printTest(actor(r), parse(printTrialInputSchema, body), true));
   }
   @Post('delivery-notes/:id/evaluate') @HttpCode(200) evaluate(
     @Req() r: AuthenticatedRequest,

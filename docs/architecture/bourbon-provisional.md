@@ -96,7 +96,7 @@ Priorizar un remito guardado, buscándolo por cliente/número. Al instalar no ha
 en MaxBio, por lo que se agregó **Usar datos de prueba para editar geometría**.
 
 La muestra se construye en memoria con OSUTHGRA, AV. DE MAYO 930, CABA, CORIA, MILAGROS,
-20-91552262-6/01 y un producto ficticio con dos allocations de cantidad 1: lotes PRUEBA-1/2,
+20-91552262-6/01 y un producto ficticio con dos allocations de cantidad 1: lotes ABC-001/002,
 vencimiento y series DEMO-001/002. La UI la identifica como DATOS DE PRUEBA. No crea
 DeliveryNote, Customer, Product, stock ni artifact. La instalación verificó que los
 conteos de remitos/movimientos y la configuración activa permanecieran iguales.

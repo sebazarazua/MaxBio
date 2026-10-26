@@ -114,7 +114,7 @@ El contrato completa defaults declarados (NotoSans, izquierda/arriba, una línea
 
 La región repetible usa x/y/width/height/rowHeight en mm. Sus columnas consecutivas tienen anchos y tipografía propios, bindings únicos y deben incluir quantity/productName. La suma de anchos no puede superar la región. `floor(height / rowHeight)` determina la capacidad; no se persiste una cantidad de filas contradictoria.
 
-Bindings de fila: quantity, unit, productName, presentation, lotNumber, expirationDate, serialNumber. Si se imprimen datos físicos, cada allocation genera una fila con su cantidad. Cantidad 4 distribuida en A=2/B=2 produce dos filas, sin fusionar lotes. Se reconcilia la suma exacta de allocations con la cantidad documental. Series requieren una unidad. Si hay lote/vencimiento/serie real y falta su columna, se bloquea en vez de omitirlo. No hay consolidación automática de líneas repetidas.
+Bindings de fila: quantity, unit, productName, presentation, lotNumber, expirationDate, serialNumber. Si se imprimen datos físicos, cada allocation genera una fila con su cantidad. Cantidad 4 distribuida en A=2/B=2 produce dos filas, sin fusionar lotes. La suma de allocations puede ser menor o igual a la cantidad documental; si es mayor se bloquea. Sin allocations se imprime una fila completa con trazabilidad vacía. Con cantidad 5 y allocation 2 lote ABC se imprimen filas 2/ABC y 3/sin lote, vencimiento ni serie: nunca se pierde el remanente. Printing representa cantidades documentales y no decide disponibilidad de stock. Series requieren una unidad. Si hay lote/vencimiento/serie real y falta su columna, se bloquea en vez de omitirlo. No hay consolidación automática de líneas repetidas.
 
 No se trunca ni se achica la página. Desbordar filas, líneas de texto, columnas, márgenes o fuente produce un diagnóstico. Hay que corregir el borrador o preparar documentos separados antes de confirmar. No hay segunda página automática. Una preview BLOCKED sirve para diagnóstico y puede mostrar contenido fuera de su caja; no habilita overlay definitivo.
 
@@ -179,7 +179,9 @@ API `/api/v1/printing`; BFF `/api/printing`. Rutas/métodos explícitamente perm
 | assets                       | POST     | ADMIN; PNG privado                               |
 | assets/:id                   | GET      | ADMIN/OPERATOR de la organización; PNG binario   |
 | calibrations                 | POST     | ADMIN; nueva revisión inmutable                  |
-| calibration-test             | POST     | ADMIN; PDF de prueba                             |
+| calibration-test             | POST     | ADMIN; hoja técnica de calibración               |
+| print-test-preview           | POST     | ADMIN; vista de prueba con fondo y datos         |
+| print-test                   | POST     | ADMIN; prueba con PRINT_OVERLAY, sin marcas      |
 | delivery-notes/:id/evaluate  | POST     | ADMIN/OPERATOR; diagnóstico JSON                 |
 | delivery-notes/:id/preview   | POST     | ADMIN/OPERATOR; PDF PREVIEW                      |
 | delivery-notes/:id/artifacts | GET/POST | ADMIN/OPERATOR; historial/generación             |
@@ -209,3 +211,13 @@ Ejecutar `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`, `pnpm 
 Pendientes físicos: referencias PDF/Word, medidas exactas, fondo limpio, geometría real, filas disponibles, impresora/driver/bandeja, márgenes imprimibles, tolerancia aceptada y procedimiento de formularios dañados. Pruebas automatizadas y PDFs sintéticos no validan el transporte mecánico del papel.
 
 Fuera de alcance: Word runtime, importador DOCX universal, editor gráfico, diseño digital/fiscal completo, facturación/ARCA/CAI/ANMAT, GS1 enriquecido, cámara, drivers/agente local, impresión directa silenciosa, segunda página automática, reservas y reversión de stock.
+
+## Prueba de impresión y hoja de calibración (26 de octubre de 2026)
+
+Tres usos separados: vista en pantalla con fondo y datos; impresión de prueba solo con datos variables; hoja de calibración con marcas técnicas. El botón Probar impresión abre un diálogo modal titulado Prueba de impresión, con vista con fondo, descarga y Cerrar. Usa el remito guardado elegido (versión comprobada) o el sample controlado existente en memoria. No hace scroll silencioso ni escribe documentos, artifacts, stock, audit o archivos.
+
+`POST /printing/print-test-preview` produce la vista con fondo sin guías; `POST /printing/print-test` invoca exactamente `renderPdf` en modo `PRINT_OVERLAY`, igual que Generar para imprimir. Ambos requieren ADMIN, plantilla de la organización y calibración compatible; un remito real conserva tenant/versión. La prueba admite plantilla DRAFT y documento sample/DRAFT sin convertirlos en un artifact operativo. Se bloquea la descarga si la evaluación no permite imprimir.
+
+El PDF de prueba y el operativo tienen una página al tamaño de plantilla (Bourbon 203 × 271 mm), fuente embebida, texto negro y PrintScaling.None. Solo datos variables; sin fondo, logo, bordes, CAI, texto fijo, coordenadas, cruces, guías, offsets ni etiquetas técnicas. Title/Producer invisibles no forman parte del contenido visible. No se cambia geometría, tolerancias ni algoritmo de calibración.
+
+`renderCalibrationTest` y `/printing/calibration-test` se conservan exclusivamente bajo Ajustar impresora, con el botón Descargar hoja de calibración y la aclaración: Esta hoja contiene marcas técnicas para medir el desplazamiento de la impresora. Sus marcas PRUEBA, TAMANO REAL, X/Y, cruces y coordenadas son intencionales.

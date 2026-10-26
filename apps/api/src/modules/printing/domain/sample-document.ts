@@ -35,7 +35,7 @@ export function printSampleDocument() {
       {
         id: id(3),
         productId: id(4),
-        productName: 'Producto de prueba',
+        productName: 'Producto X',
         presentation: null,
         unitOfMeasure: 'UNIT',
         gtin: null,
@@ -47,7 +47,7 @@ export function printSampleDocument() {
           quantity: '1',
           location: { id: id(5), name: 'Ejemplo sin stock real' },
           lotId: id(30 + n),
-          lotNumber: `PRUEBA-${n}`,
+          lotNumber: `ABC-00${n}`,
           expirationDate: '2028-12-31',
           serialId: id(40 + n),
           serialNumber: `DEMO-00${n}`,

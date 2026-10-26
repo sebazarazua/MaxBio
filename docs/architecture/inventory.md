@@ -203,3 +203,11 @@ Quedan límites reales: falta registrar salidas comerciales; inventario inicial 
 ## 28. Siguiente incremento recomendado
 
 Primero probar V1 con usuarios, lectores y artículos reales; validar unidad base, política y procedimiento de conteo por Product sin cerrar todo el negocio. Luego implementar correcciones físicas explícitas (reclasificación usable/dañado/cuarentena y corrección de conteo cero/dimensiones), con ledger pareado/relación tipada y permisos ADMIN. Después OUTBOUND/Remito y devoluciones con idempotencia, selección de existencias y no disponible/negativo bloqueado. Reservas, FEFO, packaging y trazabilidad regulatoria solo cuando el proceso real los demande. Conservar monolito modular y una transacción PostgreSQL como frontera.
+
+## Remitos con Inventory opcional (26 de octubre de 2026)
+
+Bourbon trabaja frecuentemente contra pedido: la salida comercial puede documentarse sin ingreso previo en Inventory. DeliveryNote puede confirmarse sin InventoryMovement. Si existen allocations válidas, se genera como máximo un OUTBOUND por la cantidad vinculada a Inventory. Se admiten allocations vacías, parciales o completas, siempre con suma menor o igual a la cantidad documental.
+
+Cantidad documental 5 con allocation 2 descuenta 2 y su historia muestra -2; los otros 3 solo participan del documento. Sin allocations no se exige policy ni se crean movimientos vacíos, balances, lotes, ubicaciones, adjustments o stock artificial. Los snapshots documentales se congelan incluso sin movimiento. No se bloquean posiciones/scopes para líneas sin allocations.
+
+Cada allocation seleccionada conserva policy, tenant, producto, lote, serie, ubicación activa, USABLE, vencimiento, cantidades exactas, disponibilidad agregada, locks y unicidad de serie. Stock insuficiente sigue rechazándose; no se transforma silenciosamente la selección. Se mantienen transacción única con audit, idempotencia y unique deliveryNoteId del OUTBOUND. La migración `20261026120000_delivery_optional_inventory` adapta el trigger diferido sin cambiar el esquema Prisma ni el ledger.

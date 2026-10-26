@@ -261,6 +261,14 @@ export const printTestInputSchema = z
     calibrationId: z.uuidv4().nullable().default(null),
   })
   .strict();
+export const printTrialInputSchema = printTestInputSchema
+  .extend({
+    document: z
+      .object({ id: z.uuidv4(), expectedVersion: z.number().int().positive() })
+      .strict()
+      .optional(),
+  })
+  .strict();
 export const printEvaluationSchema = z
   .object({
     state: z.enum(['SAFE', 'WARNING', 'BLOCKED']),
@@ -372,6 +380,10 @@ export function printingRouteContract(path: string, method: string) {
     return json(printCalibrationCreateSchema, printCalibrationSchema);
   if (path === 'calibration-test' && method === 'POST')
     return binary(printTestInputSchema, 'application/pdf');
+  if (path === 'print-test' && method === 'POST')
+    return binary(printTrialInputSchema, 'application/pdf');
+  if (path === 'print-test-preview' && method === 'POST')
+    return binary(printTrialInputSchema, 'application/pdf');
   if (path === 'assets' && method === 'POST') return json(printAssetUploadSchema, printAssetSchema);
   if (new RegExp(`^assets/${uuid}$`).test(path) && method === 'GET')
     return binary(null, 'image/png');

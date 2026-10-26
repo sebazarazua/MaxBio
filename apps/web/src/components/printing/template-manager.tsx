@@ -17,7 +17,7 @@ import { printingJson, printingPdf, downloadPrintPdf } from '@/lib/printing-api'
 import { catalogFetch } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
 import { Field } from '../catalog/common';
-import { DeliveryPrintPanel } from './delivery-print-panel';
+import { PrintTrialDialog } from './print-trial-dialog';
 import { TestDeliveryNotePicker } from './test-delivery-note-picker';
 import { PrintGeometryEditor } from './geometry-editor';
 import { printErrorMessage } from './print-labels';
@@ -45,7 +45,8 @@ export function PrintTemplateManager() {
   const guard = useRef(false);
   const editorSection = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (mode) editorSection.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (mode && mode !== 'test')
+      editorSection.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [mode, selected]);
   const active = config?.activeTemplate;
   const template = templates.find((t) => t.id === selected) ?? active ?? templates[0];
@@ -280,7 +281,7 @@ export function PrintTemplateManager() {
           </fieldset>
         </section>
       )}
-      {template && (mode === 'adjust' || mode === 'test') && (
+      {template && mode === 'adjust' && (
         <section className="catalog-panel">
           <h2>Modo de prueba</h2>
           <p>
@@ -304,23 +305,6 @@ export function PrintTemplateManager() {
               Volver a datos de ejemplo
             </button>
           </details>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={busy}
-            onClick={() =>
-              void run(async () =>
-                downloadPrintPdf(
-                  await printingPdf('calibration-test', {
-                    templateRevisionId: template.id,
-                    calibrationId: calibration?.id ?? null,
-                  }),
-                ),
-              )
-            }
-          >
-            Descargar prueba de impresión
-          </button>
           {config?.activeTemplate?.id !== template.id && (
             <button
               type="button"
@@ -331,15 +315,9 @@ export function PrintTemplateManager() {
               Publicar y usar esta plantilla
             </button>
           )}
-          {mode === 'test' && !note && (
-            <p>
-              Los datos de ejemplo aparecen a continuación para comprobar la ubicación. Imprimí una
-              prueba al 100 %.
-            </p>
-          )}
         </section>
       )}
-      {template && (mode === 'adjust' || mode === 'test') && (
+      {template && mode === 'adjust' && (
         <PrintGeometryEditor
           key={template.id + ':' + (note?.id ?? 'sample')}
           template={template}
@@ -354,12 +332,35 @@ export function PrintTemplateManager() {
           }}
         />
       )}
-      {mode === 'test' && template && note && (
-        <DeliveryPrintPanel doc={note} templateOverride={template} />
+      {mode === 'test' && template && (
+        <PrintTrialDialog
+          template={template}
+          calibration={calibration}
+          note={note}
+          onClose={() => setMode(null)}
+        >
+          <details>
+            <summary>Usar un remito guardado en la prueba</summary>
+            <TestDeliveryNotePicker
+              disabled={busy}
+              selectedId={note?.id}
+              onSelect={(id) =>
+                void run(async () => {
+                  setNote(await catalogFetch(id, deliveryNoteSchema, { scope: 'delivery-notes' }));
+                })
+              }
+            />
+            {error && <p role="alert">{error}</p>}
+            <button type="button" className="secondary-button" onClick={() => setNote(undefined)}>
+              Volver a datos de ejemplo
+            </button>
+          </details>
+        </PrintTrialDialog>
       )}
       {mode === 'printer' && template && (
         <section className="catalog-panel">
           <h2>Ajustar impresora</h2>
+          <p>Esta hoja contiene marcas técnicas para medir el desplazamiento de la impresora.</p>
           <p>
             Si todos los datos salen corridos en la misma dirección, podés mover toda la impresión.
           </p>
@@ -495,7 +496,7 @@ export function PrintTemplateManager() {
               )
             }
           >
-            Probar ajuste guardado
+            Descargar hoja de calibración
           </button>
         </section>
       )}

@@ -32,6 +32,7 @@ mock.module('../src/components/printing/pdf-preview.js', {
 });
 const { LiveDeliveryPreview } = await import('../src/components/printing/live-delivery-preview.js');
 const { PrintGeometryEditor } = await import('../src/components/printing/geometry-editor.js');
+const { PrintTrialDialog } = await import('../src/components/printing/print-trial-dialog.js');
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
   url: 'http://localhost:3000',
   pretendToBeVisual: true,
@@ -86,6 +87,65 @@ afterEach(async () => {
   root = undefined;
   document.body.innerHTML = '';
   globalThis.fetch = originalFetch;
+});
+
+test('Print trial: visible modal, background preview, overlay download and close restore focus', async () => {
+  const requests: { path: string; body: unknown }[] = [];
+  const downloads: string[] = [];
+  const createUrl = URL.createObjectURL;
+  URL.createObjectURL = () => 'blob:trial';
+  const click = dom.window.HTMLAnchorElement.prototype.click;
+  dom.window.HTMLAnchorElement.prototype.click = function () {
+    downloads.push(this.href);
+  };
+  globalThis.fetch = async (url, init) => {
+    requests.push({ path: String(url), body: JSON.parse(String(init?.body)) });
+    return new Response(new Uint8Array([65]), { headers: { 'Content-Type': 'application/pdf' } });
+  };
+  let closed = false;
+  const opener = document.createElement('button');
+  document.body.append(opener);
+  opener.focus();
+  try {
+    await mount(
+      <PrintTrialDialog
+        template={template}
+        calibration={null}
+        onClose={() => {
+          closed = true;
+        }}
+      />,
+    );
+    assert.equal(container.querySelector('dialog')?.open, true);
+    assert.match(container.textContent!, /Prueba de impresión/);
+    assert.equal(container.querySelector('[data-pdf]')?.getAttribute('data-pdf'), 'A');
+    assert.equal(requests[0]!.path, '/api/printing/print-test-preview');
+    const download = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Descargar impresión de prueba',
+    )!;
+    await act(async () => {
+      download.click();
+    });
+    assert.equal(requests[1]!.path, '/api/printing/print-test');
+    assert.deepEqual(requests[1]!.body, { templateRevisionId: template.id, calibrationId: null });
+    assert.equal(
+      requests.some((r) => r.path.includes('calibration-test')),
+      false,
+    );
+    assert.deepEqual(downloads, ['blob:trial']);
+    await act(async () => {
+      container.querySelector('button')!.click();
+    });
+    assert.equal(closed, true);
+    await act(async () => {
+      root!.unmount();
+      root = undefined;
+    });
+    assert.equal(document.activeElement, opener);
+  } finally {
+    URL.createObjectURL = createUrl;
+    dom.window.HTMLAnchorElement.prototype.click = click;
+  }
 });
 
 test('Nuevo remito: background antes de guardar, debounce y cambios locales completos', async () => {

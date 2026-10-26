@@ -21,6 +21,11 @@ const positive = inventoryQuantitySchema.refine(
   'Revisá la cantidad.',
 );
 const allocation = z.object({ positionId: z.uuidv4(), quantity: positive }).strict();
+const scaledQuantity = (value: string) => {
+  if (!/^\d+(?:\.\d{1,6})?$/.test(value)) return 0n;
+  const [whole, fraction = ''] = value.split('.');
+  return BigInt(whole!) * 1000000n + BigInt(fraction.padEnd(6, '0'));
+};
 export const deliveryNoteLineInputSchema = z
   .object({
     id: z.uuidv4(),
@@ -39,10 +44,20 @@ const fields = {
 };
 function validate(
   v: {
-    lines: { id: string; allocations: unknown[] }[];
+    lines: { id: string; quantity: string; allocations: { quantity: string }[] }[];
   },
   ctx: z.RefinementCtx,
 ) {
+  for (const [index, line] of v.lines.entries())
+    if (
+      line.allocations.reduce((sum, a) => sum + scaledQuantity(a.quantity), 0n) >
+      scaledQuantity(line.quantity)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'El stock vinculado supera la cantidad documental.',
+        path: ['lines', index, 'allocations'],
+      });
   if (new Set(v.lines.map((l) => l.id)).size !== v.lines.length)
     ctx.addIssue({ code: 'custom', message: 'Hay líneas repetidas.', path: ['lines'] });
   if (v.lines.reduce((n, l) => n + l.allocations.length, 0) > 500)

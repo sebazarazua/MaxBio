@@ -6,6 +6,12 @@ Incremento documental original sobre HEAD `080d57afb1cf84b2f753e2c0d71d54452f40d
 
 `DeliveryNote` es el documento comercial estructurado. `InventoryMovement` es el hecho físico. El módulo Printing consume los datos del documento sin controlar stock: agrega plantillas, preview, PDF overlay y calibración. No hay Word runtime, facturación, ARCA, ANMAT, presupuestos, devoluciones ni reservas.
 
+Ortopedia Bourbon trabaja frecuentemente contra pedido: puede conseguir un producto y emitir su remito sin haberlo ingresado antes a MaxBio. Inventory es opcional para remitos. Product es obligatorio; InventoryBalance, allocations y ProductInventoryPolicy no son requisitos para documentar una salida sin stock vinculado.
+
+DeliveryNote puede confirmarse sin InventoryMovement. Si existen allocations válidas, se genera como máximo un OUTBOUND por la cantidad vinculada a Inventory. Una allocation representa solo la parte de la cantidad documental vinculada a existencia física registrada. Se admite `0 <= sum(allocations) <= line.quantity`; superar la cantidad documental siempre se rechaza.
+
+Ejemplos: cantidad documental 5 sin allocations confirma con `movementId: null`, sin movimientos ni cambios de balance; allocation 2 confirma por 5 y genera OUTBOUND -2; allocation 5 conserva OUTBOUND -5. No se crean balances negativos, lotes, ubicaciones, ajustes ni movimientos vacíos para completar el remanente. No se agrega captura manual de trazabilidad.
+
 El borrador tiene cliente, fecha documental, número opcional, paciente/afiliado opcionales, observaciones y hasta 50 líneas. Se guarda explícitamente. Puede retomarse y editarse entre operadores de la misma organización; no hay restricción de autor como en los ingresos. Todo cambio exige `expectedVersion`. La API reemplaza cabecera y líneas en una sola transacción para evitar un guardado parcial.
 
 ## Modelo Prisma
@@ -24,7 +30,7 @@ La posición referenciada identifica de forma inequívoca ubicación, lote real,
 
 `DRAFT → CONFIRMED` o `DRAFT → CANCELLED`. Un confirmado no se modifica, borra, reabre ni cancela. Cancelación lógica del borrador solo ADMIN; conserva líneas y número para evitar reciclados accidentales. No hay estados de entrega o facturación especulativos.
 
-El número es `documentPrefix + '-' + documentNumber`, ambos strings de 1–12 dígitos. Conserva ceros: `00001-00003897`. Deben estar ambos presentes o ambos ausentes. Se exige al confirmar, sin generación automática ni semántica fiscal. Unique por organización y ambas partes desde que se guardan. Editar el número de un borrador libera su valor anterior; cancelar conserva el último. El de un confirmado nunca se libera.
+El número es `documentPrefix + '-' + documentNumber`, ambos strings de 1–12 dígitos. Conserva ceros: `00001-00003897`. Deben estar ambos presentes o ambos ausentes. La numeración automática vigente asigna el número al guardar y lo exige al confirmar, sin semántica fiscal. Unique por organización y ambas partes desde que se guardan; cancelar conserva el número asignado. El de un confirmado nunca se libera.
 
 `documentDate` es fecha de calendario declarada del documento. No retrodata Inventory. `createdAt` es creación técnica y `confirmedAt` instante de confirmación; Inventory fija sus propios occurredAt/recordedAt después de adquirir los locks.
 
@@ -32,19 +38,19 @@ El número es `documentPrefix + '-' + documentNumber`, ambos strings de 1–12 d
 
 1. Leer la versión y productos del documento, autorizar dentro de la transacción.
 2. Advisory lock de confirmationOperationId, buscar replay antes de exigir versión actual.
-3. Locks Product por UUID ordenado, Customer y luego DeliveryNote.
+3. Locks Product por UUID ordenado (FOR UPDATE para productos con allocations; FOR SHARE para estabilizar snapshots de catálogo sin vincular stock), Customer y luego DeliveryNote.
 4. Releer el documento y comprobar tanto expectedVersion como la versión de la lectura previa. Una edición concurrente, incluso con una versión futura adivinada, no puede introducir productos que quedaron sin lock.
 5. Exigir borrador, número completo y líneas; revalidar Customer/Product activos.
-6. Si hay una plantilla activa, Printing valida la geometría nominal de los datos actuales y rechaza BLOCKED antes del posting; no genera PDF ni escribe archivos en esta transacción. `InventoryService.postDeliveryNote(tx, context, id)` valida política vigente, unidad, cantidades, allocations completas, posición, ubicación activa, condición USABLE, vencimiento, series y disponibilidad agregada. Rechaza scopes en conteo.
-7. Sellar snapshots de líneas; usar **el mismo `InventoryService.applyMovement`** que ingresos/conteos/ajustes para crear OUTBOUND, aplicar deltas negativos a balances, insertar ledger y sellarlo. Incrementar versiones de scopes afectados.
+6. Si hay una plantilla activa, Printing valida la geometría nominal de los datos actuales y rechaza BLOCKED antes del posting; no genera PDF ni escribe archivos en esta transacción. `InventoryService.postDeliveryNote(tx, context, id)` valida política vigente, unidad, cantidades, allocations no superiores a la cantidad documental, posición, ubicación activa, condición USABLE, vencimiento, series y disponibilidad agregada. Rechaza scopes en conteo.
+7. Sellar snapshots de líneas; usar **el mismo `InventoryService.applyMovement`** que ingresos/conteos/ajustes para crear OUTBOUND solo si hay allocations, aplicar deltas negativos a balances, insertar ledger y sellarlo. Incrementar versiones de scopes afectados.
 8. Guardar snapshot de cliente, confirmador, operación/hash, fecha, estado y versión del remito. Auditar `DELIVERY_NOTE_CONFIRMED` en esa misma transacción.
-9. Commit con triggers diferidos que exigen ambas direcciones del vínculo y correspondencia completa de allocations/líneas.
+9. Commit con triggers diferidos que exigen ambas direcciones del vínculo y correspondencia exacta entre cada allocation seleccionada y su línea negativa del movimiento; se exige movimiento si y solo si hay allocations.
 
-Un error de stock, constraint, sesión o auditoría revierte todo. El módulo DeliveryNotes no escribe InventoryBalance ni construye un ledger alternativo. Crear/editar/leer/previsualizar/cancelar borrador y resolver un scan generan **cero movimientos y cero cambios de balance**. Un remito confirmado genera **exactamente un OUTBOUND**; cada allocation produce una línea negativa trazable.
+Un error de stock, constraint, sesión o auditoría revierte todo. El módulo DeliveryNotes no escribe InventoryBalance ni construye un ledger alternativo. Crear/editar/leer/previsualizar/cancelar borrador y resolver un scan generan **cero movimientos y cero cambios de balance**. Un remito confirmado genera **cero o un OUTBOUND**; cada allocation produce una línea negativa trazable.
 
 ## Lock order y concurrencia
 
-Orden compatible con Inventory: operación advisory cuando corresponda → Product IDs únicos ordenados → Customer → DeliveryNote → posiciones/scopes del producto bajo esos locks → posting/auditoría. Los locks por producto son los existentes y serializan también ingresos, ajustes, conteos y rebuild. No se toma primero el documento para después esperar un producto. Las ediciones bloquean los nuevos productos y el cliente antes del documento; la cancelación solo necesita el documento. Triggers de hijos bloquean el padre e impiden mutaciones tardías.
+Orden compatible con Inventory: operación advisory cuando corresponda → Product IDs únicos ordenados → Customer → DeliveryNote → posiciones/scopes del producto bajo esos locks → posting/auditoría. Los locks exclusivos por producto con allocations son los existentes y serializan también ingresos, ajustes, conteos y rebuild. Sin allocations se estabiliza Product con FOR SHARE para congelar el catálogo, sin bloquear posiciones ni scopes de Inventory. No se toma primero el documento para después esperar un producto. Las ediciones bloquean los nuevos productos y el cliente antes del documento; la cancelación solo necesita el documento. Triggers de hijos bloquean el padre e impiden mutaciones tardías.
 
 Las cantidades se suman por positionId **entre todas las líneas** antes de descontar. Dos remitos no pueden consumir la última unidad ni la misma serie. Unique de número resuelve la carrera documental y unique de movement.deliveryNoteId impide doble salida. DRAFT no es una reserva: una baja entre abrir y confirmar produce conflicto humano, no stock negativo.
 
@@ -54,7 +60,7 @@ Se conserva el timeout transaccional de Inventory (10 s/maxWait 5 s) y sus lími
 
 Se reutilizan `amount`, `quantity`, `validQuantity` y `businessDate`: BigInt a escala 1.000.000, JSON decimal como string. UNIT/PAIR enteros; otras unidades hasta seis decimales. No se deducen conversiones desde presentation. Máximo 100 allocations por línea, 500 por remito y límite por cantidad compatible con la captura existente.
 
-Solo sale stock USABLE no vencido. La fecha de vencimiento es inclusiva según el día de Buenos Aires del servidor; una fecha anterior bloquea la salida aunque documentDate sea anterior. DAMAGED/QUARANTINE y vencidos permanecen consultables. No se crean lotes ni series al escanear o seleccionar. Política ausente bloquea confirmación; lotRequired/expirationRequired/serialRequired se revalidan con la política existente.
+Solo sale stock USABLE no vencido. La fecha de vencimiento es inclusiva según el día de Buenos Aires del servidor; una fecha anterior bloquea la salida aunque documentDate sea anterior. DAMAGED/QUARANTINE y vencidos permanecen consultables. No se crean lotes ni series al escanear o seleccionar. Política ausente bloquea solo las líneas con allocations; lotRequired/expirationRequired/serialRequired se revalidan con la política existente.
 
 Cada serie seleccionada requiere cantidad 1 y una posición disponible. Repetir una serie en cualquier línea del remito se rechaza. La protección existente de series del ledger y de balances continúa vigente.
 
@@ -62,7 +68,7 @@ La selección usa la consulta paginada de stock existente, ordenada por expirati
 
 ## Snapshots, sensibilidad y trazabilidad
 
-Cliente vivo en DRAFT. Al confirmar se copian solamente id/nombre/tipo/razón social/CUIT/condición fiscal/domicilio/localidad/provincia/código postal. No se copian contactos ni notas del Customer. Se congelan nombre, presentación, unidad y primer GTIN activo de Product. Cambios o archivados posteriores no alteran estos textos documentales.
+Cliente vivo en DRAFT. Al confirmar se copian solamente id/nombre/tipo/razón social/CUIT/condición fiscal/domicilio/localidad/provincia/código postal. No se copian contactos ni notas del Customer. Se congelan nombre, presentación, unidad y primer GTIN activo de Product en todas las líneas, incluso sin allocations ni movimiento. Cambios o archivados posteriores no alteran estos textos documentales.
 
 Lote/vencimiento/serie permanecen relacionados con identidades Inventory inmutables; InventoryMovementLine conserva además sus snapshots físicos existentes. No se duplica el ledger en JSON. El nombre de ubicación y el nombre visible del confirmador se resuelven desde sus relaciones actuales; los IDs históricos se conservan.
 
@@ -99,3 +105,9 @@ Eventos CREATED, UPDATED, CONFIRMED y CANCELLED mediante AuditService.success, r
 Printing ya agrega PrintTemplate con definition JSON tipado, PNG privado, dimensiones/coordenadas mm, tipografía, PrinterCalibration y PrintArtifact. No cambia los datos de DeliveryNote ni provoca movimientos al generar o reimprimir. La UI permite preview del borrador guardado; el overlay operativo exige CONFIRMED. Ver [arquitectura de impresión](delivery-note-printing.md).
 
 Facturación podrá relacionarse con remitos CONFIRMED y sus líneas mediante entidades propias, sin un billingStatus anticipado ni imponer todavía uno-a-uno o facturación completa. Devoluciones/reversiones deberán crear nuevos movimientos y vínculos al original; nunca reabrir ni reescribir el OUTBOUND.
+
+## Migración de Inventory opcional (26 de octubre de 2026)
+
+`20261026120000_delivery_optional_inventory` reemplaza únicamente `maxbio_delivery_complete`: los triggers diferidos anteriores exigían movimiento y cobertura total aun cuando el modelo ya admitía relaciones vacías. La nueva función exige movimiento si y solo si hay allocations, snapshots completos y trazabilidad exacta por allocation, manteniendo FKs, unicidad y guards de inmutabilidad. No modifica tablas ni datos ni migraciones históricas. Aplicar con `pnpm db:migrate`; nunca `db push`.
+
+Lista, búsqueda por número/cliente/producto y detalle parten de DeliveryNote y no dependen de movementId. Inventory history muestra solo la cantidad descontada; el documento conserva toda su cantidad. La UI identifica el vínculo de stock como opcional y no muestra error cuando un confirmado carece de movimiento. Una allocation que pierde disponibilidad sigue bloqueando: el operador debe quitarla o reducirla antes de confirmar.

@@ -14,6 +14,7 @@ import {
   printCalibrationSchema,
   printArtifactSchema,
   printTemplateCreateSchema,
+  type printTrialInputSchema,
   type PrintTemplateCreate,
   type PrintCalibrationCreate,
   type PrintRenderInput,
@@ -40,6 +41,7 @@ import { evaluatePrint, renderPdf, renderCalibrationTest } from '../infrastructu
 import { printingEnvelopes } from '../domain/geometry.js';
 import { printSampleDocument } from '../domain/sample-document.js';
 import type { PrintDocument } from '../domain/print-document.js';
+import type { z } from 'zod';
 
 type Tx = Prisma.TransactionClient;
 type TemplateRow = Prisma.PrintTemplateGetPayload<object>;
@@ -601,6 +603,44 @@ export class PrintingService {
         ),
       true,
     );
+  }
+  async printTest(
+    c: RequestActorContext,
+    input: z.infer<typeof printTrialInputSchema>,
+    preview = false,
+  ) {
+    const context = await this.db.client.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        await this.authorize(tx, c, true);
+        const template = await this.template(tx, c, input.templateRevisionId, false);
+        const calibration = await this.calibration(tx, c, template.id, input.calibrationId);
+        const document = input.document
+          ? await this.document(tx, c, input.document.id)
+          : printSampleDocument();
+        if (input.document && document.version !== input.document.expectedVersion)
+          throw new ConflictException('El remito cambió. Volvé a cargarlo antes de probar.');
+        return { template, calibration, document };
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+    const layout = await evaluatePrint(context.document, context.template, context.calibration);
+    if (!preview && layout.evaluation.state === 'BLOCKED')
+      throw new ConflictException(
+        layout.evaluation.issues.find((i) => i.state === 'BLOCKED')!.message,
+      );
+    // Exactly the operational renderer. Trial PDFs never create an artifact or change business data.
+    return (
+      await renderPdf({
+        ...context,
+        mode: preview ? 'PREVIEW' : 'PRINT_OVERLAY',
+        ...(preview
+          ? { background: await this.background(c, context.template.backgroundAssetId) }
+          : {}),
+        guides: false,
+        previewBadge: false,
+      })
+    ).bytes;
   }
   /** Read-only geometry guard inside the existing confirmation transaction. Never renders or touches files. */
   async assertConfirmable(tx: Tx, c: RequestActorContext, document: DeliveryNoteView) {
