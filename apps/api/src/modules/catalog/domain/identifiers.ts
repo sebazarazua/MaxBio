@@ -1,4 +1,5 @@
 import type { IdentifierInput } from '@maxbio/contracts';
+import { canonicalGtin, hasValidGtinCheckDigit } from '../../../common/domain/scanning/gtin.js';
 
 export class CatalogRuleError extends Error {}
 
@@ -17,16 +18,9 @@ export function normalizeIdentifier(input: IdentifierInput) {
       throw new CatalogRuleError(
         'El GTIN debe tener 8, 12, 13 o 14 dígitos, sin espacios ni guiones.',
       );
-    let sum = 0;
-    for (
-      let index = value.length - 2, weight = 3;
-      index >= 0;
-      index--, weight = weight === 3 ? 1 : 3
-    )
-      sum += Number(value[index]) * weight;
-    if ((10 - (sum % 10)) % 10 !== Number(value.at(-1)))
+    if (!hasValidGtinCheckDigit(value))
       throw new CatalogRuleError('El dígito de control del GTIN no es válido. Revisá el código.');
-    return { kind: input.kind, value, normalizedValue: value.padStart(14, '0') };
+    return { kind: input.kind, value, normalizedValue: canonicalGtin(value) };
   }
   if (input.kind === 'INTERNAL_BARCODE' && !/^MB-[A-Z0-9][A-Z0-9._-]{0,60}$/.test(value))
     throw new CatalogRuleError(

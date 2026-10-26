@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   inventoryDocumentSchema,
   inventoryDocumentListSchema,
@@ -12,11 +12,23 @@ import {
   type ProductView,
   type InventoryLineInput,
   type InventoryConfirm,
+  type ScanInput,
+  type ScanInterpretation,
 } from '@maxbio/contracts';
 import { inventoryFetch } from '@/lib/inventory-api';
 import { catalogFetch, CatalogHttpError } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
 import { EntityChoice, Feedback, Field, Pagination } from '../catalog/common';
+import { ProductIdentification } from '../catalog/identification';
+import { ScanDetails } from '../catalog/scan-details';
+import {
+  capturePlan,
+  pastedReadingProblem,
+  sameCaptureGroup,
+  serialInOperation,
+  serialList,
+  type ReviewItem,
+} from '@/lib/gs1-capture';
 import {
   useInventoryMutation,
   useInventoryResource,
@@ -27,6 +39,8 @@ import {
 } from './common';
 type Kind = 'receipts' | 'counts';
 type Choice = { id: string; name: string; archivedAt: string | null };
+type Policy = ReturnType<typeof inventoryPolicySchema.parse>;
+type Found = { product: ProductView; policy: Policy | null; scan?: ScanInterpretation };
 const operationPath = (kind: Kind, id?: string) =>
   '/inventario/' + (kind === 'receipts' ? 'ingresos' : 'inicial') + (id ? '/' + id : '');
 
@@ -163,7 +177,7 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
   const [namespace, setNamespace] = useState<'AUTO' | 'INTERNAL_CODE'>('AUTO');
   const [codeSupplier, setCodeSupplier] = useState<Choice | null>(null);
   const [recognized, setRecognized] = useState<ProductView | null>(null);
-  const [policy, setPolicy] = useState<ReturnType<typeof inventoryPolicySchema.parse> | null>(null);
+  const [policy, setPolicy] = useState<Policy | null>(null);
   const [scanMessage, setScanMessage] = useState('');
   const [unknown, setUnknown] = useState(false);
   const [qty, setQty] = useState('1'),
@@ -178,20 +192,49 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
     [lineLocked, setLineLocked] = useState(false);
   const lineAttempt = useRef<{ lineId: string; body: InventoryLineInput } | null>(null);
   const confirmation = useRef<InventoryConfirm | null>(null);
+  // GS1 capture state lives only in memory: never in URL, storage, cookies or analytics.
+  const [lastScan, setLastScan] = useState<ScanInterpretation | undefined>(undefined);
+  const [readingScan, setReadingScan] = useState<ScanInterpretation | undefined>(undefined);
+  const [scanReview, setScanReview] = useState<ReviewItem[]>([]);
+  const [scanNotes, setScanNotes] = useState<string[]>([]);
+  const [discarded, setDiscarded] = useState(false);
+  const [nextFound, setNextFound] = useState<Found | null>(null);
+  const [pendingInput, setPendingInput] = useState<ScanInput | null>(null);
+  const [identifying, setIdentifying] = useState<ScanInput | null>(null);
+  const attempt = useRef(0);
+  const inflight = useRef<AbortController | null>(null);
+  useEffect(() => () => inflight.current?.abort(), []);
   function focus() {
     requestAnimationFrame(() => {
       scanner.current?.focus();
       scanner.current?.select();
     });
   }
-  function resetReading() {
-    setRecognized(null);
-    setPolicy(null);
+  // A new or edited reading invalidates its own resolution, never the capture still pending.
+  function clearReadingResult() {
+    attempt.current++;
+    inflight.current?.abort();
     setScanMessage('');
     setUnknown(false);
+    setReadingScan(undefined);
+    setNextFound(null);
+    setPendingInput(null);
+    setIdentifying(null);
+    mutation.clear();
+  }
+  function clearScanCapture() {
+    setLastScan(undefined);
+    setScanReview([]);
+    setScanNotes([]);
+    setDiscarded(false);
+  }
+  function resetReading() {
+    clearReadingResult();
+    clearScanCapture();
+    setRecognized(null);
+    setPolicy(null);
     setEditingId(null);
     setSelectedLotId(null);
-    mutation.clear();
   }
   function resetCapture() {
     setQty('1');
@@ -213,44 +256,143 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
     }
     return present;
   }
-  async function scan(e: FormEvent) {
-    e.preventDefault();
-    if (!doc) return;
-    resetReading();
+  const captureDirty =
+    Boolean(recognized) &&
+    (editingId !== null ||
+      serialList(series).length > 0 ||
+      lot.trim() !== '' ||
+      expiration !== '' ||
+      qty.trim() !== '1' ||
+      condition !== 'USABLE' ||
+      scanReview.length > 0);
+  function prefill(found: Found, p: Policy, present: InventoryDocument) {
+    const plan = capturePlan(found.scan, p);
+    setLot(plan.lot);
+    setExpiration(plan.expiration);
+    setScanReview(plan.review);
+    setScanNotes(plan.notes);
+    setDiscarded(false);
+    if (plan.serial) {
+      if (serialInOperation(plan.serial, '', present.lines, found.product.id, null))
+        setScanMessage('Esta serie ya está en la operación.');
+      else setSeries(plan.serial);
+    }
+  }
+  async function apply(found: Found, present: InventoryDocument) {
     resetCapture();
+    clearScanCapture();
+    setRecognized(found.product);
+    setPolicy(found.policy);
+    setLastScan(found.scan);
+    if (!found.policy) return;
+    const next = await claim(found.product.id, present);
+    prefill(found, found.policy, next);
+    requestAnimationFrame(() => quantityInput.current?.focus());
+  }
+  // A repeated reading of the same group proposes, never adds or replaces, quantities by itself.
+  function merge(found: Found, present: InventoryDocument) {
+    const p = found.policy;
+    const plan = p ? capturePlan(found.scan, p) : null;
+    if (
+      !recognized ||
+      !p ||
+      !plan ||
+      editingId !== null ||
+      !sameCaptureGroup(
+        { productId: recognized.id, lot, expiration },
+        { productId: found.product.id, plan },
+      )
+    ) {
+      setNextFound(found);
+      return;
+    }
+    if (!p.serialRequired) {
+      setScanMessage('Este producto ya está en la captura. Revisá la cantidad y presioná Agregar.');
+      requestAnimationFrame(() => quantityInput.current?.focus());
+      return;
+    }
+    if (!plan.serial) setScanMessage('La lectura no trae serie. Ingresala desde la etiqueta.');
+    else if (serialInOperation(plan.serial, series, present.lines, recognized.id, editingId))
+      setScanMessage('Esta serie ya está en la operación.');
+    else if (serialList(series).length >= 100)
+      setScanMessage('La captura llegó a 100 series. Agregala antes de seguir escaneando.');
+    else {
+      setSeries([...serialList(series), plan.serial].join('\n'));
+      setScanMessage(
+        'Serie ' + plan.serial + ' agregada a la captura. Presioná Agregar para guardar el grupo.',
+      );
+    }
+    focus();
+  }
+  async function resolveReading(input: ScanInput) {
+    if (!doc) return;
+    const present = doc;
+    const current = ++attempt.current;
+    inflight.current?.abort();
+    const controller = new AbortController();
+    inflight.current = controller;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]);
+    setScanMessage('');
+    setUnknown(false);
+    setReadingScan(undefined);
+    setNextFound(null);
+    setPendingInput(null);
+    setIdentifying(null);
     await mutation.run(async () => {
-      const supplierId = doc.supplier?.id ?? codeSupplier?.id;
       const result = await catalogFetch('catalog-scans/resolve', scanResultSchema, {
         method: 'POST',
-        body: { value: reading, namespace, ...(supplierId ? { supplierId } : {}) },
+        body: input,
+        signal,
       });
+      // A late answer never fills a capture that belongs to a newer reading or context.
+      if (current !== attempt.current) return;
       if (result.status !== 'KNOWN') {
         setScanMessage(result.message);
-        setUnknown(result.status === 'UNKNOWN' || result.status === 'CANDIDATES');
+        if (result.status !== 'AMBIGUOUS') setReadingScan(result.scan);
+        const associable = result.status === 'UNKNOWN' || result.status === 'CANDIDATES';
+        setUnknown(associable);
+        if (associable) setPendingInput(input);
         focus();
         return;
       }
-      setRecognized(result.product);
       const p = await inventoryFetch(
         `products/${result.product.id}/policy`,
         inventoryPolicySchema.nullable(),
+        { signal },
       );
-      setPolicy(p);
-      if (p) {
-        await claim(result.product.id, doc);
-        requestAnimationFrame(() => quantityInput.current?.focus());
-      }
+      if (current !== attempt.current) return;
+      const found = { product: result.product, policy: p, scan: result.scan };
+      if (captureDirty) merge(found, present);
+      else await apply(found, present);
     });
   }
-  async function savedPolicy(p: ReturnType<typeof inventoryPolicySchema.parse>) {
+  async function scan(e: FormEvent) {
+    e.preventDefault();
+    // Read the element itself: a scanner burst may finish after the last rendered state.
+    const value = scanner.current?.value ?? reading;
+    if (!doc || !value.trim()) return;
+    const supplierId = doc.supplier?.id ?? codeSupplier?.id;
+    await resolveReading({ value, namespace, ...(supplierId ? { supplierId } : {}) });
+  }
+  async function savedPolicy(p: Policy) {
     setPolicy(p);
     if (doc && recognized) {
       const next = await mutation.run(() => claim(recognized.id, doc));
-      if (next) setUpdated(next);
+      if (next) {
+        setUpdated(next);
+        if (lastScan) prefill({ product: recognized, policy: p, scan: lastScan }, p, next);
+      }
     }
   }
+  function discardScanned(item: ReviewItem) {
+    setScanReview((items) => items.filter((i) => i.key !== item.key));
+    if (item.key !== 'data') setDiscarded(true);
+  }
+  function resolveReview(key: ReviewItem['key'], value: string) {
+    if (value.trim()) setScanReview((items) => items.filter((i) => i.key !== key));
+  }
   async function add() {
-    if (!doc || !recognized || !policy) return;
+    if (!doc || !recognized || !policy || scanReview.length) return;
     if (!lineAttempt.current) {
       const serialNumbers = series
         .split(/\r?\n/)
@@ -292,20 +434,22 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
       setUpdated(next);
       lineAttempt.current = null;
       setLineLocked(false);
+      const pending = nextFound;
       resetCapture();
       resetReading();
       setReading('');
       focus();
+      if (pending) await mutation.run(() => apply(pending, next));
     }
   }
   async function edit(l: InventoryDocument['lines'][number]) {
     await mutation.run(async () => {
       const p = await catalogFetch(`products/${l.product.id}`, productSchema);
       const pol = await inventoryFetch(`products/${p.id}/policy`, inventoryPolicySchema.nullable());
+      clearReadingResult();
+      clearScanCapture();
       setRecognized(p);
       setPolicy(pol);
-      setUnknown(false);
-      setScanMessage('');
       setQty(l.quantity);
       setLot(l.lotNumber ?? '');
       setExpiration(l.expirationDate ?? '');
@@ -452,7 +596,18 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
                     required
                     onChange={(e) => {
                       setReading(e.target.value);
-                      resetReading();
+                      clearReadingResult();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.nativeEvent.isComposing) e.preventDefault();
+                    }}
+                    onPaste={(e) => {
+                      // Text inputs silently join pasted lines; refuse several readings at once.
+                      const problem = pastedReadingProblem(e.clipboardData.getData('text'));
+                      if (problem) {
+                        e.preventDefault();
+                        setScanMessage(problem);
+                      }
                     }}
                   />
                 </Field>
@@ -461,10 +616,10 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
                     value={namespace}
                     onChange={(e) => {
                       setNamespace(e.target.value as 'AUTO' | 'INTERNAL_CODE');
-                      resetReading();
+                      clearReadingResult();
                     }}
                   >
-                    <option value="AUTO">Scanner: GTIN, MB- o código externo</option>
+                    <option value="AUTO">Scanner: GTIN, GS1, MB- o código externo</option>
                     <option value="INTERNAL_CODE">Código interno (ingreso manual)</option>
                   </select>
                 </Field>
@@ -475,7 +630,7 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
                     value={codeSupplier}
                     change={(s) => {
                       setCodeSupplier(s);
-                      resetReading();
+                      clearReadingResult();
                     }}
                     allowCreate={false}
                   />
@@ -487,33 +642,116 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
             </form>
             <div aria-live="polite" role="status">
               {scanMessage && <p>{scanMessage}</p>}
-              {unknown && (
+              <ScanDetails scan={readingScan} />
+              {unknown && pendingInput && !identifying && (
                 <p>
-                  Primero identificá este producto. El borrador está guardado.{' '}
-                  <Link
-                    href={'/identificar?returnTo=' + encodeURIComponent(operationPath(kind, id))}
+                  Primero identificá este producto. El borrador
+                  {captureDirty ? ' y la captura en curso se conservan.' : ' está guardado.'}{' '}
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() => setIdentifying(pendingInput)}
                   >
                     Identificar producto
-                  </Link>
+                  </button>
                 </p>
+              )}
+              {nextFound && recognized && (
+                <div className="catalog-notice">
+                  <p>
+                    Leíste {nextFound.product.name}, pero hay una captura sin agregar de{' '}
+                    {recognized.name}. Agregala o descartala antes de continuar; no se borra sola.
+                  </p>
+                  <div className="actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy || lineLocked}
+                      onClick={() => {
+                        const found = nextFound;
+                        setNextFound(null);
+                        void mutation.run(() => apply(found, doc));
+                      }}
+                    >
+                      Descartar la captura actual y usar la nueva lectura
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() => {
+                        setNextFound(null);
+                        requestAnimationFrame(() => quantityInput.current?.focus());
+                      }}
+                    >
+                      Volver a la captura actual
+                    </button>
+                  </div>
+                  <p>
+                    Si presionás Agregar, la nueva lectura se carga después de guardar la actual.
+                  </p>
+                </div>
               )}
             </div>
           </section>
+          {identifying && (
+            <section className="catalog-panel">
+              <h2>Identificar producto</h2>
+              <p>
+                El borrador y la captura en curso se conservan mientras identificás el producto. Si
+                recargás la página tendrás que volver a escanear.
+              </p>
+              <ProductIdentification
+                embedded={{
+                  scan: identifying,
+                  supplier:
+                    kind === 'receipts' && doc.supplier
+                      ? { ...doc.supplier, archivedAt: null }
+                      : codeSupplier,
+                  onIdentified: () => {
+                    // The backend interprets the same reading again for the current draft.
+                    const input = identifying;
+                    setIdentifying(null);
+                    void resolveReading(input);
+                  },
+                  onCancel: () => {
+                    clearReadingResult();
+                    focus();
+                  },
+                }}
+              />
+            </section>
+          )}
           {recognized && (
             <section className="catalog-panel">
-              <h2>Producto reconocido</h2>
+              <h2>
+                {scanReview.length
+                  ? 'Producto reconocido; revisá estos datos'
+                  : lastScan
+                    ? '✓ Producto reconocido'
+                    : 'Producto reconocido'}
+              </h2>
               <strong>{recognized.name}</strong>
               <p>
                 {recognized.presentation || 'Sin presentación'} · Se cuenta en{' '}
                 {quantityLabels[recognized.unitOfMeasure]}.
               </p>
               {!policy && (
-                <InventoryPolicyEditor
-                  key={recognized.id}
-                  productId={recognized.id}
-                  policy={null}
-                  onSaved={savedPolicy}
-                />
+                <>
+                  {lastScan && (
+                    <div>
+                      <p>Datos leídos del código (se conservan mientras configurás el producto):</p>
+                      <ScanDetails scan={lastScan} />
+                    </div>
+                  )}
+                  <InventoryPolicyEditor
+                    key={recognized.id}
+                    productId={recognized.id}
+                    policy={null}
+                    onSaved={savedPolicy}
+                  />
+                </>
               )}
               {policy && (
                 <>
@@ -526,6 +764,37 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
                       .filter(Boolean)
                       .join(' · ') || 'Cantidad en unidad base; lote y vencimiento opcionales.'}
                   </p>
+                  {scanNotes.map((note) => (
+                    <p key={note}>{note}</p>
+                  ))}
+                  {scanReview.map((item) => (
+                    <div key={item.key} className="catalog-notice" role="status">
+                      <p>{item.message}</p>
+                      {item.key === 'serial' && !policy.serialRequired && (
+                        <InventoryPolicyEditor
+                          key={'review-' + policy.version}
+                          productId={recognized.id}
+                          policy={policy}
+                          onSaved={savedPolicy}
+                        />
+                      )}
+                      {item.canDiscard && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={busy}
+                          onClick={() => discardScanned(item)}
+                        >
+                          {item.key === 'data'
+                            ? 'Revisé la etiqueta'
+                            : item.key === 'serial' && !policy.serialRequired
+                              ? 'Descartar la serie para este ingreso'
+                              : 'Descartar el dato leído'}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {discarded && <p>Dato escaneado descartado en esta captura.</p>}
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
@@ -562,6 +831,7 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
                           onChange={(e) => {
                             setLot(e.target.value);
                             setSelectedLotId(null);
+                            resolveReview('lot', e.target.value);
                           }}
                         />
                       </Field>
@@ -575,9 +845,20 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
                           onChange={(e) => {
                             setExpiration(e.target.value);
                             setSelectedLotId(null);
+                            resolveReview('expiration', e.target.value);
                           }}
                         />
                       </Field>
+                      {expiration &&
+                        expiration <
+                          new Date().toLocaleDateString('en-CA', {
+                            timeZone: 'America/Argentina/Buenos_Aires',
+                          }) && (
+                          <p className="catalog-notice">
+                            Este vencimiento ya pasó: se registra como existencia física, pero no
+                            queda disponible.
+                          </p>
+                        )}
                       {policy.serialRequired && (
                         <Field
                           label="Series (una por línea)"
@@ -585,7 +866,10 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
                         >
                           <textarea
                             value={series}
-                            onChange={(e) => setSeries(e.target.value)}
+                            onChange={(e) => {
+                              setSeries(e.target.value);
+                              resolveReview('serial', e.target.value);
+                            }}
                             maxLength={13000}
                             rows={5}
                           />
@@ -608,7 +892,11 @@ export function InventoryOperation({ kind, id }: { kind: Kind; id: string }) {
                         existencias.
                       </p>
                     )}
-                    <button className="primary-button" disabled={busy || !counted}>
+                    {scanReview.length > 0 && <p>Revisá los datos leídos antes de agregar.</p>}
+                    <button
+                      className="primary-button"
+                      disabled={busy || !counted || scanReview.length > 0}
+                    >
                       {busy
                         ? 'Guardando…'
                         : lineLocked

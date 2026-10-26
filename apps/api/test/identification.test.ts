@@ -6,7 +6,12 @@ import {
   identificationConfirmSchema,
   identificationRouteContract,
 } from '@maxbio/contracts';
-import { parseScan } from '../src/modules/catalog/domain/catalog-scan.js';
+import { classifyScan } from '../src/modules/catalog/domain/catalog-scan.js';
+
+const parseScan = (input: Parameters<typeof classifyScan>[0]) => {
+  const result = classifyScan(input, { referenceYear: 2026 });
+  return 'status' in result ? result : result.identity;
+};
 
 test('GTIN conserva checksum y canonical14; inválido nunca cae al namespace externo', () => {
   const valid = parseScan({ value: '4006381333931', namespace: 'AUTO' });
@@ -42,17 +47,38 @@ test('internos y externos tienen namespaces diferentes; controles y límites se 
   for (const value of ['MB-lower', 'a\tbc', 'a'.repeat(129), '   '])
     assert.equal((parseScan({ value, namespace: 'AUTO' }) as { status: string }).status, 'INVALID');
 });
-test('compuestos GS1 detectables nunca se persisten como identidad', () => {
-  for (const value of [
-    '(01)04006381333931(10)LOT',
-    ']C1010400638133393110LOT',
-    '010400638133393117261231',
-    '01abc\x1d10LOT',
-  ])
-    assert.equal(
-      (parseScan({ value, namespace: 'AUTO' }) as { status: string }).status,
-      'UNSUPPORTED',
+test('GS1 compuesto resuelve solo la identidad GTIN; nunca se persiste como código externo', () => {
+  for (const [value, fields] of [
+    ['(01)04006381333931(10)LOT', { gtin14: '04006381333931', lotNumber: 'LOT' }],
+    [']C1010400638133393110LOT', { gtin14: '04006381333931', lotNumber: 'LOT' }],
+    [
+      '010400638133393117261231',
+      {
+        gtin14: '04006381333931',
+        expirationDate: '2026-12-31',
+        expiration: { encoded: '261231', precision: 'DAY' },
+      },
+    ],
+  ] as const) {
+    const result = classifyScan(
+      { value, namespace: 'AUTO', supplierId: randomUUID() },
+      {
+        referenceYear: 2026,
+      },
     );
+    assert.ok(!('status' in result));
+    assert.deepEqual(result.identity, {
+      kind: 'GTIN',
+      value: '04006381333931',
+      normalizedValue: '04006381333931',
+      supplierId: null,
+    });
+    assert.deepEqual(result.scan?.fields, fields);
+  }
+  assert.equal(
+    (parseScan({ value: '01abc10LOT', namespace: 'AUTO' }) as { status: string }).status,
+    'INVALID',
+  );
 });
 test('contratos estrictos limitan workflow; no admite stock, múltiples identificadores ni edición estructural', () => {
   assert.equal(

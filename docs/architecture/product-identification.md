@@ -12,19 +12,19 @@ SupplierProduct conserva unique histórica organización/proveedor/producto. Pri
 
 ## Namespaces y resolución
 
-| Lectura                  | Tratamiento                                                                                                                                  |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| GTIN numérico 8/12/13/14 | Checksum existente obligatorio, canonical14, ProductIdentifier GTIN.                                                                         |
-| MB-                      | ProductIdentifier INTERNAL_BARCODE, validación/case existentes.                                                                              |
-| Código interno manual    | Namespace INTERNAL_CODE elegido explícitamente, case/puntuación/ceros preservados; no inferido de supplierCode.                              |
-| Otro barcode externo     | SupplierScanIdentifier, proveedor explícito, máximo 128 caracteres, trim externo y comparación exacta. Producto derivado de SupplierProduct. |
-| GS1 compuesto detectable | UNSUPPORTED; ingresar solo el GTIN visible. No se persiste la lectura compuesta.                                                             |
+| Lectura                  | Tratamiento                                                                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| GTIN numérico 8/12/13/14 | Checksum existente obligatorio, canonical14, ProductIdentifier GTIN.                                                                           |
+| MB-                      | ProductIdentifier INTERNAL_BARCODE, validación/case existentes.                                                                                |
+| Código interno manual    | Namespace INTERNAL_CODE elegido explícitamente, case/puntuación/ceros preservados; no inferido de supplierCode.                                |
+| Otro barcode externo     | SupplierScanIdentifier, proveedor explícito, máximo 128 caracteres, trim externo y comparación exacta. Producto derivado de SupplierProduct.   |
+| GS1 (AIs 01/10/17/21)    | AI01 → ProductIdentifier GTIN canonical14; lote/vencimiento/serie viajan solo como metadata `scan` efímera. Ver [GS1 V1](gs1-verification.md). |
 
 AUTO nunca convierte un checksum GTIN inválido en código externo. PostgreSQL también rechaza GTIN/MB- dentro de SupplierScanIdentifier, controles y compuestos detectables. INTERNAL_CODE es declaración manual de un namespace propio; no se usa automáticamente para rescatar barcodes inválidos.
 
 No hay evidencia de un namespace universal EXTERNAL_BARCODE: unique histórica externa es organización/proveedor/valor. Dos proveedores pueden usar el mismo texto para Products diferentes. Sin proveedor, código externo registrado devuelve AMBIGUOUS y pide contexto, incluso si hoy coincide en uno solo. Código nuevo sin contexto devuelve UNKNOWN pero no permite confirmar. Reserva archivada de identificador/vínculo/proveedor/producto no se recicla.
 
-Detección GS1 acotada: AIs parentizados 01/10/17/21, prefijos AIM `]C1`, `]d2`, `]Q3`, ASCII 29 y patrón 01 + GTIN14 + AI 10/17/21. No parser GS1 completo, validación de asignación oficial ni inferencia de empaque. Parser de identidad separado permite incorporar datos físicos en un futuro dominio Inventory.
+GS1 V1 (desde el 26/10/2026): parser puro único en `apps/api/src/common/domain/scanning/` para AIs 01/10/17/21 (AI 11 solo como encuadre), HRI parentizado, element string con U+001D y AIM `]d2`, `]C1`, `]Q3`. La intención GS1 se decide antes de los namespaces: una lectura GS1 inválida nunca se degrada a código externo ni interno, e INTERNAL_CODE rechaza lecturas GS1 (FORMAT_CONFLICT). Resolve agrega `scan` opcional (fields, issues, status) a KNOWN/UNKNOWN/CANDIDATES/ARCHIVED y `reasonCode` a INVALID/UNSUPPORTED; la confirmación persiste únicamente el GTIN. Digital Link responde UNSUPPORTED_FORMAT sin red. No es un parser GS1 completo ni valida asignación oficial o empaque. Detalle en [gs1-verification.md](gs1-verification.md).
 
 ## Endpoints y contratos
 
@@ -66,6 +66,6 @@ Procedimiento: ADMIN importa CSV DL2115 y comprueba cero Products nuevos. OPERAT
 
 ## Límites y siguiente paso
 
-Prueba actual: teclado simulando HID, sin hardware físico. Validar layout, terminador/prefijos y velocidad con lectores reales de Theo/Nutria. Diferidos cámara, parser GS1 completo, impresión/administración de códigos externos, liberación/reasignación especial y matching difuso automático. Reservas externas archivadas requieren un incremento administrativo explícito; no se reciclan.
+Prueba actual: teclado simulando HID, sin hardware físico. Validar layout, terminador/prefijos y velocidad con lectores reales de Theo/Nutria. Diferidos cámara, parser GS1 completo (más allá de 01/10/17/21), Digital Link, impresión/administración de códigos externos, liberación/reasignación especial y matching difuso automático. Reservas externas archivadas requieren un incremento administrativo explícito; no se reciclan.
 
 No Inventory/Stock/movimientos/lotes/series/vencimientos/ubicaciones/reservas/FEFO ni Remitos. Próximo paso recomendado: probar usuarios/lectores/referencias reales y acordar unidades/conversiones y recepción/movimientos para un incremento separado. Esta entrega se detiene en identificación.

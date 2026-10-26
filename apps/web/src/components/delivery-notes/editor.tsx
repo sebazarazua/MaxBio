@@ -303,7 +303,13 @@ function ProductCapture({ add, returnTo }: { add: (p: ProductView) => void; retu
       });
       if (result.status === 'KNOWN') {
         add(result.product);
-        setMessage('Producto agregado. Elegí la existencia física.');
+        const fields = result.scan?.fields;
+        // Until documentary traceability exists, scanned physical data is not kept by Remitos.
+        setMessage(
+          fields?.lotNumber || fields?.expirationDate || fields?.serialNumber
+            ? 'Producto agregado. El lote, vencimiento o serie leídos no se guardan ni se imprimen en el remito; si corresponde, elegí la existencia física en Stock.'
+            : 'Producto agregado. Elegí la existencia física.',
+        );
         setReading('');
       } else {
         setMessage(

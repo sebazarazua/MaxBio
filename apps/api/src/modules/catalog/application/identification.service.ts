@@ -17,7 +17,8 @@ import type {
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
 import type { RequestActorContext } from '../../../common/auth/request-context.js';
 import { AuditService } from '../../audit/audit.service.js';
-import { parseScan } from '../domain/catalog-scan.js';
+import { classifyScan } from '../domain/catalog-scan.js';
+import { businessDate } from '../../inventory/domain/quantity.js';
 import { productInclude, productView } from './catalog.service.js';
 import { searchTokens, textContains } from '../domain/catalog-search.js';
 import { itemInclude, itemView } from './supplier-catalog.service.js';
@@ -84,9 +85,16 @@ export class IdentificationService {
     };
   }
 
+  // The GS1 century window follows the Argentine business year of the request, never a document date.
+  private classify(input: ScanInput) {
+    return classifyScan(input, { referenceYear: Number(businessDate().slice(0, 4)) });
+  }
+
   async resolve(context: RequestActorContext, input: ScanInput) {
-    const identity = parseScan(input);
-    if ('status' in identity) return identity;
+    const classified = this.classify(input);
+    if ('status' in classified) return classified;
+    const { identity, scan } = classified;
+    const interpreted = scan ? { scan } : {};
     const scope = { organizationId: context.organizationId };
     if (
       input.supplierId &&
@@ -116,8 +124,9 @@ export class IdentificationService {
             product,
             message:
               'Este identificador está reservado por un registro archivado. Un administrador debe revisar su restauración.',
+            ...interpreted,
           }
-        : { status: 'KNOWN' as const, identity, product };
+        : { status: 'KNOWN' as const, identity, product, ...interpreted };
     }
     const where: Prisma.SupplierCatalogItemWhereInput = {
       ...scope,
@@ -151,12 +160,14 @@ export class IdentificationService {
         total,
         message:
           'Coincidencia declarada por el proveedor. Compará y confirmá explícitamente; no crea ni asocia productos automáticamente.',
+        ...interpreted,
       };
     return {
       status: 'UNKNOWN' as const,
       identity,
       message:
         'Código desconocido. Buscá la referencia del proveedor para identificar el producto.',
+      ...interpreted,
     };
   }
 
@@ -264,8 +275,10 @@ export class IdentificationService {
   }
 
   async confirm(context: RequestActorContext, input: IdentificationConfirm) {
-    const identity = parseScan(input.scan);
-    if ('status' in identity) throw new BadRequestException(identity.message);
+    // Backend re-interprets the scan; only the commercial identity (GTIN for GS1) is persisted.
+    const classified = this.classify(input.scan);
+    if ('status' in classified) throw new BadRequestException(classified.message);
+    const { identity } = classified;
     if (identity.kind === 'SUPPLIER_BARCODE' && !identity.supplierId)
       throw new BadRequestException('Elegí explícitamente el proveedor del código externo.');
     const requestHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');

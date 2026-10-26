@@ -29,6 +29,8 @@ import {
   useSearch,
 } from './common';
 import { ReferenceAssociation } from './supplier-catalog';
+import { ScanDetails } from './scan-details';
+import { pastedReadingProblem } from '@/lib/gs1-capture';
 
 type Choice = { id: string; name: string; archivedAt: string | null };
 function ProductComparison({ product }: { product: ProductView }) {
@@ -141,12 +143,14 @@ function ReferenceSearch({
 function AssociationForm({
   reference,
   scan,
+  identity,
   completed,
   cancel,
   onBusy,
 }: {
   reference: SupplierCatalogItemView;
   scan: ScanInput;
+  identity: { kind: string; normalizedValue: string };
   completed: (product: ProductView) => void;
   cancel: () => void;
   onBusy: (busy: boolean) => void;
@@ -248,8 +252,8 @@ function AssociationForm({
       </p>
       <ReferenceAssociation item={reference} />
       {reference.normalizedReportedGtin &&
-        /^[0-9]+$/.test(scan.value.trim()) &&
-        scan.value.trim().padStart(14, '0') !== reference.normalizedReportedGtin && (
+        identity.kind === 'GTIN' &&
+        identity.normalizedValue !== reference.normalizedReportedGtin && (
           <p className="catalog-notice">
             El código leído difiere del GTIN declarado por el proveedor. Confirmá solamente si
             verificaste que corresponde al mismo producto.
@@ -259,7 +263,15 @@ function AssociationForm({
         <div className="archive-confirm">
           <h3>3. Confirmar identificación</h3>
           <p>
-            Lectura: <strong className="code">{scan.value}</strong>
+            {identity.kind === 'GTIN' && identity.normalizedValue !== scan.value.trim() ? (
+              <>
+                GTIN leído: <strong className="code">{identity.normalizedValue}</strong>
+              </>
+            ) : (
+              <>
+                Lectura: <strong className="code">{scan.value}</strong>
+              </>
+            )}
             {scan.supplierId && ' · Proveedor: ' + reference.supplier.name}
           </p>
           <p>
@@ -278,7 +290,7 @@ function AssociationForm({
           </p>
           <p>
             Se guardarán la referencia, el vínculo del proveedor y el identificador sobre este
-            producto.
+            producto. Lote, vencimiento y serie no se guardan en esta confirmación.
           </p>
           <div className="actions">
             <button
@@ -447,10 +459,22 @@ function AssociationForm({
     </section>
   );
 }
-export function ProductIdentification() {
-  const [value, setValue] = useState('');
-  const [namespace, setNamespace] = useState<ScanInput['namespace']>('AUTO');
-  const [supplier, setSupplier] = useState<Choice | null>(null);
+// Embedded mode keeps a Receipt/Count capture in memory while the operator identifies the product.
+export function ProductIdentification({
+  embedded,
+}: {
+  embedded?: {
+    scan: ScanInput;
+    supplier: Choice | null;
+    onIdentified: (product: ProductView) => void;
+    onCancel: () => void;
+  };
+} = {}) {
+  const [value, setValue] = useState(embedded?.scan.value ?? '');
+  const [namespace, setNamespace] = useState<ScanInput['namespace']>(
+    embedded?.scan.namespace ?? 'AUTO',
+  );
+  const [supplier, setSupplier] = useState<Choice | null>(embedded?.supplier ?? null);
   const [scan, setScan] = useState<ScanInput | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [reference, setReference] = useState<SupplierCatalogItemView | null>(null);
@@ -461,6 +485,9 @@ export function ProductIdentification() {
   const guard = useRef(false);
   useEffect(() => {
     input.current?.focus();
+    if (embedded) void resolve();
+    // Embedded identification resolves its received reading once, on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   function focus() {
     requestAnimationFrame(() => {
@@ -473,8 +500,8 @@ export function ProductIdentification() {
     setScan(null);
     setError('');
   }
-  async function resolve(event: FormEvent) {
-    event.preventDefault();
+  async function resolve(event?: FormEvent) {
+    event?.preventDefault();
     if (guard.current || reference) return;
     guard.current = true;
     setBusy(true);
@@ -521,15 +548,25 @@ export function ProductIdentification() {
               value={value}
               maxLength={512}
               required
-              readOnly={Boolean(reference)}
+              readOnly={Boolean(reference || embedded)}
               disabled={busy || confirming}
               onChange={(event) => {
                 setValue(event.target.value);
                 changedReading();
               }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault();
+              }}
+              onPaste={(event) => {
+                const problem = pastedReadingProblem(event.clipboardData.getData('text'));
+                if (problem) {
+                  event.preventDefault();
+                  setError(problem);
+                }
+              }}
             />
           </Field>
-          <fieldset disabled={busy || Boolean(reference)} className="scanner-options">
+          <fieldset disabled={busy || Boolean(reference || embedded)} className="scanner-options">
             <Field label="Tipo de lectura">
               <select
                 value={namespace}
@@ -557,21 +594,32 @@ export function ProductIdentification() {
             <button className="primary-button" disabled={busy || Boolean(reference)}>
               {busy ? 'Reconociendo…' : 'Reconocer código'}
             </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={busy || confirming}
-              onClick={() => {
-                setReference(null);
-                setResult(null);
-                setScan(null);
-                setValue('');
-                setError('');
-                focus();
-              }}
-            >
-              Siguiente lectura
-            </button>
+            {embedded ? (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={confirming}
+                onClick={embedded.onCancel}
+              >
+                Cancelar identificación
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy || confirming}
+                onClick={() => {
+                  setReference(null);
+                  setResult(null);
+                  setScan(null);
+                  setValue('');
+                  setError('');
+                  focus();
+                }}
+              >
+                Siguiente lectura
+              </button>
+            )}
           </div>
         </form>
         <Feedback error={error} />
@@ -579,13 +627,28 @@ export function ProductIdentification() {
           {result &&
             (result.status === 'KNOWN' ? (
               <div className="identification-known">
-                <h2>Producto reconocido</h2>
+                <h2>
+                  {result.scan?.status === 'PARTIAL'
+                    ? 'Producto reconocido; revisá estos datos'
+                    : '✓ Producto reconocido'}
+                </h2>
                 <strong>{result.product.name}</strong>
                 <p>
                   {result.product.brand?.name} · {result.product.presentation || 'Sin presentación'}{' '}
                   · {unitLabels[result.product.unitOfMeasure]}
                 </p>
-                <Link href={'/productos/' + result.product.id}>Ver producto</Link>
+                <ScanDetails scan={result.scan} />
+                {embedded ? (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => embedded.onIdentified(result.product)}
+                  >
+                    Volver a la operación con este producto
+                  </button>
+                ) : (
+                  <Link href={'/productos/' + result.product.id}>Ver producto</Link>
+                )}
               </div>
             ) : (
               <>
@@ -602,6 +665,7 @@ export function ProductIdentification() {
                   }
                 </h2>
                 <p>{result.message}</p>
+                {result.status !== 'AMBIGUOUS' && <ScanDetails scan={result.scan} />}
                 {result.status === 'ARCHIVED' && (
                   <Link href={'/productos/' + result.product.id}>
                     {result.product.name} · Ver producto archivado
@@ -619,9 +683,14 @@ export function ProductIdentification() {
             key={reference.id}
             reference={reference}
             scan={scan}
+            identity={result.identity}
             cancel={() => setReference(null)}
             onBusy={setConfirming}
             completed={(product) => {
+              if (embedded) {
+                embedded.onIdentified(product);
+                return;
+              }
               setReference(null);
               setResult({ status: 'KNOWN', identity: result.identity, product });
               setValue('');

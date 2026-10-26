@@ -9,5 +9,10 @@
     "outDir": "dist-test",
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["test/**/*.tsx", "src/components/catalog/catalog-import-preview-table.tsx"]
+  "include": [
+    "test/**/*.tsx",
+    "src/components/catalog/catalog-import-preview-table.tsx",
+    "src/lib/gs1-capture.ts",
+    "src/app/api/catalog/[...path]/route.ts"
+  ]
 }

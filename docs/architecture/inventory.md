@@ -166,7 +166,7 @@ No hay endpoints de editar/borrar movimientos, CRUD balance/lot/serial, source g
 
 ## 21. UX y búsqueda
 
-Inicio ofrece Ingresar productos, Consultar stock e Inventario inicial junto a Identificar. Rutas `/inventario/ingresos`, `/inventario/inicial`, detalle persistido por UUID; `/stock` y `/stock/:id`. No se muestran nombres técnicos del ledger. Un solo depósito sin selector. Scanner HID usa resolve/parser/namespaces existentes; desconocido ofrece identificación separada y enlace seguro de regreso al borrador. Inventory no crea Product silenciosamente.
+Inicio ofrece Ingresar productos, Consultar stock e Inventario inicial junto a Identificar. Rutas `/inventario/ingresos`, `/inventario/inicial`, detalle persistido por UUID; `/stock` y `/stock/:id`. No se muestran nombres técnicos del ledger. Un solo depósito sin selector. Scanner HID usa resolve/parser/namespaces existentes; desconocido abre la identificación dentro de la operación y conserva en memoria la captura en curso. Inventory no crea Product silenciosamente. Con GS1 V1, lote/vencimiento/serie leídos precargan el formulario según la política (sin agregar línea ni publicar stock hasta Agregar y confirmar); día 00, datos repetidos o inválidos y series en productos no serializados requieren revisión o descarte explícito. Ver [GS1 V1](gs1-verification.md).
 
 PostgreSQL busca nombre/modelo/códigos internos, GTIN equivalente, códigos proveedor, lote o serie; paginación acotada y orden estable. Ficha muestra disponible/físico/no disponible, cobertura, condiciones, fechas, series y fuente histórica. Próximos vencimientos son datos para consultas futuras, no alertas activas. Tablas tienen scroll contenido en móvil, labels y estado aria-live. No se afirma auditoría WCAG.
 

@@ -134,7 +134,7 @@ Este incremento reemplaza las decisiones temporales anteriores de dejar scanner/
 | Caso de uso ADMIN/OPERATOR específico       | Permite operar con scanner sin ampliar CRUD administrativo.                                  |
 | Resolve sin escrituras comerciales          | Reconocer no ingresa stock ni confirma identidad de declaraciones externas.                  |
 | Confirmación humana y transaccional         | Product nuevo, identidad, vínculo, referencia, auditoría y recibo comparten commit/rollback. |
-| HID local y parser GS1 acotado              | Sin SDK/cámara; detección compuesta UNSUPPORTED; GTIN manual disponible.                     |
+| HID local y parser GS1 acotado              | Sin SDK/cámara; desde GS1 V1 parser puro 01/10/17/21; persiste solo GTIN.                    |
 | MAXBIO_BUILD_DIR opcional                   | Permite verificaciones/builds aislados en .next sin interferir con un dev server activo.     |
 
 Detalles y límites en [product-identification.md](product-identification.md). Inventory estaba diferido en ese incremento; la entrega siguiente implementa V1. Remitos continúa diferido.

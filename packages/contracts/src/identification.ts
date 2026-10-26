@@ -17,10 +17,86 @@ export const scanIdentitySchema = z
     supplierId: z.uuid().nullable(),
   })
   .strict();
-const unresolved = { identity: scanIdentitySchema, message: z.string() };
+export const scanReasonCodeSchema = z.enum([
+  'EMPTY_SCAN',
+  'SCAN_TOO_LONG',
+  'TOO_MANY_ELEMENTS',
+  'TOO_MANY_ISSUES',
+  'INVALID_CHARACTER',
+  'INVALID_CONTROL',
+  'MALFORMED_AI',
+  'MIXED_FORMAT',
+  'FORMAT_CONFLICT',
+  'UNSUPPORTED_SYMBOLOGY',
+  'UNSUPPORTED_FORMAT',
+  'MISSING_GTIN',
+  'INVALID_GTIN',
+  'INVALID_EXPIRATION',
+  'EXPIRATION_DAY_UNSPECIFIED',
+  'INVALID_FIELD_LENGTH',
+  'DUPLICATE_AI',
+  'UNSUPPORTED_AI',
+  'TRUNCATED_ELEMENT',
+  'MISSING_SEPARATOR',
+  'UNEXPECTED_SEPARATOR',
+]);
+// Backend interpretation of a GS1 reading. Never carries the raw scan, offsets or unknown AI values.
+const gs1Text = z.string().regex(/^[!"%-?A-Z_a-z]{1,20}$/);
+export const scanInterpretationSchema = z
+  .object({
+    format: z.literal('GS1'),
+    status: z.enum(['VALID', 'PARTIAL', 'INVALID']),
+    syntax: z.enum(['ELEMENT_STRING', 'HRI']),
+    symbology: z.enum(['GS1_DATAMATRIX', 'GS1_128', 'GS1_QR']).nullable(),
+    referenceYear: z.number().int(),
+    fields: z
+      .object({
+        gtin14: z
+          .string()
+          .regex(/^[0-9]{14}$/)
+          .optional(),
+        lotNumber: gs1Text.optional(),
+        expirationDate: z.iso.date().optional(),
+        expiration: z
+          .object({
+            encoded: z.string().regex(/^[0-9]{6}$/),
+            precision: z.enum(['DAY', 'MONTH']),
+          })
+          .strict()
+          .optional(),
+        serialNumber: gs1Text.optional(),
+      })
+      .strict(),
+    issues: z
+      .array(
+        z
+          .object({
+            code: scanReasonCodeSchema,
+            severity: z.enum(['ERROR', 'REVIEW']),
+            ai: z
+              .string()
+              .regex(/^[0-9]{2,4}$/)
+              .optional(),
+          })
+          .strict(),
+      )
+      .max(16),
+    canApplyPhysicalData: z.boolean(),
+  })
+  .strict();
+const unresolved = {
+  identity: scanIdentitySchema,
+  message: z.string(),
+  scan: scanInterpretationSchema.optional(),
+};
 export const scanResultSchema = z.discriminatedUnion('status', [
   z
-    .object({ status: z.literal('KNOWN'), identity: scanIdentitySchema, product: productSchema })
+    .object({
+      status: z.literal('KNOWN'),
+      identity: scanIdentitySchema,
+      product: productSchema,
+      scan: scanInterpretationSchema.optional(),
+    })
     .strict(),
   z
     .object({
@@ -28,6 +104,7 @@ export const scanResultSchema = z.discriminatedUnion('status', [
       identity: scanIdentitySchema,
       product: productSchema,
       message: z.string(),
+      scan: scanInterpretationSchema.optional(),
     })
     .strict(),
   z.object({ status: z.literal('UNKNOWN'), ...unresolved }).strict(),
@@ -39,9 +116,47 @@ export const scanResultSchema = z.discriminatedUnion('status', [
       total: z.number().int().positive(),
     })
     .strict(),
-  z.object({ status: z.literal('AMBIGUOUS'), ...unresolved }).strict(),
-  z.object({ status: z.enum(['INVALID', 'UNSUPPORTED']), message: z.string() }).strict(),
+  z
+    .object({ status: z.literal('AMBIGUOUS'), identity: scanIdentitySchema, message: z.string() })
+    .strict(),
+  z
+    .object({
+      status: z.enum(['INVALID', 'UNSUPPORTED']),
+      message: z.string(),
+      reasonCode: scanReasonCodeSchema.optional(),
+      scan: scanInterpretationSchema.optional(),
+    })
+    .strict(),
 ]);
+// Operator wording per reason code; shared by API messages and the web review panels.
+export const scanReasonMessages: Record<z.infer<typeof scanReasonCodeSchema>, string> = {
+  EMPTY_SCAN: 'La lectura está vacía. Volvé a escanear.',
+  SCAN_TOO_LONG: 'La lectura es demasiado larga. Volvé a escanear.',
+  TOO_MANY_ELEMENTS: 'La lectura contiene demasiados datos. Revisá la etiqueta.',
+  TOO_MANY_ISSUES: 'La lectura tiene demasiados errores. Revisá la etiqueta.',
+  INVALID_CHARACTER: 'La lectura contiene caracteres que no corresponden a un código GS1.',
+  INVALID_CONTROL: 'La lectura contiene caracteres de control no admitidos. Volvé a escanear.',
+  MALFORMED_AI: 'No pudimos interpretar la estructura del código GS1.',
+  MIXED_FORMAT:
+    'La lectura mezcla formatos. Escaneá nuevamente o ingresá el texto con paréntesis sin prefijo del lector.',
+  FORMAT_CONFLICT:
+    'El lector envió el código en un formato que no corresponde a GS1. Revisá la configuración del lector.',
+  UNSUPPORTED_SYMBOLOGY: 'El tipo de código informado por el lector todavía no está soportado.',
+  UNSUPPORTED_FORMAT:
+    'Este formato de código (por ejemplo, un enlace web) todavía no está soportado.',
+  MISSING_GTIN: 'El código GS1 no incluye el GTIN del producto.',
+  INVALID_GTIN: 'El código GS1 tiene un GTIN inválido.',
+  INVALID_EXPIRATION: 'La fecha de vencimiento del código no es válida.',
+  EXPIRATION_DAY_UNSPECIFIED:
+    'El código indica solo mes y año de vencimiento. Ingresá la fecha exacta desde la etiqueta.',
+  INVALID_FIELD_LENGTH: 'Un dato del código tiene una longitud inválida.',
+  DUPLICATE_AI: 'La lectura repite un dato; revisá la etiqueta.',
+  UNSUPPORTED_AI: 'El código contiene datos que todavía no interpretamos.',
+  TRUNCATED_ELEMENT: 'La lectura está incompleta. Volvé a escanear.',
+  MISSING_SEPARATOR:
+    'Un dato del código es demasiado largo; puede faltar un separador. Revisá la configuración del lector.',
+  UNEXPECTED_SEPARATOR: 'La lectura tiene separadores en posiciones inválidas. Volvé a escanear.',
+};
 export const identificationProductInputSchema = productCreateSchema
   .pick({
     name: true,
@@ -81,6 +196,8 @@ export const identificationConfirmationSchema = z
 export type ScanInput = z.infer<typeof scanInputSchema>;
 export type ScanIdentity = z.infer<typeof scanIdentitySchema>;
 export type ScanResult = z.infer<typeof scanResultSchema>;
+export type ScanInterpretation = z.infer<typeof scanInterpretationSchema>;
+export type ScanReasonCode = z.infer<typeof scanReasonCodeSchema>;
 export type IdentificationConfirm = z.infer<typeof identificationConfirmSchema>;
 export const supplierScanIdentifierListSchema = z
   .object({

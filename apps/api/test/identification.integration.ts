@@ -236,11 +236,19 @@ after(async () => {
   await client.$disconnect();
 });
 
-test('resolve UNKNOWN/INVALID/UNSUPPORTED no escribe negocio ni auditoría ni stock', async () => {
+test('resolve UNKNOWN/INVALID/UNSUPPORTED y GS1 no escriben negocio ni auditoría ni stock', async () => {
   const initial = await counts();
   assert.equal((await resolve(gtin)).status, 'UNKNOWN');
   assert.equal((await resolve('4006381333932')).status, 'INVALID');
-  assert.equal((await resolve('(01)04006381333931(10)LOT')).status, 'UNSUPPORTED');
+  // GS1 resolves only the commercial GTIN; physical data travels as ephemeral scan metadata.
+  const composite = await resolve('(01)04006381333931(10)LOT');
+  assert.equal(composite.status, 'UNKNOWN');
+  if (composite.status === 'UNKNOWN') {
+    assert.equal(composite.identity.kind, 'GTIN');
+    assert.equal(composite.identity.normalizedValue, canonical);
+    assert.equal(composite.scan?.fields.lotNumber, 'LOT');
+  }
+  assert.equal((await resolve('https://id.gs1.org/01/04006381333931')).status, 'UNSUPPORTED');
   assert.deepEqual(await counts(), initial);
   const where = { organizationId: { in: orgs } };
   assert.equal(await client.inventoryMovement.count({ where }), 0);
