@@ -26,7 +26,7 @@ import { ARCA_CLOCK, ArcaError } from '../src/modules/fiscal/arca/arca-errors.js
 import { ArcaWsaaClient } from '../src/modules/fiscal/arca/wsaa-client.js';
 import { ArcaTicketProvider } from '../src/modules/fiscal/arca/ticket-provider.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
-import { crypto, testCertificate } from './arca-fixtures.js';
+import { crypto, ephemeralFiles, testCertificate } from './arca-fixtures.js';
 
 process.env.NODE_ENV = 'test';
 process.env.WEB_ORIGIN = 'http://localhost:3000';
@@ -47,7 +47,8 @@ let at = new Date(Date.now() + 10000),
   failAudit = false;
 const cookies: string[] = [];
 const fields = {
-  legalName: 'Empresa Test',
+  // Accented legal name: OpenSSL for Windows must receive UTF-8 argv (OPENSSL_WIN32_UTF8).
+  legalName: 'Biotecnología Compañía Test S.A.',
   tradeName: 'Comercio',
   cuit: '27-11024724-4',
   vatCondition: 'RESPONSABLE_INSCRIPTO',
@@ -201,7 +202,9 @@ after(async () => {
   await parent.$disconnect();
 });
 test('Fiscal HTTP: partial/complete, version race, strict inputs, roles and CSRF', async () => {
-  assert.equal((await readiness()).fiscalProfile, 'INCOMPLETE');
+  const initial = await readiness();
+  assert.equal(initial.fiscalProfile, 'INCOMPLETE');
+  assert.equal(initial.openssl, 'AVAILABLE');
   await checked(
     await request('profile', 'PUT', { ...fields, cuit: '27110247245', expectedVersion: 0 }),
     400,
@@ -255,6 +258,23 @@ test('Credential HTTP: idempotent generation, CSR only, cross-tenant and upload 
   const id = a.pendingCredentialId!;
   const csr = arcaCsrSchema.parse(await checked(await request(`arca/credentials/${id}/csr`)));
   assert.match(csr.pem, /BEGIN CERTIFICATE REQUEST/);
+  assert.doesNotMatch(JSON.stringify(csr), /PRIVATE KEY/);
+  const subject = await ephemeralFiles({ 'request.csr': csr.pem }, async (dir) =>
+    (
+      await crypto.command([
+        'req',
+        '-in',
+        join(dir, 'request.csr'),
+        '-verify',
+        '-noout',
+        '-subject',
+        '-nameopt',
+        'utf8',
+      ])
+    ).toString('utf8'),
+  );
+  assert.match(subject, /O=Biotecnología Compañía Test S\.A\./);
+  assert.match(subject, /serialNumber=CUIT 27110247244/);
   for (const [path, method, body] of [
     [`arca/credentials/${id}/csr`, 'GET', undefined],
     [

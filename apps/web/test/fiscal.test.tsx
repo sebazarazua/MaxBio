@@ -283,6 +283,154 @@ test('Fiscal BFF: route allowlist, CSRF/Origin, bounded JSON, strict responses, 
   );
   globalThis.fetch = async () => Response.json({ ...readiness(), token: 'SECRET_TEST_TOKEN' });
   const leaked = await request(['arca', 'readiness']);
-  assert.equal(leaked.status, 503);
+  assert.equal(leaked.status, 502);
   assert.doesNotMatch(await leaked.text(), /SECRET_TEST/);
+});
+const profileOk = { profile: null };
+const settingsFetch =
+  (handlers: { profile?: () => Promise<Response>; readiness?: () => Promise<Response> }) =>
+  async (url: RequestInfo | URL) =>
+    String(url).endsWith('/profile')
+      ? (handlers.profile?.() ?? Response.json(profileOk))
+      : (handlers.readiness?.() ?? Response.json(readiness()));
+test('Fiscal settings: GET profile and readiness succeed, OpenSSL state is shown, no spinner left', async () => {
+  const paths: string[] = [];
+  const handler = settingsFetch({
+    readiness: async () => Response.json(readiness({ openssl: 'UNAVAILABLE' })),
+  });
+  globalThis.fetch = async (url) => {
+    paths.push(String(url));
+    return handler(url);
+  };
+  const ui = await mount(<FiscalSettingsView isAdmin />);
+  try {
+    assert.deepEqual(paths.sort(), ['/api/fiscal/arca/readiness', '/api/fiscal/profile']);
+    assert.doesNotMatch(ui.host.textContent!, /Cargando configuración/);
+    assert.match(ui.host.textContent!, /OpenSSL en el servidor: no disponible/);
+    assert.match(ui.host.textContent!, /Revisá ARCA_OPENSSL_PATH/);
+    assert.ok(ui.host.querySelector('[name=cuit]'));
+  } finally {
+    await ui.close();
+  }
+});
+test('Fiscal settings: failed initial load shows error and retry, never an endless loading state', async () => {
+  let calls = 0,
+    fail = true;
+  let release: () => void = () => {};
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    calls++;
+    if (fail)
+      return Response.json(
+        {
+          statusCode: 503,
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'No pudimos conectar. Volvé a intentar en unos momentos.',
+          requestId: id,
+          timestamp: new Date().toISOString(),
+          path: '/api/fiscal/arca/readiness',
+        },
+        { status: 503 },
+      );
+    if (String(url).endsWith('/readiness')) await new Promise<void>((r) => (release = r));
+    return settingsFetch({})(url);
+  }) as typeof fetch;
+  const ui = await mount(<FiscalSettingsView isAdmin />);
+  try {
+    assert.equal(calls, 2);
+    assert.match(ui.host.textContent!, /No pudimos conectar/);
+    assert.doesNotMatch(ui.host.textContent!, /Cargando configuración/);
+    fail = false;
+    await act(async () => button(ui.host, 'Volver a intentar').click());
+    assert.match(ui.host.textContent!, /Cargando configuración/);
+    assert.doesNotMatch(ui.host.textContent!, /No pudimos conectar/);
+    assert.equal([...ui.host.querySelectorAll('button')].length, 0, 'no retry while loading');
+    assert.equal(calls, 4, 'one request per endpoint, no duplicates');
+    await act(async () => release());
+    assert.doesNotMatch(ui.host.textContent!, /Cargando configuración|No pudimos conectar/);
+    assert.ok(ui.host.querySelector('[name=cuit]'));
+    assert.match(ui.host.textContent!, /OpenSSL en el servidor: disponible/);
+  } finally {
+    await ui.close();
+  }
+});
+test('Fiscal settings: schema mismatch and non-JSON responses surface a human error, not a spinner', async () => {
+  const { openssl: _omitted, ...stale } = readiness();
+  void _omitted;
+  globalThis.fetch = settingsFetch({ readiness: async () => Response.json(stale) }) as typeof fetch;
+  let ui = await mount(<FiscalSettingsView isAdmin />);
+  try {
+    assert.match(ui.host.textContent!, /no coincide con esta versión de MaxBio/);
+    assert.doesNotMatch(ui.host.textContent!, /Cargando configuración|openssl|invalid_value/);
+    assert.ok(button(ui.host, 'Volver a intentar'));
+  } finally {
+    await ui.close();
+  }
+  globalThis.fetch = settingsFetch({
+    profile: async () => new Response('<html>Internal Server Error</html>', { status: 500 }),
+  }) as typeof fetch;
+  ui = await mount(<FiscalSettingsView isAdmin />);
+  try {
+    assert.match(ui.host.textContent!, /No pudimos conectar/);
+    assert.doesNotMatch(ui.host.textContent!, /Cargando configuración|Unexpected token|html/);
+  } finally {
+    await ui.close();
+  }
+});
+test('Fiscal BFF: distinguishes config, network, timeout, JSON and contract failures with safe logs', async () => {
+  process.env.WEB_ORIGIN = 'http://localhost:3000';
+  const logs: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+  const get = () =>
+    proxyFiscal(
+      new Request('http://localhost:3000/api/fiscal/arca/readiness', {
+        headers: { Cookie: 'maxbio-session=SECRET_SESSION_TOKEN' },
+      }),
+      ['arca', 'readiness'],
+    );
+  const expect = async (status: number, message: RegExp, log: RegExp) => {
+    logs.length = 0;
+    const response = await get();
+    assert.equal(response.status, status);
+    const text = await response.text();
+    assert.match(text, message);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0]!, log);
+    assert.doesNotMatch(
+      logs.join('\n') + text,
+      /SECRET_SESSION_TOKEN|SECRET_TEST_TOKEN|BEGIN PRIVATE|postgresql:/,
+    );
+  };
+  try {
+    delete process.env.API_BASE_URL;
+    await expect(503, /No pudimos conectar/, /API_BASE_URL_MISSING/);
+    process.env.API_BASE_URL = 'not a url';
+    await expect(503, /No pudimos conectar/, /API_BASE_URL_INVALID/);
+    process.env.API_BASE_URL = 'http://127.0.0.1:3001';
+    globalThis.fetch = async () => {
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: { code: 'ECONNREFUSED', message: 'postgresql://user:pass@db' },
+      });
+    };
+    await expect(503, /No pudimos conectar/, /API_UNREACHABLE \(ECONNREFUSED\)/);
+    globalThis.fetch = async () => {
+      throw new DOMException('The operation timed out.', 'TimeoutError');
+    };
+    await expect(504, /tardó demasiado/, /API_TIMEOUT/);
+    globalThis.fetch = async () => new Response('-----BEGIN PRIVATE KEY----- not json');
+    await expect(502, /respuesta inesperada/, /INVALID_JSON \(HTTP 200\)/);
+    globalThis.fetch = async () => Response.json({ error: 'SECRET_TEST_TOKEN' }, { status: 500 });
+    await expect(502, /respuesta inesperada/, /UNEXPECTED_RESPONSE \(HTTP 500\)/);
+    const { openssl: _omitted, ...stale } = readiness();
+    void _omitted;
+    globalThis.fetch = async () => Response.json({ ...stale, token: 'SECRET_TEST_TOKEN' });
+    await expect(
+      502,
+      /versión incompatible/,
+      /CONTRACT_MISMATCH \(.*openssl: invalid_value.*\)|CONTRACT_MISMATCH \(.*openssl/,
+    );
+  } finally {
+    console.error = original;
+    process.env.API_BASE_URL = 'http://127.0.0.1:3001';
+  }
 });

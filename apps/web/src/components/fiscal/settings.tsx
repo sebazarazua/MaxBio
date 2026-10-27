@@ -23,8 +23,15 @@ export function FiscalSettingsView({ isAdmin }: { isAdmin: boolean }) {
   const [data, setData] = useState<{ profile: FiscalProfile | null; arca: ArcaReadiness } | null>(
       null,
     ),
+    // Explicit load state: a failed load ends in 'error' (with retry), never in an endless spinner.
+    [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading'),
     [error, setError] = useState(''),
     [revision, setRevision] = useState(0);
+  const reload = () => {
+    setStatus('loading');
+    setError('');
+    setRevision((v) => v + 1);
+  };
   useEffect(() => {
     if (!isAdmin) return;
     const abort = new AbortController();
@@ -35,12 +42,14 @@ export function FiscalSettingsView({ isAdmin }: { isAdmin: boolean }) {
       .then(([p, arca]) => {
         if (!abort.signal.aborted) {
           setData({ profile: p.profile, arca });
-          setError('');
+          setStatus('ready');
         }
       })
       .catch((e) => {
-        if (!abort.signal.aborted)
+        if (!abort.signal.aborted) {
           setError(e instanceof Error ? e.message : 'No pudimos cargar la configuración.');
+          setStatus('error');
+        }
       });
     return () => abort.abort();
   }, [isAdmin, revision]);
@@ -58,23 +67,29 @@ export function FiscalSettingsView({ isAdmin }: { isAdmin: boolean }) {
         Datos de tu organización y autenticación de prueba con ARCA. Las facturas internas siguen
         disponibles.
       </p>
-      {error && (
+      {status === 'error' && (
         <p className="catalog-error" role="alert">
           {error}
         </p>
       )}
-      <button className="secondary-button" onClick={() => setRevision((v) => v + 1)}>
-        Cargar información actual
-      </button>
       {!data ? (
-        <p role="status">Cargando configuración…</p>
+        status === 'error' ? (
+          <button className="secondary-button" onClick={reload}>
+            Volver a intentar
+          </button>
+        ) : (
+          <p role="status">Cargando configuración…</p>
+        )
       ) : (
         <>
+          <button className="secondary-button" disabled={status === 'loading'} onClick={reload}>
+            Cargar información actual
+          </button>
           <FiscalProfileForm
             key={data.profile?.version ?? 'new'}
             profile={data.profile}
             saved={(p) => setData((d) => (d ? { ...d, profile: p } : d))}
-            refresh={() => setRevision((v) => v + 1)}
+            refresh={reload}
           />
           <ArcaConnection
             key={revision}
