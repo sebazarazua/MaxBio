@@ -1,5 +1,5 @@
-import { Injectable } from '@nestjs/common';
-import { execFile } from 'node:child_process';
+import { Inject, Injectable, Logger, Optional, type OnApplicationBootstrap } from '@nestjs/common';
+import { execFile, type ExecFileOptionsWithBufferEncoding } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   generateKeyPair,
@@ -30,9 +30,103 @@ export type CertificateMetadata = {
   validTo: Date;
 };
 
+export type OpenSslRunner = (
+  file: string,
+  args: string[],
+  options: ExecFileOptionsWithBufferEncoding,
+) => Promise<{ stdout: Buffer }>;
+export const OPENSSL_RUNNER = Symbol('OPENSSL_RUNNER');
+export type OpenSslAvailability =
+  | { available: true; version: string }
+  | { available: false; reason: 'NOT_EXECUTABLE' | 'FAILED' | 'MISSING_COMMANDS' };
+export const REQUIRED_OPENSSL_COMMANDS = ['req', 'x509', 'cms'] as const;
+// execFile reports launch failures with a string errno code; a finished process has a numeric exit code.
+const LAUNCH_ERRORS = new Set([
+  'ENOENT',
+  'EACCES',
+  'EPERM',
+  'EISDIR',
+  'ENOTDIR',
+  'EINVAL',
+  'UNKNOWN',
+]);
+const AVAILABILITY_TTL_MS = 30000;
+export function opensslFailure(error: unknown) {
+  const { code, killed, signal } = ((typeof error === 'object' && error) || {}) as {
+    code?: unknown;
+    killed?: boolean;
+    signal?: unknown;
+  };
+  if (typeof code === 'string' && LAUNCH_ERRORS.has(code))
+    return { launch: true, detail: `no se pudo ejecutar (${code})` };
+  if (killed || signal) return { launch: false, detail: 'tiempo de espera agotado' };
+  if (typeof code === 'number') return { launch: false, detail: `código de salida ${code}` };
+  return { launch: false, detail: typeof code === 'string' ? code : 'error desconocido' };
+}
+
 // Temp files have fixed names, never client-controlled paths. No shell, inherited stdout or stderr.
 @Injectable()
-export class OpenSslArcaCrypto implements CmsSigner {
+export class OpenSslArcaCrypto implements CmsSigner, OnApplicationBootstrap {
+  private readonly logger = new Logger('ArcaOpenSSL');
+  private probe?: { at: number; result: Promise<OpenSslAvailability> };
+  constructor(@Optional() @Inject(OPENSSL_RUNNER) private readonly runner: OpenSslRunner = run) {}
+  private get binary() {
+    return process.env.ARCA_OPENSSL_PATH ?? 'openssl';
+  }
+  onApplicationBootstrap() {
+    // Diagnostic only: the API keeps starting; ARCA actions report OPENSSL_UNAVAILABLE on use.
+    if (process.env.NODE_ENV === 'test') return;
+    const source =
+      process.env.NODE_ENV === 'production'
+        ? 'ARCA_OPENSSL_PATH o PATH'
+        : process.env.ARCA_OPENSSL_PATH
+          ? `ARCA_OPENSSL_PATH=${process.env.ARCA_OPENSSL_PATH}`
+          : 'PATH del sistema (ARCA_OPENSSL_PATH sin configurar)';
+    void this.availability().then((result) => {
+      if (result.available)
+        this.logger.log(`OpenSSL disponible para ARCA: ${result.version} (${source}).`);
+      else
+        this.logger.warn(
+          `OpenSSL no disponible para ARCA (${result.reason}; ${source}). La generación de solicitudes fallará hasta corregir ARCA_OPENSSL_PATH.`,
+        );
+    });
+  }
+  /** Cached probe of the executable and the subcommands used by ARCA (req, x509, cms). */
+  availability(now = Date.now()) {
+    if (!this.probe || now - this.probe.at > AVAILABILITY_TTL_MS)
+      this.probe = { at: now, result: this.diagnose() };
+    return this.probe.result;
+  }
+  private async diagnose(): Promise<OpenSslAvailability> {
+    let version: string;
+    try {
+      version = (await this.exec(['version'])).toString('utf8').trim().split(/\r?\n/)[0]!;
+    } catch (e) {
+      return { available: false, reason: opensslFailure(e).launch ? 'NOT_EXECUTABLE' : 'FAILED' };
+    }
+    const missing = await Promise.all(
+      REQUIRED_OPENSSL_COMMANDS.map((command) =>
+        this.exec([command, '-help']).then(
+          () => false,
+          () => true,
+        ),
+      ),
+    );
+    if (missing.some(Boolean)) return { available: false, reason: 'MISSING_COMMANDS' };
+    return { available: true, version: version.slice(0, 120) };
+  }
+  private async exec(args: string[]) {
+    const result = await this.runner(this.binary, args, {
+      timeout: 15000,
+      maxBuffer: 262144,
+      encoding: 'buffer',
+      windowsHide: true,
+      // OpenSSL for Windows reads argv in the ANSI code page unless this is set; -utf8 subjects
+      // with accented legal names (e.g. "Biotecnología") would otherwise fail. Ignored elsewhere.
+      env: { ...process.env, OPENSSL_WIN32_UTF8: '1' },
+    });
+    return result.stdout;
+  }
   private async files<T>(
     contents: Record<string, Buffer | string>,
     operation: (directory: string) => Promise<T>,
@@ -52,14 +146,15 @@ export class OpenSslArcaCrypto implements CmsSigner {
   }
   async command(args: string[]) {
     try {
-      const result = await run(process.env.ARCA_OPENSSL_PATH ?? 'openssl', args, {
-        timeout: 15000,
-        maxBuffer: 262144,
-        encoding: 'buffer',
-        windowsHide: true,
-      });
-      return result.stdout;
-    } catch {
+      return await this.exec(args);
+    } catch (e) {
+      // Only the subcommand and failure kind: never stderr, arguments, keys or file contents.
+      const failure = opensslFailure(e);
+      this.logger.warn(`OpenSSL ${args[0]}: ${failure.detail}.`);
+      if (failure.launch) {
+        this.probe = undefined;
+        throw new ArcaError('OPENSSL_UNAVAILABLE');
+      }
       throw new ArcaError('CRYPTO_UNAVAILABLE');
     }
   }

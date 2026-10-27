@@ -16,6 +16,9 @@ import { FiscalModule } from './modules/fiscal/fiscal.module.js';
 
 @Module({
   imports: [
+    // The root .env is loaded by Node itself (`--env-file` in the dev/start scripts); real process
+    // variables take precedence over it. Nest never reads a file, so tests and production only see
+    // the process environment, and everything is validated here.
     ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, validate: validateEnvironment }),
     HealthModule,
     IdentityModule,

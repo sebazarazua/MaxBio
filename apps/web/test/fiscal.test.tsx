@@ -43,6 +43,7 @@ function readiness(extra: Partial<ArcaReadiness> = {}): ArcaReadiness {
     version: 0,
     fiscalProfile: 'INCOMPLETE',
     cuitValid: false,
+    openssl: 'AVAILABLE',
     privateKey: false,
     csr: false,
     certificateInstalled: false,

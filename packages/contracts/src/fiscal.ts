@@ -120,6 +120,7 @@ export const arcaReadinessSchema = z
     version: z.number().int().nonnegative(),
     fiscalProfile: z.enum(['COMPLETE', 'INCOMPLETE']),
     cuitValid: z.boolean(),
+    openssl: z.enum(['AVAILABLE', 'UNAVAILABLE']),
     privateKey: z.boolean(),
     csr: z.boolean(),
     certificateInstalled: z.boolean(),

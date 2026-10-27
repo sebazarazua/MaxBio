@@ -18,8 +18,9 @@ export const arcaMessages = {
     'Hay una autenticación vigente o con resultado incierto. Esperá hasta la fecha indicada para volver a probar.',
   EXPIRING_TICKET: 'El acceso está próximo a vencer. Esperá su vencimiento para renovarlo.',
   WSAA_ERROR: 'ARCA rechazó la conexión. Revisá el certificado y su autorización en WSASS.',
+  OPENSSL_UNAVAILABLE: 'OpenSSL no está disponible en el servidor. Revisá ARCA_OPENSSL_PATH.',
   CRYPTO_UNAVAILABLE:
-    'No pudimos preparar la solicitud. Revisá la instalación de OpenSSL en el servidor.',
+    'OpenSSL no pudo completar la operación en el servidor. Revisá los registros de la API.',
 } as const;
 export type ArcaErrorCode = keyof typeof arcaMessages;
 export class ArcaError extends Error {

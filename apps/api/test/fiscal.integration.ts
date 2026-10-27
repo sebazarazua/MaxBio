@@ -181,6 +181,8 @@ before(
     configureApp(app);
     await app.listen(0, '127.0.0.1');
     base = await app.getUrl();
+    // Test certificates start "now": a slow migrate above must not leave them not-yet-valid.
+    at = new Date(Date.now() + 10000);
   },
   { timeout: 90000 },
 );

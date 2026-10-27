@@ -207,6 +207,8 @@ export class FiscalService {
   }
   async readiness(c: RequestActorContext): Promise<ArcaReadiness> {
     this.admin(c);
+    // Probed outside the transaction: a missing executable must not hold a DB connection.
+    const openssl = (await this.crypto.availability()).available;
     return this.db.client.$transaction(
       async (tx) => {
         await tx.$executeRaw`SET TRANSACTION READ ONLY`;
@@ -278,6 +280,7 @@ export class FiscalService {
           version: config?.version ?? 0,
           fiscalProfile: complete ? 'COMPLETE' : 'INCOMPLETE',
           cuitValid: Boolean(p?.cuit && validCuit(p.cuit)),
+          openssl: openssl ? 'AVAILABLE' : 'UNAVAILABLE',
           privateKey: Boolean(active || pending),
           csr: Boolean(active || pending),
           certificateInstalled: Boolean(

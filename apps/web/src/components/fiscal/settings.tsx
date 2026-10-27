@@ -312,6 +312,9 @@ export function ArcaConnection({
       <ul>
         <li>Datos fiscales: {arca.fiscalProfile === 'COMPLETE' ? 'completos' : 'pendientes'}</li>
         <li>CUIT: {arca.cuitValid ? 'válido' : 'pendiente'}</li>
+        <li>
+          OpenSSL en el servidor: {arca.openssl === 'AVAILABLE' ? 'disponible' : 'no disponible'}
+        </li>
         <li>Clave privada: {arca.privateKey ? 'generada en el servidor' : 'pendiente'}</li>
         <li>Solicitud: {arca.csr ? 'creada' : 'pendiente'}</li>
         <li>Certificado ARCA: {arca.certificateInstalled ? 'instalado' : 'pendiente'}</li>
@@ -347,6 +350,9 @@ export function ArcaConnection({
         <li>WSFEv1: todavía no implementado</li>
         <li>Producción: no configurada</li>
       </ul>
+      {arca.openssl === 'UNAVAILABLE' && (
+        <p role="alert">OpenSSL no está disponible en el servidor. Revisá ARCA_OPENSSL_PATH.</p>
+      )}
       {arca.access.message && <p role="status">{arca.access.message}</p>}
       {arca.access.retryAfter && (
         <p>Podés volver a probar a partir de {date(arca.access.retryAfter)}.</p>
@@ -375,7 +381,7 @@ export function ArcaConnection({
           </label>
           <button
             className="primary-button"
-            disabled={busy || arca.fiscalProfile !== 'COMPLETE'}
+            disabled={busy || arca.fiscalProfile !== 'COMPLETE' || arca.openssl !== 'AVAILABLE'}
             onClick={() => void run(generate)}
           >
             {rotate ? 'Confirmar nueva solicitud' : 'Generar solicitud'}
