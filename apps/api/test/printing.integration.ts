@@ -868,7 +868,10 @@ test(
     timeout: 60000,
   },
   async () => {
-    // Opt-in because this smoke needs a prior web build and an available port 3000.
+    // An isolated port permits the compiled smoke while the developer's server keeps running.
+    const smokePort = process.env.MAXBIO_PRINT_BFF_PORT ?? '3000';
+    assert.match(smokePort, /^[0-9]{1,5}$/);
+    const smokeBase = 'http://127.0.0.1:' + smokePort;
     const web = resolve('../web');
     const server = spawn(
       process.execPath,
@@ -878,7 +881,7 @@ test(
         '--hostname',
         '127.0.0.1',
         '--port',
-        '3000',
+        smokePort,
       ],
       {
         cwd: web,
@@ -901,7 +904,7 @@ test(
     });
     const closed = new Promise<void>((resolve) => server.once('exit', () => resolve()));
     async function bff(path: string, body?: unknown, cookie = cookies[1]!) {
-      return fetch('http://localhost:3000/api/printing/' + path, {
+      return fetch(smokeBase + '/api/printing/' + path, {
         method: body === undefined ? 'GET' : 'POST',
         headers: {
           Origin: 'http://localhost:3000',
@@ -918,7 +921,7 @@ test(
         if (server.exitCode !== null) throw new Error(logs);
         try {
           ready = (
-            await fetch('http://localhost:3000/api/system-status', {
+            await fetch(smokeBase + '/api/system-status', {
               signal: AbortSignal.timeout(500),
             })
           ).ok;
@@ -976,7 +979,7 @@ test(
         confirmed.documentPrefix + '-' + confirmed.documentNumber,
         'Cliente de prueba',
       ]) {
-        const response = await fetch('http://localhost:3000/api/delivery-notes/search', {
+        const response = await fetch(smokeBase + '/api/delivery-notes/search', {
           method: 'POST',
           headers: {
             Origin: 'http://localhost:3000',
@@ -992,7 +995,7 @@ test(
         assert.equal(selected.customerName, confirmed.customer.name);
         assert.equal(selected.documentDate, confirmed.documentDate);
       }
-      const worker = await fetch('http://localhost:3000/api/printing/pdf-worker');
+      const worker = await fetch(smokeBase + '/api/printing/pdf-worker');
       assert.equal(worker.status, 200, logs);
       assert.match(worker.headers.get('content-type')!, /javascript/);
       assert.ok((await worker.text()).includes('WorkerMessageHandler'));
@@ -1069,7 +1072,7 @@ test(
       );
       assert.deepEqual(await physicalState(), before);
       await checked(await bff(`artifacts/${generated.id}/pdf`, undefined, cookies[2]!), 404);
-      const page = await fetch('http://localhost:3000/remitos/impresion');
+      const page = await fetch(smokeBase + '/remitos/impresion');
       assert.equal(page.status, 200, logs);
     } finally {
       server.kill();
@@ -1288,4 +1291,117 @@ test('Operational overlay without Inventory uses confirmed document and publishe
       1,
     ),
   );
+});
+
+test('Stage 5 Printing: datos DECLARED sin Inventory en preview/prueba/overlay, resto vacío y reprint idéntico', async () => {
+  const original = await physicalState();
+  const line = {
+    id: randomUUID(),
+    productId: product,
+    quantity: '3',
+    allocations: [],
+    physicalTraces: [
+      {
+        id: randomUUID(),
+        quantity: '1',
+        lotNumber: 'DOC-ABC',
+        expirationDate: '2028-12-31',
+        serialNumber: 'DOC-S9982',
+      },
+      {
+        id: randomUUID(),
+        quantity: '1',
+        lotNumber: 'DOC-DEF',
+        expirationDate: '2029-01-31',
+        serialNumber: null,
+      },
+    ],
+  };
+  const d = await draft({ lines: [line] });
+  const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  async function text(bytes: Uint8Array) {
+    const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false });
+    try {
+      const pdf = await task.promise;
+      return (await (await pdf.getPage(1)).getTextContent()).items
+        .flatMap((i) => ('str' in i ? [i.str] : []))
+        .join(' ');
+    } finally {
+      await task.destroy();
+    }
+  }
+  const live = printDraftPreviewSchema.parse(
+    await checked(
+      await request(
+        'printing/draft-preview',
+        'POST',
+        {
+          customerId: customer,
+          documentDate: d.documentDate,
+          lines: [
+            {
+              productId: product,
+              quantity: line.quantity,
+              allocations: [],
+              physicalTraces: line.physicalTraces,
+            },
+          ],
+        },
+        1,
+      ),
+    ),
+  );
+  assert.equal(live.evaluation.rowCount, 3);
+  assert.notEqual(live.evaluation.state, 'BLOCKED');
+  for (const expected of ['DOC-ABC', 'DOC-DEF', 'DOC-S9982', '31/12/2028'])
+    assert.ok((await text(Buffer.from(live.pdfBase64, 'base64'))).includes(expected));
+  const pre = await request(`printing/delivery-notes/${d.id}/preview`, 'POST', renderInput(d), 1);
+  assert.equal(pre.status, 200);
+  assert.match(await text(new Uint8Array(await pre.arrayBuffer())), /DOC-S9982/);
+  const done = deliveryNoteSchema.parse(
+    await checked(
+      await request(
+        `delivery-notes/${d.id}/confirm`,
+        'POST',
+        { operationId: randomUUID(), expectedVersion: d.version },
+        1,
+      ),
+    ),
+  );
+  assert.equal(done.movementId, null);
+  const trial = await request('printing/print-test', 'POST', {
+    templateRevisionId: template.id,
+    calibrationId: null,
+    document: { id: done.id, expectedVersion: done.version },
+  });
+  assert.equal(trial.status, 200);
+  assert.match(await text(new Uint8Array(await trial.arrayBuffer())), /DOC-S9982/);
+  const artifact = printArtifactSchema.parse(
+    await checked(
+      await request(
+        `printing/delivery-notes/${d.id}/artifacts`,
+        'POST',
+        { id: randomUUID(), ...renderInput(done), guides: undefined },
+        1,
+      ),
+    ),
+  );
+  const bytes = Buffer.from(
+    await (await request(`printing/artifacts/${artifact.id}/pdf`)).arrayBuffer(),
+  );
+  assert.match(await text(bytes), /DOC-S9982/);
+  await client.product.update({ where: { id: product }, data: { name: 'Nombre actual cambiado' } });
+  const again = deliveryNoteSchema.parse(await checked(await request('delivery-notes/' + done.id)));
+  assert.deepEqual(again.lines[0]!.physicalTraces, done.lines[0]!.physicalTraces);
+  const reprint = printArtifactSchema.parse(
+    await checked(
+      await request(`printing/artifacts/${artifact.id}/reprint`, 'POST', { id: randomUUID() }, 1),
+    ),
+  );
+  const exact = Buffer.from(
+    await (await request(`printing/artifacts/${reprint.id}/pdf`)).arrayBuffer(),
+  );
+  assert.deepEqual(exact, bytes);
+  assert.equal(reprint.contentHash, artifact.contentHash);
+  assert.deepEqual(await physicalState(), original);
 });

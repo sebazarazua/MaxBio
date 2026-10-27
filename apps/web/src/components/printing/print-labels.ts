@@ -23,6 +23,7 @@ export const printLabels: Record<string, string> = {
   lotNumber: 'Lote',
   expirationDate: 'Vencimiento',
   serialNumber: 'Serie',
+  scannedGtin: 'GTIN leído',
   products: 'Productos',
 };
 export function humanPrintMessage(message: string) {

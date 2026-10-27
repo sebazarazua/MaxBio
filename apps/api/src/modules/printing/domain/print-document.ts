@@ -25,9 +25,9 @@ export type PrintDocument = Pick<
     | 'postalCode'
   >;
   lines: (Pick<Line, 'productName' | 'presentation' | 'quantity' | 'unitOfMeasure'> & {
-    allocations: Pick<
-      Line['allocations'][number],
+    physicalTraces: ({ scannedGtinSnapshot?: string | null } & Pick<
+      Line['physicalTraces'][number],
       'quantity' | 'lotNumber' | 'expirationDate' | 'serialNumber'
-    >[];
+    >)[];
   })[];
 };

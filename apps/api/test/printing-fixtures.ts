@@ -80,7 +80,7 @@ export function printingTemplate(): PrintTemplate {
   });
 }
 export function printingDocument() {
-  return deliveryNoteSchema.parse({
+  const document = {
     id: randomUUID(),
     status: 'DRAFT',
     version: 1,
@@ -146,6 +146,25 @@ export function printingDocument() {
         ],
       },
     ],
+  };
+  return deliveryNoteSchema.parse({
+    ...document,
+    lines: document.lines.map((l) => ({
+      ...l,
+      physicalTraces: l.allocations.map((a) => ({
+        id: a.id,
+        quantity: a.quantity,
+        lotNumber: a.lotNumber,
+        expirationDate: a.expirationDate,
+        serialNumber: a.serialNumber,
+        inventoryAllocationId: a.id,
+        origin: 'INVENTORY',
+        captureMethod: 'LEGACY',
+        scannedGtinSnapshot: null,
+        preserveOnUnlink: false,
+        reviewedPriorTraceIds: [],
+      })),
+    })),
   });
 }
 export function printingPng() {

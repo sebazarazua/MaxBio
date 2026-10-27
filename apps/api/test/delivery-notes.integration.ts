@@ -554,7 +554,15 @@ test('Series: identidad real, repetición en documento, ajena/inexistente y cons
     { lotNumber: 'SER-LOT', expirationDate: '2099-01-01', serialNumbers: ['SER-001', 'SER-002'] },
     { lotRequired: true, expirationRequired: true, serialRequired: true },
   );
-  await checked(await outbound(await draft([a.row(), a.row()])), 400);
+  await checked(
+    await request('delivery-notes', 'POST', {
+      id: randomUUID(),
+      customerId: customer,
+      documentDate: '2026-10-08',
+      lines: [a.row(), a.row()],
+    }),
+    400,
+  );
   const b = await supply();
   await checked(
     await request('delivery-notes', 'POST', {

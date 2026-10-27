@@ -9,6 +9,7 @@ export const deliveryNoteInclude = {
     orderBy: { ordinal: 'asc' },
     include: {
       product: true,
+      physicalTraces: { orderBy: [{ ordinal: 'asc' }, { id: 'asc' }] },
       allocations: {
         orderBy: { id: 'asc' },
         include: { position: { include: { location: true, lot: true, serial: true } } },
@@ -59,18 +60,42 @@ export function deliveryNoteView(d: Record, replayed = false): DeliveryNoteView 
       gtin: l.gtinSnapshot,
       productArchived: Boolean(l.product.archivedAt),
       quantity: quantity(amount(l.quantity.toString())),
-      allocations: l.allocations.map((a) => ({
-        id: a.id,
-        positionId: a.positionId,
-        quantity: quantity(amount(a.quantity.toString())),
-        location: { id: a.position.locationId, name: a.position.location.name },
-        lotId: a.position.lotId,
-        lotNumber: a.position.lot?.lotNumber ?? null,
-        expirationDate: a.position.lot?.expirationDate?.toISOString().slice(0, 10) ?? null,
-        serialId: a.position.serialId,
-        serialNumber: a.position.serial?.serialNumber ?? null,
-        condition: a.position.condition,
+      physicalTraces: l.physicalTraces.map((t) => ({
+        id: t.id,
+        quantity: quantity(amount(t.quantity.toString())),
+        lotNumber: t.lotNumber,
+        expirationDate: t.expirationDate?.toISOString().slice(0, 10) ?? null,
+        serialNumber: t.serialNumber,
+        inventoryAllocationId: t.inventoryAllocationId,
+        origin: t.origin,
+        captureMethod: t.captureMethod,
+        scannedGtinSnapshot: t.scannedGtinSnapshot,
+        preserveOnUnlink: t.preserveOnUnlink,
+        reviewedPriorTraceIds: t.reviewedPriorTraceIds,
       })),
+      allocations: l.allocations.map((a) => {
+        const snapshot = confirmed
+          ? l.physicalTraces.find((t) => t.inventoryAllocationId === a.id)
+          : undefined;
+        return {
+          id: a.id,
+          positionId: a.positionId,
+          quantity: quantity(amount(a.quantity.toString())),
+          location: { id: a.position.locationId, name: a.position.location.name },
+          lotId: a.position.lotId,
+          lotNumber: confirmed
+            ? (snapshot?.lotNumber ?? null)
+            : (a.position.lot?.lotNumber ?? null),
+          expirationDate: confirmed
+            ? (snapshot?.expirationDate?.toISOString().slice(0, 10) ?? null)
+            : (a.position.lot?.expirationDate?.toISOString().slice(0, 10) ?? null),
+          serialId: a.position.serialId,
+          serialNumber: confirmed
+            ? (snapshot?.serialNumber ?? null)
+            : (a.position.serial?.serialNumber ?? null),
+          condition: a.position.condition,
+        };
+      }),
     })),
   };
 }

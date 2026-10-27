@@ -211,3 +211,9 @@ Bourbon trabaja frecuentemente contra pedido: la salida comercial puede document
 Cantidad documental 5 con allocation 2 descuenta 2 y su historia muestra -2; los otros 3 solo participan del documento. Sin allocations no se exige policy ni se crean movimientos vacíos, balances, lotes, ubicaciones, adjustments o stock artificial. Los snapshots documentales se congelan incluso sin movimiento. No se bloquean posiciones/scopes para líneas sin allocations.
 
 Cada allocation seleccionada conserva policy, tenant, producto, lote, serie, ubicación activa, USABLE, vencimiento, cantidades exactas, disponibilidad agregada, locks y unicidad de serie. Stock insuficiente sigue rechazándose; no se transforma silenciosamente la selección. Se mantienen transacción única con audit, idempotencia y unique deliveryNoteId del OUTBOUND. La migración `20261026120000_delivery_optional_inventory` adapta el trigger diferido sin cambiar el esquema Prisma ni el ledger.
+
+## GS1 Stage 5: frontera documental
+
+Remitos incorpora DeliveryNoteLineTrace independiente del stock. DECLARED conserva lote, vencimiento, serie y GTIN observado cuando corresponda sin exigir policy ni crear InventoryLot/Serial/Balance/Location/Receipt/Movement/Adjustment. No modifica disponibilidad, unidad, serialRequired ni reglas de OUTBOUND. INVENTORY es el snapshot documental de una allocation real y de su correspondiente línea OUTBOUND; no se suma otra vez a la demanda.
+
+Las cantidades vinculadas siguen pasando por el único posting de Inventory con todas las validaciones/locks existentes. Sin allocations sigue sin movimiento. El ledger conserva sus snapshots e inmutabilidad; la consulta documental/impresión pasa a usar el snapshot del Remito. Las búsquedas y advertencias de antecedentes de series documentales no reservan stock ni imponen unicidad global histórica. No implementan ANMAT/devoluciones. Detalles en [Remitos Stage 5](delivery-notes.md) y [verificación](gs1-verification.md).

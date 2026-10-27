@@ -16,6 +16,7 @@ import {
 } from '@nestjs/common';
 import type { z } from 'zod';
 import {
+  deliveryTraceHistoryInputSchema,
   deliveryNoteCreateSchema,
   deliveryNoteUpdateSchema,
   deliveryNoteConfirmSchema,
@@ -56,6 +57,12 @@ export class DeliveryNotesController {
   }
   @Get() list(@Req() r: AuthenticatedRequest, @Query() q: unknown) {
     return this.service.list(actor(r), parse(deliveryNoteListQuerySchema, q));
+  }
+  @Post('trace-history') @HttpCode(200) traceHistory(
+    @Req() r: AuthenticatedRequest,
+    @Body() body: unknown,
+  ) {
+    return this.service.traceHistory(actor(r), parse(deliveryTraceHistoryInputSchema, body));
   }
   @Get(':id') get(@Req() r: AuthenticatedRequest, @Param('id', uuid) id: string) {
     return this.service.get(actor(r), id);

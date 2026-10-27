@@ -20,7 +20,39 @@ const positive = inventoryQuantitySchema.refine(
   (v) => v !== '0' && BigInt(v.split('.')[0]!) <= 1000000000n,
   'Revisá la cantidad.',
 );
-const allocation = z.object({ positionId: z.uuidv4(), quantity: positive }).strict();
+const scanValue = z.string().min(1).max(512).optional();
+const physicalText = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .refine((v) => !Array.from(v).some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127));
+export const deliveryDeclaredTraceInputSchema = z
+  .object({
+    id: z.uuidv4(),
+    quantity: positive,
+    lotNumber: physicalText.nullable().default(null),
+    expirationDate: z.iso.date().nullable().default(null),
+    serialNumber: physicalText.nullable().default(null),
+    scannedGtinSnapshot: z
+      .string()
+      .regex(/^[0-9]{14}$/)
+      .nullable()
+      .optional(),
+    scanValue,
+    manualEdited: z.boolean().optional(),
+  })
+  .strict();
+const allocation = z
+  .object({
+    positionId: z.uuidv4(),
+    quantity: positive,
+    traceId: z.uuidv4().optional(),
+    sourceTraceId: z.uuidv4().optional(),
+    scanValue,
+    preserveOnUnlink: z.boolean().optional(),
+  })
+  .strict();
 const scaledQuantity = (value: string) => {
   if (!/^\d+(?:\.\d{1,6})?$/.test(value)) return 0n;
   const [whole, fraction = ''] = value.split('.');
@@ -32,6 +64,7 @@ export const deliveryNoteLineInputSchema = z
     productId: z.uuidv4(),
     quantity: positive,
     allocations: z.array(allocation).max(100).default([]),
+    physicalTraces: z.array(deliveryDeclaredTraceInputSchema).max(100).optional(),
   })
   .strict();
 const fields = {
@@ -44,18 +77,25 @@ const fields = {
 };
 function validate(
   v: {
-    lines: { id: string; quantity: string; allocations: { quantity: string }[] }[];
+    lines: {
+      id: string;
+      quantity: string;
+      allocations: { quantity: string }[];
+      physicalTraces?: { id: string; quantity: string }[];
+    }[];
   },
   ctx: z.RefinementCtx,
 ) {
   for (const [index, line] of v.lines.entries())
     if (
-      line.allocations.reduce((sum, a) => sum + scaledQuantity(a.quantity), 0n) >
-      scaledQuantity(line.quantity)
+      [...line.allocations, ...(line.physicalTraces ?? [])].reduce(
+        (sum, a) => sum + scaledQuantity(a.quantity),
+        0n,
+      ) > scaledQuantity(line.quantity)
     )
       ctx.addIssue({
         code: 'custom',
-        message: 'El stock vinculado supera la cantidad documental.',
+        message: 'El detalle físico supera la cantidad documental.',
         path: ['lines', index, 'allocations'],
       });
   if (new Set(v.lines.map((l) => l.id)).size !== v.lines.length)
@@ -64,6 +104,16 @@ function validate(
     ctx.addIssue({
       code: 'custom',
       message: 'Máximo 500 existencias por remito.',
+      path: ['lines'],
+    });
+  const traces = v.lines.flatMap((l) => l.physicalTraces ?? []);
+  if (
+    traces.length + v.lines.reduce((n, l) => n + l.allocations.length, 0) > 500 ||
+    new Set(traces.map((t) => t.id)).size !== traces.length
+  )
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Revisá el detalle físico (máximo 500, sin repeticiones).',
       path: ['lines'],
     });
 }
@@ -97,7 +147,11 @@ export const deliveryNoteNumberingSchema = z
 export type DeliveryNoteNumberingInput = z.infer<typeof deliveryNoteNumberingInputSchema>;
 export type DeliveryNoteNumberingView = z.infer<typeof deliveryNoteNumberingSchema>;
 export const deliveryNoteConfirmSchema = z
-  .object({ operationId: z.uuidv4(), expectedVersion: versionInputSchema.shape.expectedVersion })
+  .object({
+    operationId: z.uuidv4(),
+    expectedVersion: versionInputSchema.shape.expectedVersion,
+    reviewedPriorTraceIds: z.array(z.uuidv4()).max(500).optional(),
+  })
   .strict();
 export const deliveryNoteCustomerSchema = z
   .object({
@@ -125,6 +179,49 @@ const allocationView = z
     serialId: z.uuidv4().nullable(),
     serialNumber: z.string().nullable(),
     condition: inventoryConditionSchema,
+  })
+  .strict();
+export const deliveryPhysicalTraceSchema = z
+  .object({
+    id: z.uuidv4(),
+    quantity: inventoryQuantitySchema,
+    lotNumber: z.string().nullable(),
+    expirationDate: z.iso.date().nullable(),
+    serialNumber: z.string().nullable(),
+    inventoryAllocationId: z.uuidv4().nullable(),
+    origin: z.enum(['INVENTORY', 'DECLARED']),
+    captureMethod: z.enum(['MANUAL', 'GS1', 'LEGACY']),
+    scannedGtinSnapshot: z.string().nullable(),
+    preserveOnUnlink: z.boolean(),
+    reviewedPriorTraceIds: z.array(z.uuidv4()),
+  })
+  .strict();
+export const deliveryTraceHistoryInputSchema = z
+  .object({
+    productId: z.uuidv4(),
+    lotNumber: physicalText.optional(),
+    serialNumber: physicalText.optional(),
+  })
+  .strict()
+  .refine((v) => Boolean(v.lotNumber || v.serialNumber), 'Ingresá lote o serie.');
+export const deliveryTraceHistorySchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          traceId: z.uuidv4(),
+          deliveryNoteId: z.uuidv4(),
+          productId: z.uuidv4(),
+          documentNumber: z.string(),
+          customerName: z.string(),
+          documentDate: z.iso.date(),
+          lotNumber: z.string().nullable(),
+          serialNumber: z.string().nullable(),
+          quantity: inventoryQuantitySchema,
+        })
+        .strict(),
+    ),
+    truncated: z.boolean(),
   })
   .strict();
 export const deliveryNoteSchema = z
@@ -157,6 +254,7 @@ export const deliveryNoteSchema = z
           productArchived: z.boolean(),
           quantity: inventoryQuantitySchema,
           allocations: z.array(allocationView),
+          physicalTraces: z.array(deliveryPhysicalTraceSchema),
         })
         .strict(),
     ),
@@ -201,6 +299,12 @@ export function deliveryNoteRouteContract(path: string, method: string) {
     return { body: null, query: deliveryNoteListQuerySchema, response: deliveryNoteListSchema };
   if (path === 'delivery-notes/search' && method === 'POST')
     return { body: deliveryNoteListQuerySchema, query: null, response: deliveryNoteListSchema };
+  if (path === 'delivery-notes/trace-history' && method === 'POST')
+    return {
+      body: deliveryTraceHistoryInputSchema,
+      query: null,
+      response: deliveryTraceHistorySchema,
+    };
   if (path === 'delivery-notes' && method === 'POST')
     return { body: deliveryNoteCreateSchema, query: null, response: deliveryNoteSchema };
   if (new RegExp(`^delivery-notes/${id}$`).test(path)) {

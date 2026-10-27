@@ -66,6 +66,7 @@ export const printRowBindingSchema = z.enum([
   'lotNumber',
   'expirationDate',
   'serialNumber',
+  'scannedGtin',
 ]);
 const typography = {
   font: z.literal('NotoSans').default('NotoSans'),

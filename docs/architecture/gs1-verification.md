@@ -1,8 +1,8 @@
-# GS1 V1: implementación y verificación (Stages 1–4)
+# GS1 V1: implementación y verificación (Stages 1–5)
 
 Fecha: 26 de octubre de 2026. Base: HEAD `c34f8ff8ff2c3f8215348507c850b02b24bcd9a8` (`main`), árbol limpio salvo el diseño sin versionar. Diseño fuente: [gs1-design.md](gs1-design.md). Sin commit ni push.
 
-Implementado: **Stage 1** (parser puro + tests), **Stage 2** (Catalog / Product Identification) y **Stage 3** (Ingresar productos e Inventario inicial). **Stage 4** (Remitos + matching físico exacto) se agregó después; ver §9. **No implementado:** Stage 5 (DeliveryNoteLineTrace, migración, backfill, Printing con `physicalTraces`). Sin migraciones, sin cambios de schema y sin dependencias nuevas.
+Implementado: **Stage 1** (parser puro + tests), **Stage 2** (Catalog / Product Identification) y **Stage 3** (Ingresar productos e Inventario inicial). **Stage 4** (Remitos + matching físico exacto) se agregó después; ver §9. **Stage 5** agrega trazabilidad documental independiente de Inventory y Printing con snapshots; ver §10. Los Stages 1–4 no requirieron migración; Stage 5 agrega una, sin dependencias nuevas.
 
 ## 1. Arquitectura
 
@@ -110,7 +110,7 @@ Series: lecturas del mismo grupo Product/lote/vencimiento se acumulan en la capt
 
 - **Hardware no verificado.** No se probó ningún lector físico, layout de teclado, AIM ni transmisión de GS. La implementación procesa correctamente la cadena que llega; si el lector pierde el GS y el resultado sigue siendo un lote válido, no hay forma segura de detectarlo (el operador revisa los datos mostrados). Homologar lectores de Bourbon antes de habilitar operación.
 - El parser cubre solo 01/10/17/21; no es un validador GS1 completo ni certifica etiquetas, asignación de GTIN, autenticidad o cumplimiento sanitario.
-- Remitos no conserva lote/serie escaneados sin allocation hasta Stage 5.
+- La limitación de conservar datos sin allocation quedó resuelta por Stage 5 (§10).
 - Gate de colisiones: verificado solo en la base local.
 
 ## 9. Stage 4: Remitos + matching físico exacto
@@ -165,7 +165,7 @@ Ubicaciones adicionales, ubicación archivada y stock sin policy se crean como f
 
 - El editor de Remitos no se monta en tests de componente: el harness web compila sin el alias `@/` que usa ese editor. Su lógica está en helpers puros testeados y los flujos completos se verifican por API.
 - Hardware sin verificar, igual que en Stages 1–3.
-- Stage 5 (trazabilidad documental sin Inventory, `DeliveryNoteLineTrace`, Printing con traces) no implementado.
+- Esta limitación de Stage 4 quedó resuelta por Stage 5 (§10).
 
 ### 9.6 QA Stage 4 (26/10/2026)
 
@@ -179,3 +179,73 @@ Ubicaciones adicionales, ubicación archivada y stock sin policy se crean como f
 | `pnpm build`         | OK                                                                                          |
 
 `packages/database` (schema y migraciones) y los módulos de Printing sin cambios; no se ejecutó `db push`.
+
+## 10. Stage 5: trazabilidad física documental sin Inventory
+
+Base inicial: `edd5de57e88dc65286c6a704bb96ff7995b59e53`, `main`, working tree limpio y sincronizado con origin/main según referencias locales. Commits revisados: Stage 4 `edd5de5`, Stages 1–3 `fdbe3de`, incremento opcional Inventory `c34f8ff`. No se hizo commit ni push.
+
+### 10.1 Modelo y migración
+
+Una migración nueva: `20261026190000_delivery_documentary_trace`. Prisma agrega DeliveryNoteLineTrace con origin INVENTORY/DECLARED, captureMethod MANUAL/GS1/LEGACY, cantidades exactas, lote/fecha/serie nullable, GTIN observado nullable, allocation nullable, ordinal y acuse mínimo de antecedentes. deliveryNoteId permite unique por org/documento/Product/serie. preserveOnUnlink guarda la intención de conservar los datos capturados expresamente. No se crean entidades Inventory para una declaración; fecha es DATE, no timestamp.
+
+FK compuesta a Line incluye org/documento/Product/lineId; la FK a allocation incluye org/Product/lineId/allocationId. Unique de allocationId impide dos traces para la misma selección. Unique por documento no impide repetir la serie en otro remito histórico. Check de texto conserva case/ceros/puntuación, trim y límite 128 de Inventory. Serial exige cantidad 1 y UNIT/PAIR; todas las cantidades usan helpers BigInt, no float. Cobertura total de traces no puede exceder línea. Una INVENTORY debe igualar cantidad y datos físicos de su allocation, sin doble conteo.
+
+Se reutiliza el guard de hijos que bloquea el Remito padre y rechaza toda modificación a documento cerrado. Una función de constraint diferido controla cobertura/correspondencia/unidad/snapshots en los commits de línea, allocation, trace y documento; no debilita el guard OUTBOUND opcional existente. La migración copia los confirmados desde InventoryMovementLine.deliveryAllocationId y sus snapshots, con LEGACY/GTIN null/revisión vacía. DRAFT y CANCELLED con allocation se inicializan desde posición actual; sin allocation no hay backfill inventado. Históricos inconsistentes abortan con error explícito. No se tocaron migraciones históricas ni se usó db push.
+
+### 10.2 Escrituras, concurrencia y privacidad
+
+El PATCH completo existente es la unidad atómica de edición (expectedVersion, Product/Customer/document locks existentes). physicalTraces de entrada contiene propuestas DECLARED; el backend genera las INVENTORY desde Stock. sourceTraceId/traceId conservan procedencia al vincular y permiten split exacto. Unlink conserva las capturas documentadas expresamente; selección derivada solo de Stock se quita. El editor deja guardar/confirmar cantidades sin ningún dato físico nuevo obligatorio ni policy.
+
+El servidor deriva captureMethod: scanValue viaja solo en comando DRAFT, se reinterpreta con el parser central y nunca se persiste. Datos idénticos a GS1 válido son GS1; editados son MANUAL. El GTIN se toma de lectura o snapshot previo y se valida contra identifiers activos del mismo tenant/Product, tanto al guardar como al confirmar. No se puede afirmar GS1 ni INVENTORY mediante enums del browser. Solo GTIN, sin dato físico y sin allocation, no crea trace automática.
+
+La revisión de antecedentes usa `POST /delivery-notes/trace-history` con Product+lote/serie exactos en body privado. Devuelve número, cliente snapshot, fecha, cantidad e IDs; índices org/Product/lote y org/Product/serie. No hay pantalla analítica nueva. Antes de confirmar, la UI pide revisión expresa si encuentra serie anterior. Backend toma advisory locks estables y ordenados por tenant/Product/serie y relee: un antecedente concurrente nuevo produce 409; no acepta solo el check de UI. El comando lleva la unión exacta de IDs revisados (máximo 500), y se guarda solo el subconjunto pertinente a cada trace (máximo 100 por serie). Superar límites requiere revisión administrativa; no una omisión silenciosa de advertencias.
+
+Confirmación conserva operationId y hash/replay existentes; el campo nuevo es opcional para no cambiar replays antiguos. Ningún operationId por trace. Antecedentes, validación, snapshots documentales, OUTBOUND real si corresponde y Audit integran la misma transacción. Falla de audit/stock/conflicto revierte todo. DECLARED no crea lot/serial/balance/location/receipt/adjustment/movement ni reserva. No hay raw GS1 en filas, audit, URLs, archivos, logs o storage del navegador.
+
+### 10.3 UI y Printing
+
+Se reutiliza ProductCapture de Stage 4. Agregar sin Stock conserva los datos GS1 físicos válidos y muestra que solo documentan el Remito. Captura manual de lote/vencimiento/serie por porción de cantidad; subtotales de Stock vinculado/documentado y total; selector de porción ya declarada para vincular total o parcialmente. Al editar GS1 se marca manual; serie sigue siendo una unidad. Revisión de antecedentes visible, con número/cliente y enlace al remito anterior. No se exige InventoryPolicy para DECLARED, aun si serialRequired=false o hay conflicto con Stock.
+
+PrintDocument usa exclusivamente physicalTraces para filas. Confirmado y detalle de allocations devuelven snapshots documentales; DRAFT/live preview proyecta declaraciones y posiciones validadas sin escritura. Guard geométrico y renderer comparten esa proyección. Preview, print-test y PRINT_OVERLAY conservan lote/fecha/serie, remanente vacío y overflow BLOCKED. Binding opcional scannedGtin imprime GTIN observado si una plantilla lo pide, sin agregar columna a Bourbon ni modificar geometría 203×271, editor, tolerancias, numeración o calibración. Reprint sigue con los mismos bytes/hash/asset original. La hoja de calibración conserva su propósito técnico separado.
+
+### 10.4 Cobertura agregada
+
+- `documentary-trace-migration.integration.ts`: upgrade, from-zero, status/drift, deploy repetido idempotente, fuente ledger histórica deliberadamente distinta del master, borrador inicializado, histórico sin allocation sin trace, y corrupción histórica que detiene migración. Bases descartables propias.
+- `physical-match.integration.ts`: GS1 sin stock/policy y GTIN observado entre varios identificadores; DECLARED persistida y cero efectos Inventory; edición MANUAL, rechazo de GTIN inventado; parcial/split/link/unlink, expectedVersion obsoleta; cantidades/serie/unidad/duplicados; antecedentes históricos y confirmación concurrente con revisión/retry; SQL de inmutabilidad/cobertura/tenant/Product. Se mantiene la regresión Stage 4; el rechazo de serie duplicada pasa a ocurrir al guardar el borrador, antes de confirmar, conservando la comprobación de rechazo.
+- `printing.integration.ts`: DECLARED sin stock en preview efímera, preview guardada, prueba/overlay, remanente, snapshots ante cambio de Product y reprint idéntico. Se conserva la suite anterior, incluido calibración y no efectos Inventory.
+- `printing.test.ts`: mismas assertions de cantidades/overflow/serie ahora sobre la proyección documental; GTIN observado opcional. Samples/fixtures explícitamente incorporan traces, sin fallback del renderer a allocations.
+- Web: captura GS1 válida/solo GTIN/PARTIAL, split exacto incluso microcantidades, contratos/origin protegido; montaje React de editor manual (agregar/editar/quitar) y de antecedentes (revisión obligatoria antes de confirmar).
+- QA visual PDF: dos overlays sintéticos del motor real, 203×271, renderizados a PNG e inspeccionados: DECLARED con serie y combinación de Stock 2 + declaración 3 + remanente 1. Sin fondo ni marcas técnicas, sin solapamiento ni datos recortados. WARNING nominal conserva la evaluación existente. Artefactos/logs en `artifacts/stage5/`, ignorados por Git.
+
+### 10.5 Resultados finales
+
+Todos los comandos siguientes se ejecutaron sobre esta entrega; logs ignorados en `artifacts/stage5/*-qa.log`.
+
+| Comando / comprobación                                                                      | Resultado                                                                     |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `pnpm lint`                                                                                 | OK, exit 0                                                                    |
+| `pnpm format:check`                                                                         | OK, exit 0                                                                    |
+| `pnpm typecheck`                                                                            | OK, exit 0                                                                    |
+| `pnpm test`                                                                                 | API 107/107 y web 36/36; 0 fallos, 0 skipped                                  |
+| `pnpm test:database`                                                                        | database 1/1; API 177 aprobados de 178, 0 fallos, 1 skipped                   |
+| `pnpm build`                                                                                | OK; build aislado `.next/gs1-stage5-build`, incluye Remitos/Printing          |
+| `pnpm db:migrate`                                                                           | Nueva migración aplicada en desarrollo local; 20 migraciones                  |
+| Prisma `migrate status`                                                                     | Database schema is up to date                                                 |
+| Prisma `migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code` | No difference detected, exit 0                                                |
+| Migración Stage 5 específica                                                                | Upgrade, from-zero, backfill, error controlado y drift: aprobado              |
+| BFF real de Printing                                                                        | Habilitado con MAXBIO_PRINT_BFF_SMOKE=1, MAXBIO_PRINT_BFF_PORT=3405; aprobado |
+| Salud web/API/DB                                                                            | localhost:3000 y API /health responden status=ok, database=ok                 |
+
+Total de la pasada completa: **321 aprobados, 0 fallos, 1 skipped** (107 API unitarios + 36 web + 177 API integración + 1 database). No se suman rechecks. La única omisión es aceptación optativa de Catalog con archivo comercial original no provisto (`MAXBIO_CATALOG_ACCEPTANCE_FILE`); el smoke Printing sí se ejecutó. La regresión de 500 detalles documentales con body mayor a 100 KiB pasó sin crear Inventory (aprox. 2 segundos para guardar en el entorno local).
+
+El servidor de desarrollo permaneció disponible; el smoke de Next compilado usa otro puerto y su base descartable. No se ejecutaron fixtures ni resets sobre datos operativos. Solo se aplicó la migración additive y su backfill legítimo local. El nuevo caso de Printing falló inicialmente por enviar el id de línea a una preview cuyo contrato lo omite; se corrigió el fixture, sin flexibilizar el contrato. Su verificación final pasó dentro de la suite completa.
+
+Revisión final: diff sin errores de whitespace, enlaces relativos revisados, migraciones históricas y lockfile sin cambios, HEAD sin cambios. La edición tardía de un mensaje aclaratorio de UI se recompiló también en el build final. No commit/no push.
+
+### 10.6 Límites
+
+No lector físico, impresora ni homologación de layout HID; el DOM se prueba con JSDOM y el flujo HTTP con bases descartables. El editor completo conserva el harness de Stage 4 (helpers/API); los dos controles nuevos sí se montan en tests React. JSON acotado a 1 MiB únicamente para Remitos y su preview; el límite anterior de 100 KiB podía rechazar capturas grandes legítimas. Máximo 500 detalles por remito, 100 antecedentes por serie y 500 IDs de revisión por confirmación; al excederlos se pide revisión, sin ignorar datos. Trazabilidad documental es declaración interna, no existencia ni certificación GS1/ANMAT. No se implementan devoluciones, ANMAT/SNT-PM, facturación/ARCA, reservas, transfers/FEFO nuevo, cámara/SDK, Digital Link, analytics o IA.
+
+### 10.7 Operación de migración y rollback conceptual
+
+Migración aditiva: no elimina ni reescribe líneas, allocations, ledger o snapshots comerciales históricos. Si hay histórico sin fuente confiable o un borrador preexistente con serie duplicada, se detiene en vez de deduplicar o inventar datos; resolver la inconsistencia con una revisión controlada antes de desplegar. Conservar respaldo de DB y artifacts antes de cambios de versión. No hay downgrade automático que borre declaraciones: un rollback de aplicación debe preservar/exportar los datos documentales nuevos y tratar expresamente los guards de traces, porque el código Stage 4 no las escribe. La vuelta completa de schema requiere una operación de mantenimiento planificada, nunca db push/reset ni eliminación silenciosa de traces.

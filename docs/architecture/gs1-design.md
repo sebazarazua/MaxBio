@@ -1,8 +1,8 @@
 # GS1 V1: análisis y diseño técnico
 
-Fecha: 26 de octubre de 2026. Estado: **diseño propuesto, no implementado**.
+Fecha: 26 de octubre de 2026. Estado: **diseño de referencia; Stages 1–5 implementados**.
 
-Actualización: Stages 1–4 implementados sobre este diseño; Stage 5 sigue sin implementar. Ver [implementación y verificación](gs1-verification.md). El resto del documento se conserva como diseño.
+Actualización: Stages 1–5 implementados sobre este diseño. Stage 5 agrega DeliveryNoteLineTrace, snapshots documentales e impresión sin Inventory. Ver [implementación y verificación](gs1-verification.md). El resto del documento se conserva como diseño.
 
 HEAD analizado: `c34f8ff8ff2c3f8215348507c850b02b24bcd9a8`, branch `main`, commit `remito sin stock y mas`. Al comenzar, `git status` informó árbol limpio y branch sincronizada con `origin/main` según las referencias locales; no se hizo fetch. Commits anteriores revisados: `7bf06ba` (fix bug diseño), `3b6c938` (plantilla remitos 3), `96b797f` (plantilla remito 2), `5742465` (plantilla remito), `037476d` (Implementacion impresion sobre talonario).
 
@@ -715,3 +715,15 @@ Pendientes de evidencia, **no decisiones de arquitectura delegadas al implementa
 - No tests DB, migraciones, seed, cambios de datos, instalación de dependencias, endpoints, componentes ni parser productivo nuevos. No test físico de lector ni impresora. El proyecto en ejecución no se reinició para este análisis.
 
 El entregable es este documento; las pruebas propuestas en §§17–18 pertenecen a las implementaciones futuras. El parser básico no requiere migración, la trazabilidad documental independiente sí. No se hizo commit ni push.
+
+## 23. Decisiones finales Stage 5 (implementación)
+
+Implementación sobre HEAD `edd5de57e88dc65286c6a704bb96ff7995b59e53`, árbol inicial limpio. El diseño anterior queda como referencia histórica; el alcance implementado y QA están en [gs1-verification.md](gs1-verification.md), §10.
+
+- `DeliveryNoteLineTrace` incorpora deliveryNoteId redundante **con FK compuesta a Line**: permite unique de serie por org/documento/Product sin trigger adicional para ese agregado. No hay unique histórico global.
+- `reviewedPriorTraceIds` se persiste por trace. El comando de confirmación transporta la unión de los IDs revisados (máximo 500); el servidor relee antecedentes bajo locks por org/Product/serie, valida el conjunto y asigna a cada trace solo sus antecedentes (máximo 100 por serie). No es un booleano de confianza ni otro sistema de idempotencia.
+- `preserveOnUnlink` diferencia los datos capturados/documentados expresamente de los derivados únicamente de Stock. El editor conserva los primeros como DECLARED al desvincular; los segundos desaparecen. El operador siempre puede declararlos manualmente.
+- El PATCH existente sigue reemplazando el documento de forma atómica y con expectedVersion. Entrada `physicalTraces` contiene solo propuestas declaradas; el backend deriva las INVENTORY de allocations. Vincular/splitear se prepara con aritmética exacta y se guarda como una sola versión, sin endpoint de stock alternativo.
+- `scanValue` solo viaja en el comando DRAFT cuando se necesita comprobar procedencia; se reinterpreta con el parser central y jamás se almacena. GS1 requiere campos idénticos al resultado válido; una edición deriva MANUAL. El GTIN observado se valida contra los identificadores activos del mismo Product, también al confirmar. Solo AI01 no crea trace sin allocation por defecto.
+- Nueva migración única `20261026190000_delivery_documentary_trace`: confirmado desde snapshots del ledger; borrador/cancelado desde su posición actual, con LEGACY y sin GTIN observado inventado. Conflictos históricos bloquean el backfill. Los históricos sin allocation no reciben traces.
+- Printing usa `physicalTraces` en todos sus modos documentales. `scannedGtin` es un binding opcional para plantillas que quieran imprimir el GTIN observado; no se alteran plantilla Bourbon, coordenadas ni calibración. La ausencia de esa columna no bloquea plantillas existentes.

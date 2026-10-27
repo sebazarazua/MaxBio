@@ -122,10 +122,9 @@ test('Printing: allocations múltiples, series, reconciliación, columnas faltan
   );
   assert.equal(rows.issues.length, 0);
   d.lines[0]!.quantity = '2';
-  d.lines[0]!.allocations.forEach((a, i) => {
+  d.lines[0]!.physicalTraces.forEach((a, i) => {
     a.quantity = '1';
     a.serialNumber = 'S' + i;
-    a.serialId = randomUUID();
   });
   assert.deepEqual(
     projectRows(d, columns).rows.map((r) => r.serialNumber),
@@ -157,7 +156,7 @@ test('Printing: no stock and partial stock preserve all documentary rows in prev
   const template = printingTemplate(),
     document = printingDocument();
   document.lines[0]!.quantity = '5';
-  document.lines[0]!.allocations = [];
+  document.lines[0]!.physicalTraces = [];
   for (const mode of ['PREVIEW', 'PRINT_OVERLAY'] as const) {
     const result = await renderPdf({
       template,
@@ -178,7 +177,7 @@ test('Printing: no stock and partial stock preserve all documentary rows in prev
       [['5', '', '', '']],
     );
   }
-  document.lines[0]!.allocations = printingDocument().lines[0]!.allocations.slice(0, 1);
+  document.lines[0]!.physicalTraces = printingDocument().lines[0]!.physicalTraces.slice(0, 1);
   const projection = projectRows(document, template.definition.productRegion.columns);
   assert.deepEqual(
     projection.rows.map((r) => [r.quantity, r.lotNumber]),
@@ -592,7 +591,7 @@ test('Bourbon: referencia revisada, fecha en encabezado y paciente/afiliado dent
   assert.equal(layout.evaluation.maxRows, 5);
   assert.equal(sample.documentNumber, null);
   assert.equal(sample.customer.name, 'OSUTHGRA');
-  assert.equal(sample.lines[0]!.allocations.length, 2);
+  assert.equal(sample.lines[0]!.physicalTraces.length, 2);
   const year = template.definition.fields.find((f) => f.id === 'year')!;
   assert.equal(year.yMm, 28.3);
   for (const id of ['patient', 'affiliate']) {
@@ -601,4 +600,22 @@ test('Bourbon: referencia revisada, fecha en encabezado y paciente/afiliado dent
   }
   assert.ok(layout.texts.some((t) => t.region === 'row-1-serialNumber'));
   assert.ok(layout.texts.some((t) => t.region === 'row-2-lotNumber'));
+});
+
+test('Stage 5: GTIN observado es imprimible cuando la plantilla lo pide; no se sustituye por GTIN preferido', () => {
+  const document = printingDocument(),
+    template = printingTemplate();
+  document.lines[0]!.physicalTraces[0]!.scannedGtinSnapshot = '04006381333931';
+  const columns = [
+    ...template.definition.productRegion.columns,
+    {
+      ...template.definition.productRegion.columns[0]!,
+      binding: 'scannedGtin' as const,
+      formatter: 'text' as const,
+    },
+  ];
+  const projection = projectRows(document, columns);
+  assert.equal(projection.rows[0]!.scannedGtin, '04006381333931');
+  assert.equal(projection.rows[1]!.scannedGtin, '');
+  assert.equal(projection.issues.length, 0);
 });

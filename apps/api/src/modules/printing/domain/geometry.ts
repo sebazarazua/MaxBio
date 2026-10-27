@@ -97,14 +97,14 @@ export function fieldValue(doc: PrintDocument, binding: PrintField['binding']) {
 }
 export function projectRows(doc: PrintDocument, columns: PrintColumn[]) {
   const physical = columns.some((c) =>
-    ['lotNumber', 'expirationDate', 'serialNumber'].includes(c.binding),
+    ['lotNumber', 'expirationDate', 'serialNumber', 'scannedGtin'].includes(c.binding),
   );
   const rows: ProductRow[] = [];
   const issues: PrintEvaluation['issues'] = [];
   for (const [index, l] of doc.lines.entries()) {
     const region = `product-${index + 1}`;
     for (const key of ['lotNumber', 'expirationDate', 'serialNumber'] as const) {
-      if (l.allocations.some((a) => Boolean(a[key])) && !columns.some((c) => c.binding === key))
+      if (l.physicalTraces.some((a) => Boolean(a[key])) && !columns.some((c) => c.binding === key))
         issues.push({
           state: 'BLOCKED',
           region,
@@ -113,13 +113,13 @@ export function projectRows(doc: PrintDocument, columns: PrintColumn[]) {
           }; no se puede omitir esa información física.`,
         });
     }
-    const allocated = l.allocations.reduce((n, a) => n + amount(a.quantity), 0n);
+    const allocated = l.physicalTraces.reduce((n, a) => n + amount(a.quantity), 0n);
     const remainder = amount(l.quantity) - allocated;
     if (remainder < 0n)
       issues.push({
         state: 'BLOCKED',
         region,
-        message: 'El stock vinculado supera la cantidad documental.',
+        message: 'El detalle físico supera la cantidad documental.',
       });
     const base = {
       quantity: l.quantity,
@@ -129,9 +129,10 @@ export function projectRows(doc: PrintDocument, columns: PrintColumn[]) {
       lotNumber: '',
       expirationDate: '',
       serialNumber: '',
+      scannedGtin: '',
     };
-    if (physical && l.allocations.length) {
-      for (const a of l.allocations) {
+    if (physical && l.physicalTraces.length) {
+      for (const a of l.physicalTraces) {
         if (a.serialNumber && amount(a.quantity) !== 1000000n)
           issues.push({
             state: 'BLOCKED',
@@ -144,6 +145,7 @@ export function projectRows(doc: PrintDocument, columns: PrintColumn[]) {
           lotNumber: a.lotNumber ?? '',
           expirationDate: a.expirationDate ?? '',
           serialNumber: a.serialNumber ?? '',
+          scannedGtin: a.scannedGtinSnapshot ?? '',
         });
       }
       if (remainder > 0n) rows.push({ ...base, quantity: quantity(remainder) });

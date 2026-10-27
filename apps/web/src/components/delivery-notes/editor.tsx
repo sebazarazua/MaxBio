@@ -25,6 +25,7 @@ import { catalogFetch, CatalogHttpError, humanError } from '@/lib/catalog-api';
 import { inventoryFetch } from '@/lib/inventory-api';
 import { pastedReadingProblem } from '@/lib/gs1-capture';
 import {
+  scaled,
   allocatedByPosition,
   decimal,
   hasPhysicalData,
@@ -42,6 +43,8 @@ import {
   useSearch,
 } from '../catalog/common';
 import { documentLabels, quantityLabels } from '../inventory/common';
+import { DocumentaryTraceEditor, SerialHistoryReview } from './trace-editor';
+import { scannedDeclaration, declaredFromView, splitDeclaration } from '../../lib/delivery-traces';
 import { useWorkspace } from '../workspace';
 import { DeliveryPrintPanel } from '../printing/delivery-print-panel';
 import { LiveDeliveryPreview } from '../printing/live-delivery-preview';
@@ -53,6 +56,7 @@ type Line = DeliveryNoteCreate['lines'][number] & {
   unitOfMeasure: ProductView['unitOfMeasure'];
   presentation: string | null;
   physical: DeliveryNoteView['lines'][number]['allocations'];
+  savedTraceIds?: string[];
 };
 type Customer = DeliveryNoteView['customer'];
 const fetchNote = (path: string, options: Parameters<typeof catalogFetch>[2] = {}) =>
@@ -131,6 +135,8 @@ function StockChoice({
 }) {
   const [page, setPage] = useState(1);
   const [choosing, setChoosing] = useState(false);
+  const [declaredId, setDeclaredId] = useState('');
+  const [linkError, setLinkError] = useState('');
   const result = useResource(
     `products/${productId}?page=${page}`,
     inventoryStockDetailSchema,
@@ -138,10 +144,43 @@ function StockChoice({
   );
   const d = result.data;
   function select(p: InventoryStockDetail['positions'][number], qty: string) {
+    setLinkError('');
+    let declared = value.physicalTraces ?? [];
+    const prior = value.allocations.find((a) => a.positionId === p.id);
+    const existing = value.physical.find((a) => a.positionId === p.id);
     const allocations = value.allocations.filter((a) => a.positionId !== p.id);
     const physical = value.physical.filter((a) => a.positionId !== p.id);
     if (qty && qty !== '0') {
-      allocations.push({ positionId: p.id, quantity: qty.replace(',', '.') });
+      const selected = declaredId && !prior ? declared.find((t) => t.id === declaredId) : undefined;
+      let source: typeof selected;
+      if (selected) {
+        if (
+          (selected.lotNumber && selected.lotNumber !== p.lotNumber) ||
+          (selected.expirationDate && selected.expirationDate !== p.expirationDate) ||
+          (selected.serialNumber && selected.serialNumber !== p.serialNumber)
+        ) {
+          setLinkError(
+            'Los datos del Remito no coinciden con esta existencia. Revisalos antes de vincular.',
+          );
+          return;
+        }
+        try {
+          const split = splitDeclaration(declared, selected.id, qty);
+          declared = split.traces;
+          source = split.source;
+        } catch (e) {
+          setLinkError(humanError(e));
+          return;
+        }
+      }
+      allocations.push({
+        positionId: p.id,
+        quantity: qty.replace(',', '.'),
+        traceId: prior?.traceId ?? crypto.randomUUID(),
+        ...(source && value.savedTraceIds?.includes(source.id) ? { sourceTraceId: source.id } : {}),
+        scanValue: source?.scanValue ?? prior?.scanValue,
+        preserveOnUnlink: Boolean(source || prior?.preserveOnUnlink),
+      });
       physical.push({
         id: p.id,
         positionId: p.id,
@@ -154,8 +193,20 @@ function StockChoice({
         serialNumber: p.serialNumber,
         condition: p.condition,
       });
+    } else if (prior?.preserveOnUnlink && existing) {
+      declared = [
+        ...declared,
+        {
+          id: prior.traceId ?? crypto.randomUUID(),
+          quantity: prior.quantity,
+          lotNumber: existing.lotNumber,
+          expirationDate: existing.expirationDate,
+          serialNumber: existing.serialNumber,
+          scanValue: prior.scanValue,
+        },
+      ];
     }
-    change({ ...value, allocations, physical });
+    change({ ...value, allocations, physical, physicalTraces: declared });
   }
   if (!choosing)
     return (
@@ -181,6 +232,19 @@ function StockChoice({
   return (
     <div>
       <h4>Stock registrado en MaxBio · Opcional</h4>
+      {(value.physicalTraces ?? []).length > 0 && (
+        <Field label="Vincular una cantidad ya documentada">
+          <select value={declaredId} onChange={(e) => setDeclaredId(e.target.value)}>
+            <option value="">Vincular cantidad sin detalle físico previo</option>
+            {value.physicalTraces?.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.quantity} · {t.lotNumber ?? 'Sin lote'} · {t.serialNumber ?? 'Sin serie'}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      {linkError && <p role="alert">{linkError}</p>}
       <Feedback {...result} reload={result.reload} />
       {d && (
         <>
@@ -281,7 +345,33 @@ function StockChoice({
               <button
                 type="button"
                 className="text-button"
-                onClick={() => change({ ...value, allocations: [], physical: [] })}
+                onClick={() =>
+                  change({
+                    ...value,
+                    allocations: [],
+                    physical: [],
+                    physicalTraces: [
+                      ...(value.physicalTraces ?? []),
+                      ...value.allocations
+                        .filter((a) => a.preserveOnUnlink)
+                        .flatMap((a) => {
+                          const p = value.physical.find((p) => p.positionId === a.positionId);
+                          return p
+                            ? [
+                                {
+                                  id: a.traceId ?? crypto.randomUUID(),
+                                  quantity: a.quantity,
+                                  lotNumber: p.lotNumber,
+                                  expirationDate: p.expirationDate,
+                                  serialNumber: p.serialNumber,
+                                  scanValue: a.scanValue,
+                                },
+                              ]
+                            : [];
+                        }),
+                    ],
+                  })
+                }
               >
                 Limpiar selección
               </button>
@@ -293,7 +383,7 @@ function StockChoice({
   );
 }
 
-type Linked = Pick<Line, 'quantity' | 'allocations' | 'physical'>;
+type Linked = Pick<Line, 'quantity' | 'allocations' | 'physical' | 'physicalTraces'>;
 type Capture = {
   input: ScanInput;
   product: ProductView;
@@ -332,7 +422,7 @@ function ProductCapture({
     name: string;
     archivedAt: string | null;
   } | null>(null);
-  // Ephemeral GS1 capture: never in URL, storage, cookies or audit, and never persisted as trace.
+  // Ephemeral GS1 capture: never in URL, storage, cookies or audit, and never persisted as raw text.
   const [readingScan, setReadingScan] = useState<ScanInterpretation | undefined>(undefined);
   const [capture, setCapture] = useState<Capture | null>(null);
   const [selection, setSelection] = useState<Selection>({});
@@ -402,7 +492,7 @@ function ProductCapture({
         setReadingScan(result.scan);
         finish(
           hasPhysicalData(result.scan)
-            ? 'Producto agregado. Los datos físicos escaneados no se guardarán en este Remito mientras no estén vinculados a Stock.'
+            ? 'Producto agregado. Revisá los datos pendientes y completalos manualmente en el Remito.'
             : 'Producto agregado. Podés elegir la existencia física en Stock.',
         );
         return;
@@ -469,16 +559,28 @@ function ProductCapture({
       setSelectionError(built.error ?? '');
       return;
     }
-    add(capture.product, built);
+    add(capture.product, {
+      ...built,
+      allocations: built.allocations.map((a) => ({
+        ...a,
+        scanValue: capture.scan?.canApplyPhysicalData ? capture.input.value : undefined,
+        preserveOnUnlink: Boolean(
+          capture.scan?.canApplyPhysicalData && hasPhysicalData(capture.scan),
+        ),
+      })),
+    });
     finish(
       'Producto agregado con el Stock vinculado. La confirmación del Remito vuelve a validarlo.',
     );
   }
   function withoutStock() {
     if (!capture) return;
-    add(capture.product);
+    const physicalTraces = scannedDeclaration(capture.scan, capture.input.value);
+    add(capture.product, { quantity: '1', allocations: [], physical: [], physicalTraces });
     finish(
-      'Producto agregado sin vincular Stock. Los datos físicos escaneados no se guardaron en este Remito.',
+      physicalTraces.length
+        ? 'Producto agregado. Los datos físicos quedan registrados solo en el Remito; no modifican Stock.'
+        : 'Producto agregado sin vincular Stock. Revisá o completá manualmente los datos físicos pendientes.',
     );
   }
   const m = capture?.match;
@@ -728,8 +830,8 @@ function ProductCapture({
             </>
           )}
           <p className="muted">
-            Los datos físicos escaneados no se guardarán en este Remito mientras no estén vinculados
-            a Stock.
+            Los datos válidos de lote, vencimiento y serie quedarán registrados en el Remito, pero
+            no modificarán Stock. Los datos pendientes de revisión deben completarse manualmente.
           </p>
           <div className="actions">
             <button
@@ -816,11 +918,12 @@ function ReadOnly({ doc }: { doc: DeliveryNoteView }) {
           <p>
             {l.presentation} · {l.quantity} {quantityLabels[l.unitOfMeasure]}
           </p>
-          {l.allocations.map((a) => (
+          {l.physicalTraces.map((a) => (
             <p key={a.id}>
               {a.quantity} · {a.lotNumber ? 'Lote ' + a.lotNumber : 'Sin lote'} ·{' '}
               {a.expirationDate ? 'Vence ' + a.expirationDate : 'Sin vencimiento'}
-              {a.serialNumber ? ' · Serie ' + a.serialNumber : ''} · {a.location.name}
+              {a.serialNumber ? ' · Serie ' + a.serialNumber : ''} ·{' '}
+              {a.origin === 'INVENTORY' ? 'Vinculado a Stock' : 'Registrado solo en el Remito'}
             </p>
           ))}
           {doc.movementId && l.allocations.length > 0 && (
@@ -847,6 +950,7 @@ function ReadOnly({ doc }: { doc: DeliveryNoteView }) {
 function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNoteView) => void }) {
   const { isAdmin } = useWorkspace();
   const [printReady, setPrintReady] = useState(false);
+  const [reviewedHistory, setReviewedHistory] = useState<string[] | null>(null);
   const [customer, setCustomer] = useState<Customer | null>(doc?.customer ?? null);
   const [date, setDate] = useState(doc?.documentDate ?? '');
   const numbering = useResource(
@@ -868,7 +972,17 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
       presentation: l.presentation,
       unitOfMeasure: l.unitOfMeasure,
       quantity: l.quantity,
-      allocations: l.allocations.map((a) => ({ positionId: a.positionId, quantity: a.quantity })),
+      allocations: l.allocations.map((a) => {
+        const t = l.physicalTraces.find((t) => t.inventoryAllocationId === a.id);
+        return {
+          positionId: a.positionId,
+          quantity: a.quantity,
+          traceId: t?.id,
+          preserveOnUnlink: t?.preserveOnUnlink,
+        };
+      }),
+      physicalTraces: l.physicalTraces.filter((t) => t.origin === 'DECLARED').map(declaredFromView),
+      savedTraceIds: l.physicalTraces.map((t) => t.id),
       physical: l.allocations,
     })) ?? [],
   );
@@ -935,6 +1049,7 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
         productId: l.productId,
         quantity: l.quantity.replace(',', '.'),
         allocations: l.allocations,
+        physicalTraces: l.physicalTraces ?? [],
       })),
     };
     const parsed = doc
@@ -948,11 +1063,15 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
     void run();
   }
   function confirm() {
-    if (!doc || dirty || frozen || guard.current || !printReady) return;
+    if (!doc || dirty || frozen || guard.current || !printReady || reviewedHistory === null) return;
     attempt.current = {
       path: doc.id + '/confirm',
       method: 'POST',
-      body: { operationId: crypto.randomUUID(), expectedVersion: doc.version },
+      body: {
+        operationId: crypto.randomUUID(),
+        expectedVersion: doc.version,
+        ...(reviewedHistory?.length ? { reviewedPriorTraceIds: reviewedHistory } : {}),
+      },
     };
     void run();
   }
@@ -1110,6 +1229,7 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
                       quantity: linked?.quantity ?? '1',
                       allocations: linked?.allocations ?? [],
                       physical: linked?.physical ?? [],
+                      physicalTraces: linked?.physicalTraces ?? [],
                     },
                   ]);
                   setDirty(true);
@@ -1130,6 +1250,19 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
                   <p className="muted">
                     La vinculación de stock es opcional. Podés documentar toda la cantidad aunque no
                     esté registrada en MaxBio.
+                  </p>
+                  <DocumentaryTraceEditor
+                    traces={l.physicalTraces ?? []}
+                    change={(physicalTraces) => changeLine(i, { ...l, physicalTraces })}
+                  />
+                  <p>
+                    Stock vinculado:{' '}
+                    {decimal(l.allocations.reduce((n, a) => n + (scaled(a.quantity) ?? 0n), 0n))} ·
+                    Registrado solo en el Remito:{' '}
+                    {decimal(
+                      (l.physicalTraces ?? []).reduce((n, t) => n + (scaled(t.quantity) ?? 0n), 0n),
+                    )}{' '}
+                    · Total: {l.quantity}
                   </p>
                   <StockChoice
                     productId={l.productId}
@@ -1207,8 +1340,8 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
                   <strong>
                     {line.productName} · {line.quantity} {quantityLabels[line.unitOfMeasure]}
                   </strong>
-                  {line.physical.map((a) => (
-                    <p key={a.positionId}>
+                  {[...line.physical, ...(line.physicalTraces ?? [])].map((a) => (
+                    <p key={'positionId' in a ? a.positionId : a.id}>
                       {a.quantity} · {a.lotNumber ? 'Lote ' + a.lotNumber : 'Sin lote'}
                       {a.expirationDate ? ' · Vence ' + a.expirationDate : ''}
                       {a.serialNumber ? ' · Serie ' + a.serialNumber : ''}
@@ -1216,10 +1349,11 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
                   ))}
                 </div>
               ))}
+              <SerialHistoryReview doc={doc!} ready={setReviewedHistory} />
               <button
                 className="primary-button"
                 type="button"
-                disabled={frozen || !printReady}
+                disabled={frozen || !printReady || reviewedHistory === null}
                 onClick={confirm}
               >
                 Sí, confirmar salida
@@ -1274,6 +1408,7 @@ function Editor({ doc, saved }: { doc?: DeliveryNoteView; saved: (d: DeliveryNot
               productId: l.productId,
               quantity: l.quantity.replace(',', '.'),
               allocations: l.allocations,
+              physicalTraces: l.physicalTraces ?? [],
             })),
           }}
         />

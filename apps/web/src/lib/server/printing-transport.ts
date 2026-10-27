@@ -63,7 +63,7 @@ export async function proxyPrinting(
           const chunk = await reader.read();
           if (chunk.done) break;
           size += chunk.value.length;
-          if (size > (path === 'assets' ? 5700000 : 131072)) {
+          if (size > (path === 'assets' ? 5700000 : path === 'draft-preview' ? 1048576 : 131072)) {
             await reader.cancel();
             return failure(400, 'El contenido supera el límite permitido.');
           }

@@ -40,6 +40,7 @@ import {
 import { evaluatePrint, renderPdf, renderCalibrationTest } from '../infrastructure/pdf-renderer.js';
 import { printingEnvelopes } from '../domain/geometry.js';
 import { printSampleDocument } from '../domain/sample-document.js';
+import { traceCapture } from '../../delivery-notes/application/documentary-traces.js';
 import type { PrintDocument } from '../domain/print-document.js';
 import type { z } from 'zod';
 
@@ -237,6 +238,19 @@ export class PrintingService {
           },
           include: { lot: true, serial: true },
         });
+        const oldTraces = await tx.deliveryNoteLineTrace.findMany({
+          where: {
+            organizationId: c.organizationId,
+            id: {
+              in: input.lines.flatMap((l) => [
+                ...(l.physicalTraces ?? []).map((t) => t.id),
+                ...l.allocations.flatMap((a) =>
+                  [a.traceId, a.sourceTraceId].filter((id): id is string => Boolean(id)),
+                ),
+              ]),
+            },
+          },
+        });
         const document: PrintDocument = {
           status: 'DRAFT',
           version: 1,
@@ -256,29 +270,66 @@ export class PrintingService {
             province: null,
             postalCode: null,
           },
-          lines: input.lines.map((line) => {
-            const product = products.find((p) => p.id === line.productId);
-            if (!product) throw new NotFoundException('No encontramos el producto.');
-            return {
-              productName: product.name,
-              presentation: product.presentation,
-              unitOfMeasure: product.unitOfMeasure,
-              quantity: line.quantity,
-              allocations: line.allocations.map((allocation) => {
-                const position = positions.find(
-                  (p) => p.id === allocation.positionId && p.productId === product.id,
-                );
-                if (!position)
-                  throw new NotFoundException('No encontramos la existencia para este producto.');
-                return {
-                  quantity: allocation.quantity,
-                  lotNumber: position.lot?.lotNumber ?? null,
-                  expirationDate: position.lot?.expirationDate?.toISOString().slice(0, 10) ?? null,
-                  serialNumber: position.serial?.serialNumber ?? null,
-                };
-              }),
-            };
-          }),
+          lines: await Promise.all(
+            input.lines.map(async (line) => {
+              const product = products.find((p) => p.id === line.productId);
+              if (!product) throw new NotFoundException('No encontramos el producto.');
+              return {
+                productName: product.name,
+                presentation: product.presentation,
+                unitOfMeasure: product.unitOfMeasure,
+                quantity: line.quantity,
+                physicalTraces: [
+                  ...(await Promise.all(
+                    (line.physicalTraces ?? []).map(async (t) => ({
+                      ...t,
+                      ...(await traceCapture(
+                        tx,
+                        c.organizationId,
+                        product.id,
+                        t,
+                        t,
+                        oldTraces.find((old) => old.id === t.id && old.productId === product.id),
+                      )),
+                    })),
+                  )),
+                  ...(await Promise.all(
+                    line.allocations.map(async (allocation) => {
+                      const position = positions.find(
+                        (p) => p.id === allocation.positionId && p.productId === product.id,
+                      );
+                      if (!position)
+                        throw new NotFoundException(
+                          'No encontramos la existencia para este producto.',
+                        );
+                      const physical = {
+                        lotNumber: position.lot?.lotNumber ?? null,
+                        expirationDate:
+                          position.lot?.expirationDate?.toISOString().slice(0, 10) ?? null,
+                        serialNumber: position.serial?.serialNumber ?? null,
+                      };
+                      return {
+                        quantity: allocation.quantity,
+                        ...physical,
+                        ...(await traceCapture(
+                          tx,
+                          c.organizationId,
+                          product.id,
+                          physical,
+                          allocation,
+                          oldTraces.find(
+                            (old) =>
+                              [allocation.traceId, allocation.sourceTraceId].includes(old.id) &&
+                              old.productId === product.id,
+                          ),
+                        )),
+                      };
+                    }),
+                  )),
+                ],
+              };
+            }),
+          ),
         };
         return { document, template, calibration: null };
       },

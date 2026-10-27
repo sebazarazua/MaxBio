@@ -3,7 +3,7 @@ import { deliveryNoteSchema } from '@maxbio/contracts';
 // In-memory example only: never creates a DeliveryNote, Customer, Product or stock.
 export function printSampleDocument() {
   const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-  return deliveryNoteSchema.parse({
+  const document = {
     id: id(1),
     status: 'DRAFT',
     version: 1,
@@ -55,5 +55,24 @@ export function printSampleDocument() {
         })),
       },
     ],
+  };
+  return deliveryNoteSchema.parse({
+    ...document,
+    lines: document.lines.map((l) => ({
+      ...l,
+      physicalTraces: l.allocations.map((a) => ({
+        id: a.id,
+        quantity: a.quantity,
+        lotNumber: a.lotNumber,
+        expirationDate: a.expirationDate,
+        serialNumber: a.serialNumber,
+        inventoryAllocationId: a.id,
+        origin: 'INVENTORY',
+        captureMethod: 'LEGACY',
+        scannedGtinSnapshot: null,
+        preserveOnUnlink: false,
+        reviewedPriorTraceIds: [],
+      })),
+    })),
   });
 }

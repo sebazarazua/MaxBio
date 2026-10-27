@@ -61,7 +61,7 @@ export async function proxyDeliveryNotes(request: Request, parts: string[]) {
           const chunk = await reader.read();
           if (chunk.done) break;
           size += chunk.value.length;
-          if (size > 131072) {
+          if (size > 1048576) {
             await reader.cancel();
             return failure(400, 'El formulario es demasiado largo. Revisá los datos.');
           }

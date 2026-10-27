@@ -28,6 +28,7 @@ import {
   customerView,
 } from './delivery-note-view.js';
 import { PrintingService } from '../../printing/application/printing.service.js';
+import { writeLineTraces, confirmTraceHistory, findTraceHistory } from './documentary-traces.js';
 import { numberingLock, loadNumbering, numberingView, allocateNumber } from './numbering.js';
 type Tx = Prisma.TransactionClient;
 const hash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -93,7 +94,11 @@ export class DeliveryNotesService {
     c: RequestActorContext,
     id: string,
     input: DeliveryNoteCreate['lines'],
+    previous: Record['lines'][number]['physicalTraces'] = [],
   ) {
+    if (input.reduce((n, l) => n + l.allocations.length + (l.physicalTraces?.length ?? 0), 0) > 500)
+      throw new BadRequestException('Máximo 500 detalles físicos por remito.');
+    const seenSerials = new Set<string>();
     // Full replacement under parent lock; FK prevents using another tenant/product's position.
     for (const [ordinal, l] of input.entries()) {
       const p = await tx.product.findFirst({
@@ -132,9 +137,11 @@ export class DeliveryNotesService {
             organizationId: c.organizationId,
             productId: l.productId,
             lineId: l.id,
-            ...a,
+            positionId: a.positionId,
+            quantity: a.quantity,
           })),
         });
+      await writeLineTraces(tx, c.organizationId, id, l, p.unitOfMeasure, previous, seenSerials);
     }
   }
   private fields(input: DeliveryNoteCreate | DeliveryNoteUpdate) {
@@ -259,13 +266,34 @@ export class DeliveryNotesService {
       const d = await this.lock(tx, c, id);
       this.editable(d, input.expectedVersion);
       const number = d.documentNumber ? {} : await allocateNumber(tx, c.organizationId);
+      await tx.deliveryNoteLineTrace.deleteMany({
+        where: { organizationId: c.organizationId, deliveryNoteId: id },
+      });
       await tx.deliveryNoteAllocation.deleteMany({
         where: { organizationId: c.organizationId, line: { deliveryNoteId: id } },
       });
       await tx.deliveryNoteLine.deleteMany({
         where: { organizationId: c.organizationId, deliveryNoteId: id },
       });
-      await this.lines(tx, c, id, input.lines);
+      const priorTraces = d.lines.flatMap((l) => l.physicalTraces);
+      const replacement = input.lines.map((l) => ({
+        ...l,
+        physicalTraces:
+          l.physicalTraces ??
+          priorTraces
+            .filter(
+              (t) => t.lineId === l.id && t.productId === l.productId && t.origin === 'DECLARED',
+            )
+            .map((t) => ({
+              id: t.id,
+              quantity: t.quantity.toString(),
+              lotNumber: t.lotNumber,
+              expirationDate: t.expirationDate?.toISOString().slice(0, 10) ?? null,
+              serialNumber: t.serialNumber,
+              scannedGtinSnapshot: t.scannedGtinSnapshot,
+            })),
+      }));
+      await this.lines(tx, c, id, replacement, priorTraces);
       await tx.deliveryNote.update({
         where: { organizationId_id: { organizationId: c.organizationId, id } },
         data: { ...this.fields(input), ...number, version: { increment: 1 } },
@@ -304,9 +332,47 @@ export class DeliveryNotesService {
         );
       if (!d.documentPrefix || !d.documentNumber)
         throw new BadRequestException('Ingresá el número del talonario antes de confirmar.');
+      const traces = d.lines.flatMap((l) => l.physicalTraces);
+      await confirmTraceHistory(
+        tx,
+        c.organizationId,
+        id,
+        traces,
+        input.reviewedPriorTraceIds ?? [],
+      );
+      for (const t of traces)
+        if (
+          t.scannedGtinSnapshot &&
+          !(await tx.productIdentifier.findFirst({
+            where: {
+              organizationId: c.organizationId,
+              productId: t.productId,
+              kind: 'GTIN',
+              normalizedValue: t.scannedGtinSnapshot,
+              archivedAt: null,
+            },
+          }))
+        )
+          throw new ConflictException('El GTIN leído ya no está asociado a este producto.');
       // Pure geometry validation only. No PDF/storage work participates in stock posting.
       await this.printing.assertConfirmable(tx, c, view(d));
       await this.inventory.postDeliveryNote(tx, c, id);
+      for (const t of traces.filter((t) => t.inventoryAllocationId)) {
+        const ml = await tx.inventoryMovementLine.findFirstOrThrow({
+          where: {
+            organizationId: c.organizationId,
+            deliveryAllocationId: t.inventoryAllocationId,
+          },
+        });
+        await tx.deliveryNoteLineTrace.update({
+          where: { id: t.id },
+          data: {
+            lotNumber: ml.lotNumber,
+            expirationDate: ml.expirationDate,
+            serialNumber: ml.serialNumber,
+          },
+        });
+      }
       await tx.deliveryNote.update({
         where: { organizationId_id: { organizationId: c.organizationId, id } },
         data: {
@@ -340,6 +406,20 @@ export class DeliveryNotesService {
       true,
     );
   }
+  async traceHistory(
+    c: RequestActorContext,
+    input: { productId: string; lotNumber?: string; serialNumber?: string },
+  ) {
+    if (
+      !(await this.db.client.product.findFirst({
+        where: { organizationId: c.organizationId, id: input.productId },
+      }))
+    )
+      throw new NotFoundException();
+    return this.db.client.$transaction((tx) => findTraceHistory(tx, c.organizationId, input), {
+      isolationLevel: 'RepeatableRead',
+    });
+  }
   async list(c: RequestActorContext, q: CatalogListQuery) {
     // Search is evaluated in PostgreSQL; patient/affiliate values are never returned in the list.
     const tokens = q.q.trim().split(/\s+/).filter(Boolean).slice(0, 8);
@@ -371,6 +451,11 @@ export class DeliveryNotesService {
                   OR: [
                     { product: { name: contains } },
                     { productNameSnapshot: contains },
+                    {
+                      physicalTraces: {
+                        some: { OR: [{ lotNumber: contains }, { serialNumber: contains }] },
+                      },
+                    },
                     {
                       allocations: {
                         some: {

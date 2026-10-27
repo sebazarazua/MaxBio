@@ -12,6 +12,9 @@ export function configureApp(app: INestApplication) {
   app.use(helmet());
   // Only this authenticated endpoint accepts prepared PNGs as bounded base64 JSON.
   app.use('/api/v1/printing/assets', json({ limit: 5700000 }));
+  // Up to 500 bounded documentary traces; retain the normal limit on unrelated routes.
+  app.use('/api/v1/delivery-notes', json({ limit: 1048576 }));
+  app.use('/api/v1/printing/draft-preview', json({ limit: 1048576 }));
   // Nest detects the route-local jsonParser by name and skips its automatic one.
   // Register the usual parser explicitly for every other JSON endpoint.
   app.use(json());

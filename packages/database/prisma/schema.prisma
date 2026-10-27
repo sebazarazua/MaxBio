@@ -953,8 +953,10 @@ model DeliveryNoteLine {
   unitOfMeasureSnapshot UnitOfMeasure?
   gtinSnapshot String? @db.VarChar(14)
   allocations DeliveryNoteAllocation[]
+  physicalTraces DeliveryNoteLineTrace[]
 
   @@unique([organizationId, productId, id])
+  @@unique([organizationId, deliveryNoteId, productId, id], map: "delivery_trace_line_scope")
   @@index([organizationId, deliveryNoteId, ordinal])
   @@index([organizationId, productId])
 }
@@ -970,10 +972,49 @@ model DeliveryNoteAllocation {
   position InventoryBalance @relation(fields: [organizationId, productId, positionId], references: [organizationId, productId, id], onDelete: Restrict, onUpdate: Restrict)
   quantity Decimal @db.Decimal(20,6)
   movementLine InventoryMovementLine?
+  physicalTraces DeliveryNoteLineTrace[]
 
   @@unique([organizationId, productId, id])
+  @@unique([organizationId, productId, lineId, id], map: "delivery_trace_allocation_scope")
   @@unique([organizationId, lineId, positionId])
   @@index([organizationId, positionId])
+}
+
+enum DeliveryTraceOrigin {
+  INVENTORY
+  DECLARED
+}
+
+enum DeliveryTraceCaptureMethod {
+  MANUAL
+  GS1
+  LEGACY
+}
+
+model DeliveryNoteLineTrace {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  deliveryNoteId String @db.Uuid
+  productId String @db.Uuid
+  lineId String @db.Uuid
+  line DeliveryNoteLine @relation(fields: [organizationId, deliveryNoteId, productId, lineId], references: [organizationId, deliveryNoteId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+  ordinal Int
+  quantity Decimal @db.Decimal(20,6)
+  lotNumber String? @db.VarChar(128)
+  expirationDate DateTime? @db.Date
+  serialNumber String? @db.VarChar(128)
+  inventoryAllocationId String? @unique @db.Uuid
+  inventoryAllocation DeliveryNoteAllocation? @relation(fields: [organizationId, productId, lineId, inventoryAllocationId], references: [organizationId, productId, lineId, id], onDelete: Restrict, onUpdate: Restrict)
+  origin DeliveryTraceOrigin
+  captureMethod DeliveryTraceCaptureMethod
+  scannedGtinSnapshot String? @db.VarChar(14)
+  preserveOnUnlink Boolean @default(false)
+  reviewedPriorTraceIds String[] @default([]) @db.Uuid
+
+  @@unique([organizationId, deliveryNoteId, productId, serialNumber], map: "delivery_trace_document_serial")
+  @@index([organizationId, lineId, ordinal])
+  @@index([organizationId, productId, lotNumber])
+  @@index([organizationId, productId, serialNumber])
 }
 
 enum PrintTemplateStatus {

@@ -577,8 +577,15 @@ test('Remito: serie duplicada en el borrador y match obsoleto se rechazan al con
   ]);
   const { positionId } = (await match(p.id, { serialNumber: 'S-STALE' })).positions[0]!;
   const allocation = [{ positionId, quantity: '1' }];
-  const duplicated = await draft([lineOf(p.id, '1', allocation), lineOf(p.id, '1', allocation)]);
-  await outbound(duplicated, 400);
+  await checked(
+    await request('delivery-notes', 'POST', {
+      id: randomUUID(),
+      customerId: customer,
+      documentDate: '2026-10-26',
+      lines: [lineOf(p.id, '1', allocation), lineOf(p.id, '1', allocation)],
+    }),
+    400,
+  );
   const first = await draft([lineOf(p.id, '1', allocation)]);
   const second = await draft([lineOf(p.id, '1', allocation)]);
   assert.ok(deliveryNoteSchema.parse(await outbound(first)).movementId);
@@ -590,3 +597,341 @@ test('Remito: serie duplicada en el borrador y match obsoleto se rechazan al con
   assert.equal(kept.lines[0]?.allocations[0]?.positionId, positionId);
   assert.equal((await match(p.id, { serialNumber: 'S-STALE' })).status, 'MISSING');
 });
+
+// Stage 5 uses the same HTTP/DB harness; documentary facts do not require policy or existence.
+const declared = (patch: object = {}) => ({
+  id: randomUUID(),
+  quantity: '1',
+  lotNumber: 'DOC-LOT',
+  expirationDate: '2028-12-31',
+  serialNumber: null,
+  ...patch,
+});
+const tracesOf = (d: DeliveryNoteView) => d.lines.flatMap((l) => l.physicalTraces);
+async function updateNote(d: DeliveryNoteView, lines: object[], status = 200) {
+  const r = await request('delivery-notes/' + d.id, 'PATCH', {
+    expectedVersion: d.version,
+    customerId: d.customer.id,
+    documentDate: d.documentDate,
+    lines,
+  });
+  const body = await checked(r, status);
+  return status === 200 ? deliveryNoteSchema.parse(body) : d;
+}
+async function noInventory() {
+  return Promise.all([
+    client.inventoryLot.count(),
+    client.inventorySerial.count(),
+    client.inventoryBalance.count(),
+    client.inventoryMovement.count(),
+    client.inventoryLocation.count(),
+    client.inventoryReceipt.count(),
+  ]);
+}
+
+test('Stage 5: GS1 sin stock/policy conserva datos y GTIN observado sin crear Inventory; identidad manual no falsifica GS1', async () => {
+  const g = gtin(),
+    p = await product(null, { gtin: gtin() });
+  await client.productIdentifier.create({
+    data: { organizationId: org, productId: p.id, kind: 'GTIN', value: g, normalizedValue: g },
+  });
+  const scanValue = `(01)${g}(17)281231(10)DOC-LOT(21)DOC-SERIAL`;
+  const initial = await noInventory();
+  let d = await draft([
+    { ...lineOf(p.id, '1'), physicalTraces: [declared({ serialNumber: 'DOC-SERIAL', scanValue })] },
+  ]);
+  const trace = tracesOf(d)[0]!;
+  assert.equal(trace.origin, 'DECLARED');
+  assert.equal(trace.captureMethod, 'GS1');
+  assert.equal(trace.scannedGtinSnapshot, g);
+  assert.equal(trace.inventoryAllocationId, null);
+  d = deliveryNoteSchema.parse(await outbound(d));
+  assert.equal(d.movementId, null);
+  assert.equal(tracesOf(d)[0]!.serialNumber, 'DOC-SERIAL');
+  assert.deepEqual(await noInventory(), initial);
+  const stored = await client.deliveryNoteLineTrace.findUniqueOrThrow({ where: { id: trace.id } });
+  assert.ok(!JSON.stringify(stored).includes(scanValue));
+  assert.equal(stored.expirationDate!.toISOString().slice(0, 10), '2028-12-31');
+  const events = await client.auditEvent.findMany({ where: { resourceId: d.id } });
+  assert.ok(events.every((e) => !JSON.stringify(e.metadata).includes('DOC-SERIAL')));
+  for (const [physical, key] of [
+    [trace.lotNumber, 'lot'],
+    [trace.serialNumber, 'serial'],
+  ] as const)
+    assert.ok(physical, key);
+  const r = await request('delivery-notes/trace-history', 'POST', {
+    productId: p.id,
+    serialNumber: 'DOC-SERIAL',
+  });
+  const history = (await checked(r)) as { items: { traceId: string }[] };
+  assert.equal(history.items[0]!.traceId, trace.id);
+  const list = (await checked(
+    await request('delivery-notes/search', 'POST', { q: 'DOC-SERIAL' }),
+  )) as { items: { id: string }[] };
+  assert.ok(list.items.some((i) => i.id === d.id));
+  const edit = await draft([
+    {
+      ...lineOf(p.id, '1'),
+      physicalTraces: [
+        declared({ serialNumber: 'EDIT-S', scanValue: `(01)${g}(17)281231(10)DOC-LOT(21)EDIT-S` }),
+      ],
+    },
+  ]);
+  const t = tracesOf(edit)[0]!;
+  const edited = await updateNote(edit, [
+    {
+      ...lineOf(p.id, '1'),
+      id: edit.lines[0]!.id,
+      physicalTraces: [
+        { ...declared({ id: t.id, serialNumber: 'EDIT-S2' }), scannedGtinSnapshot: g },
+      ],
+    },
+  ]);
+  assert.equal(tracesOf(edited)[0]!.captureMethod, 'MANUAL');
+  await checked(
+    await request('delivery-notes', 'POST', {
+      id: randomUUID(),
+      customerId: customer,
+      documentDate: '2026-10-26',
+      lines: [{ ...lineOf(p.id, '1'), physicalTraces: [declared({ scannedGtinSnapshot: g })] }],
+    }),
+    400,
+  );
+});
+
+test('Stage 5: allocation parcial + declarado, split/vínculo y desvínculo son atómicos y exactos', async () => {
+  const p = await product(LOT);
+  await receive(p, [{ quantity: '10', lotNumber: 'SPLIT' }]);
+  const positionId = (await match(p.id, { lotNumber: 'SPLIT' })).positions[0]!.positionId;
+  let d = await draft([
+    {
+      ...lineOf(p.id, '5'),
+      physicalTraces: [declared({ quantity: '5', lotNumber: 'SPLIT', expirationDate: null })],
+    },
+  ]);
+  const source = tracesOf(d)[0]!,
+    lineId = d.lines[0]!.id,
+    inventoryId = randomUUID();
+  const splitLine = {
+    id: lineId,
+    productId: p.id,
+    quantity: '5',
+    allocations: [
+      {
+        positionId,
+        quantity: '2',
+        traceId: inventoryId,
+        sourceTraceId: source.id,
+        preserveOnUnlink: true,
+      },
+    ],
+    physicalTraces: [
+      declared({ id: source.id, quantity: '3', lotNumber: 'SPLIT', expirationDate: null }),
+    ],
+  };
+  d = await updateNote(d, [splitLine]);
+  assert.deepEqual(
+    tracesOf(d).map((t) => [t.origin, t.quantity]),
+    [
+      ['INVENTORY', '2'],
+      ['DECLARED', '3'],
+    ],
+  );
+  assert.equal((await stock(p.id)).summary.physical, '10');
+  await updateNote(d, [splitLine], 200); // Full replacement keeps the same trace IDs/provenance.
+  const current = deliveryNoteSchema.parse(await checked(await request('delivery-notes/' + d.id)));
+  await updateNote(d, [splitLine], 409); // stale version
+  const unlinked = await updateNote(current, [
+    {
+      id: lineId,
+      productId: p.id,
+      quantity: '5',
+      allocations: [],
+      physicalTraces: [
+        declared({ id: inventoryId, quantity: '2', lotNumber: 'SPLIT', expirationDate: null }),
+        declared({ id: source.id, quantity: '3', lotNumber: 'SPLIT', expirationDate: null }),
+      ],
+    },
+  ]);
+  assert.ok(tracesOf(unlinked).every((t) => t.origin === 'DECLARED'));
+  const done = deliveryNoteSchema.parse(await outbound(await updateNote(unlinked, [splitLine])));
+  assert.ok(done.movementId);
+  assert.equal((await stock(p.id)).summary.physical, '8');
+  const ml = await client.inventoryMovementLine.findMany({
+    where: { movementId: done.movementId! },
+  });
+  assert.equal(ml.length, 1);
+  assert.equal(ml[0]!.quantityDelta.toString(), '-2');
+  assert.deepEqual(
+    tracesOf(done).map((t) => t.quantity),
+    ['2', '3'],
+  );
+  const full = await draft([{ ...lineOf(p.id, '1', [{ positionId, quantity: '1' }]) }]);
+  assert.equal(tracesOf(full).length, 1);
+  assert.equal(tracesOf(full)[0]!.preserveOnUnlink, false);
+});
+
+test('Stage 5: cantidad/serie/cobertura, duplicados entre líneas y origen no controlado por browser', async () => {
+  const p = await product(null);
+  const create = (lines: object[]) =>
+    request('delivery-notes', 'POST', {
+      id: randomUUID(),
+      customerId: customer,
+      documentDate: '2026-10-26',
+      lines,
+    });
+  for (const patch of [
+    { quantity: '2', serialNumber: 'S-ONE' },
+    { quantity: '1.5' },
+    { quantity: '0' },
+    { lotNumber: null, expirationDate: null, serialNumber: null },
+  ])
+    await checked(await create([{ ...lineOf(p.id, '1'), physicalTraces: [declared(patch)] }]), 400);
+  await checked(
+    await create(
+      [1, 2].map(() => ({
+        ...lineOf(p.id, '1'),
+        physicalTraces: [declared({ serialNumber: 'DUP' })],
+      })),
+    ),
+    400,
+  );
+  await checked(
+    await create([
+      { ...lineOf(p.id, '1'), physicalTraces: [{ ...declared(), origin: 'INVENTORY' }] },
+    ]),
+    400,
+  );
+  const meter = await product(null, { unit: 'METER' });
+  await checked(
+    await create([
+      { ...lineOf(meter.id, '1'), physicalTraces: [declared({ serialNumber: 'METER-S' })] },
+    ]),
+    400,
+  );
+  const plain = await draft([lineOf(p.id, '5')]);
+  assert.deepEqual(tracesOf(plain), []);
+  assert.equal(deliveryNoteSchema.parse(await outbound(plain)).movementId, null);
+});
+
+test('Stage 5: antecedentes históricos y carrera de confirmaciones requieren revisión sin unique global', async () => {
+  const p = await product(null);
+  const newDoc = () =>
+    draft([{ ...lineOf(p.id, '1'), physicalTraces: [declared({ serialNumber: 'HISTORY' })] }]);
+  const a = await newDoc(),
+    b = await newDoc();
+  const responses = await Promise.all(
+    [a, b].map((d) =>
+      request('delivery-notes/' + d.id + '/confirm', 'POST', {
+        expectedVersion: d.version,
+        operationId: randomUUID(),
+      }),
+    ),
+  );
+  assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
+  const first = deliveryNoteSchema.parse(await checked(responses.find((r) => r.status === 200)!));
+  const pending = first.id === a.id ? b : a;
+  const ids = tracesOf(first).map((t) => t.id),
+    op = randomUUID();
+  const command = { expectedVersion: pending.version, operationId: op, reviewedPriorTraceIds: ids };
+  const next = deliveryNoteSchema.parse(
+    await checked(await request('delivery-notes/' + pending.id + '/confirm', 'POST', command)),
+  );
+  assert.deepEqual(tracesOf(next)[0]!.reviewedPriorTraceIds, ids);
+  assert.equal(next.movementId, null);
+  const retry = deliveryNoteSchema.parse(
+    await checked(await request('delivery-notes/' + pending.id + '/confirm', 'POST', command)),
+  );
+  assert.equal(retry.replayed, true);
+  await checked(
+    await request('delivery-notes/' + pending.id + '/confirm', 'POST', {
+      ...command,
+      reviewedPriorTraceIds: [],
+    }),
+    409,
+  );
+  const foreign = await product(null, { organizationId: foreignOrg });
+  const history = (await checked(
+    await request(
+      'delivery-notes/trace-history',
+      'POST',
+      { productId: foreign.id, serialNumber: 'HISTORY' },
+      2,
+    ),
+  )) as { items: object[] };
+  assert.deepEqual(history.items, []);
+  await checked(
+    await request(
+      'delivery-notes/trace-history',
+      'POST',
+      { productId: p.id, serialNumber: 'HISTORY' },
+      2,
+    ),
+    404,
+  );
+});
+
+test('Stage 5: SQL protege snapshots cerrados, tenant/Product/allocation y cobertura diferida', async () => {
+  const p = await product(null),
+    other = await product(null);
+  const d = deliveryNoteSchema.parse(
+    await outbound(await draft([{ ...lineOf(p.id, '1'), physicalTraces: [declared()] }])),
+  );
+  const t = tracesOf(d)[0]!;
+  await assert.rejects(
+    client.deliveryNoteLineTrace.update({ where: { id: t.id }, data: { lotNumber: 'CHANGED' } }),
+  );
+  await assert.rejects(client.deliveryNoteLineTrace.delete({ where: { id: t.id } }));
+  const data = {
+    organizationId: org,
+    deliveryNoteId: d.id,
+    productId: p.id,
+    lineId: d.lines[0]!.id,
+    ordinal: 1,
+    quantity: '1',
+    lotNumber: 'X',
+    origin: 'DECLARED' as const,
+    captureMethod: 'MANUAL' as const,
+  };
+  await assert.rejects(client.deliveryNoteLineTrace.create({ data }));
+  const open = await draft([lineOf(p.id, '1')]);
+  await assert.rejects(
+    client.deliveryNoteLineTrace.create({
+      data: { ...data, deliveryNoteId: open.id, lineId: open.lines[0]!.id, productId: other.id },
+    }),
+  );
+  await assert.rejects(
+    client.deliveryNoteLineTrace.create({
+      data: {
+        ...data,
+        organizationId: foreignOrg,
+        deliveryNoteId: open.id,
+        lineId: open.lines[0]!.id,
+      },
+    }),
+  );
+  await assert.rejects(
+    client.deliveryNoteLineTrace.create({
+      data: { ...data, deliveryNoteId: open.id, lineId: open.lines[0]!.id, quantity: '2' },
+    }),
+  );
+});
+
+test(
+  'Stage 5: 500 detalles manuales caben en transporte acotado y no crean stock',
+  { timeout: 30000 },
+  async () => {
+    const p = await product(null);
+    const lines = Array.from({ length: 50 }, () => ({
+      ...lineOf(p.id, '10'),
+      physicalTraces: Array.from({ length: 10 }, () =>
+        declared({ lotNumber: 'L'.repeat(128), serialNumber: null }),
+      ),
+    }));
+    const initial = await noInventory();
+    assert.ok(Buffer.byteLength(JSON.stringify(lines)) > 102400);
+    const d = await draft(lines);
+    assert.equal(tracesOf(d).length, 500);
+    assert.deepEqual(await noInventory(), initial);
+  },
+);
