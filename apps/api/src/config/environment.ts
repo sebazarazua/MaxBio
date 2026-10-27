@@ -11,6 +11,11 @@ const environmentSchema = z.object({
   SESSION_ABSOLUTE_DAYS: z.coerce.number().int().min(1).max(365).default(180),
   SESSION_IDLE_DAYS: z.coerce.number().int().min(1).max(180).default(30),
   SESSION_ACTIVITY_MINUTES: z.coerce.number().int().min(1).max(60).default(15),
+  ARCA_WSAA_ENDPOINT: z
+    .literal('https://wsaahomo.afip.gov.ar/ws/services/LoginCms')
+    .default('https://wsaahomo.afip.gov.ar/ws/services/LoginCms'),
+  ARCA_OPENSSL_PATH: z.string().min(1).optional(),
+  ARCA_CREDENTIAL_STORAGE_DIR: z.string().min(1).optional(),
   DATABASE_URL: z
     .url()
     .refine(

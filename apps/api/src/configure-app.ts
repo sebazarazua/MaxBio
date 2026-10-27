@@ -15,6 +15,8 @@ export function configureApp(app: INestApplication) {
   // Up to 500 bounded documentary traces; retain the normal limit on unrelated routes.
   app.use('/api/v1/delivery-notes', json({ limit: 1048576 }));
   app.use('/api/v1/printing/draft-preview', json({ limit: 1048576 }));
+  // Certificate files are bounded independently from commercial document uploads.
+  app.use('/api/v1/fiscal/arca/credentials', json({ limit: 140000 }));
   // Nest detects the route-local jsonParser by name and skips its automatic one.
   // Register the usual parser explicitly for every other JSON endpoint.
   app.use(json());

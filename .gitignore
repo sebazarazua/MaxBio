@@ -10,6 +10,7 @@ coverage/
 packages/database/src/generated/
 artifacts/
 .maxbio-private-print/
+.maxbio-private-credentials/
 *.log
 .DS_Store
 Thumbs.db

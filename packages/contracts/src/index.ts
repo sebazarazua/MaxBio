@@ -49,3 +49,4 @@ export * from './printing.js';
 export * from './bourbon-provisional.js';
 export * from './traceability.js';
 export * from './invoicing.js';
+export * from './fiscal.js';

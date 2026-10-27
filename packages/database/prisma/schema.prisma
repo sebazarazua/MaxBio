@@ -61,6 +61,9 @@ model Organization {
   invoices Invoice[]
   invoiceLines InvoiceLine[]
   invoiceDeliveryNotes InvoiceDeliveryNote[]
+  fiscalProfile OrganizationFiscalProfile?
+  arcaConfiguration ArcaIntegrationConfig?
+  arcaCredentials ArcaCredential[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -1258,4 +1261,96 @@ model InvoiceLine {
 
   @@unique([organizationId, deliveryNoteLineId])
   @@index([organizationId, invoiceId, ordinal])
+}
+enum FiscalVatCondition {
+  RESPONSABLE_INSCRIPTO
+  MONOTRIBUTO
+  EXENTO
+  CONSUMIDOR_FINAL
+  NO_ALCANZADO
+}
+
+enum GrossIncomeRegime {
+  LOCAL
+  MULTILATERAL_AGREEMENT
+  EXEMPT
+  NOT_APPLICABLE
+}
+
+// V2 deliberately cannot represent a production configuration.
+enum ArcaEnvironment {
+  HOMOLOGATION
+}
+
+enum ArcaCredentialStatus {
+  CSR_READY
+  CERTIFICATE_INSTALLED
+  ACTIVE
+  REPLACED
+}
+
+model OrganizationFiscalProfile {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @unique @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  legalName String? @db.VarChar(200)
+  tradeName String? @db.VarChar(200)
+  cuit String? @db.VarChar(11)
+  vatCondition FiscalVatCondition?
+  grossIncomeRegime GrossIncomeRegime?
+  grossIncomeNumber String? @db.VarChar(40)
+  addressLine String? @db.VarChar(250)
+  locality String? @db.VarChar(120)
+  province String? @db.VarChar(100)
+  postalCode String? @db.VarChar(20)
+  country String? @db.Char(2)
+  nationalActivityCode String? @db.Char(6)
+  multilateralActivityCode String? @db.Char(6)
+  version Int @default(1)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model ArcaIntegrationConfig {
+  organizationId String @id @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  environment ArcaEnvironment @default(HOMOLOGATION)
+  service String @default("wsfe") @db.VarChar(32)
+  version Int @default(1)
+  // Non-secret reservation survives restarts and coordinates separate API processes.
+  authBlockedUntil DateTime? @db.Timestamptz(3)
+  lastTicketExpiresAt DateTime? @db.Timestamptz(3)
+  lastObtainedAt DateTime? @db.Timestamptz(3)
+  lastResultCode String? @db.VarChar(40)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model ArcaCredential {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  environment ArcaEnvironment @default(HOMOLOGATION)
+  commonName String @db.VarChar(64)
+  legalName String @db.VarChar(200)
+  cuit String @db.VarChar(11)
+  status ArcaCredentialStatus @default(CSR_READY)
+  version Int @default(1)
+  generationOperationId String @db.Uuid
+  generationHash String @db.Char(64)
+  privateKeyStorageKey String @unique @db.VarChar(80)
+  csrStorageKey String @unique @db.VarChar(80)
+  certificateStorageKey String? @unique @db.VarChar(80)
+  certificateFingerprint String? @db.VarChar(95)
+  certificateSerial String? @db.VarChar(128)
+  certificateSubject String? @db.VarChar(2000)
+  certificateIssuer String? @db.VarChar(2000)
+  validFrom DateTime? @db.Timestamptz(3)
+  validTo DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, generationOperationId])
+  @@index([organizationId, environment, createdAt, id])
+  // Partial unique indexes for ACTIVE and pending are maintained by the migration.
 }

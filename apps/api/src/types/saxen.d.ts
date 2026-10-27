@@ -11,6 +11,7 @@ declare module 'saxen' {
     ): this;
     on(event: 'closeTag', callback: (name: string) => void): this;
     on(event: 'text', callback: (text: string, decode: (text: string) => string) => void): this;
+    on(event: 'cdata', callback: (text: string) => void): this;
     on(event: 'error' | 'warn', callback: (error: Error) => void): this;
     on(event: 'attention', callback: (text: string) => void): this;
     parse(xml: string): Error | null;

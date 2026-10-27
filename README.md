@@ -169,7 +169,7 @@ El build no requiere una base activa. Para probar las aplicaciones compiladas, e
 
 ## Alcance y próximo paso
 
-Catálogo, listas, identificación HID, Clientes, Inventory V1, Remitos con salida OUTBOUND, impresión con plantilla/preview/PDF overlay/calibración, la consulta de Trazabilidad y Facturación V1 interna están implementados. La plantilla física real de Bourbon requiere sus referencias, medidas y prueba de impresora. No se implementaron reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, Digital Link, parser GS1 completo, facturación fiscal, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
+Catálogo, listas, identificación HID, Clientes, Inventory V1, Remitos con salida OUTBOUND, impresión con plantilla/preview/PDF overlay/calibración, la consulta de Trazabilidad y Facturación V1 interna están implementados. La plantilla física real de Bourbon requiere sus referencias, medidas y prueba de impresora. No se implementaron reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, Digital Link, parser GS1 completo, emisión fiscal WSFEv1/CAE, ARCA producción, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
 
 El siguiente paso es probar Inventory y Remitos con usuarios, lectores HID y datos reales, validar unidades/políticas y el procedimiento de conteo gradual, y preparar/calibrar el formulario real del talonario. Las decisiones están registradas en [decisiones](docs/architecture/decisions.md).
 
@@ -196,6 +196,8 @@ Reimprimir registra otra generación con el mismo archivo; no confirma de nuevo 
 ## Facturación
 
 **Facturación** (barra lateral) lista los Remitos confirmados **pendientes de facturar**. Elegí uno o varios del mismo cliente, **Crear factura**, completá precio e IVA de cada línea, revisá los totales y **Marcar lista para autorizar**. Solo ADMIN crea y modifica facturas; OPERATOR consulta. Es una factura **interna**: todavía no se envía a ARCA, no tiene CAE ni validez fiscal. Ver [modelo, cálculos y límites](docs/architecture/invoicing.md).
+
+**Configuración → Datos fiscales / Conexión con ARCA** permite a ADMIN configurar el emisor, generar una solicitud con clave privada del servidor, descargarla para WSASS, cargar y activar el certificado y probar autenticación WSAA exclusivamente en homologación. Requiere OpenSSL 3.x en el servidor (PATH o `ARCA_OPENSSL_PATH`) y almacenamiento privado persistente (`ARCA_CREDENTIAL_STORAGE_DIR`, predeterminado `.maxbio-private-credentials`, gitignored). **Autenticación ARCA en homologación implementada; conexión real pendiente de certificado y autorización WSASS.** No emite facturas ni habilita producción. Ver [arquitectura](docs/architecture/arca.md), [pasos manuales y referencia Bourbon](docs/architecture/arca-homologation-setup.md) y [verificación](docs/architecture/arca-verification.md).
 
 ## Trazabilidad
 

@@ -1,0 +1,652 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
+import type { Prisma } from '@maxbio/database';
+import {
+  fiscalCompleteness,
+  fiscalFieldsSchema,
+  arcaReadinessSchema,
+  validCuit,
+  type ArcaActivate,
+  type ArcaCertificate,
+  type ArcaGenerate,
+  type ArcaReadiness,
+  type FiscalProfileUpdate,
+} from '@maxbio/contracts';
+import { DatabaseService } from '../../../infrastructure/database/database.service.js';
+import { AuditService } from '../../audit/audit.service.js';
+import type { RequestActorContext } from '../../../common/auth/request-context.js';
+import {
+  CREDENTIAL_STORAGE,
+  type PrivateCredentialStorage,
+} from '../infrastructure/private-credential-storage.js';
+import { OpenSslArcaCrypto, CMS_SIGNER, type CmsSigner } from '../arca/openssl-crypto.js';
+import {
+  ARCA_CLOCK,
+  ArcaError,
+  arcaMessages,
+  TICKET_MARGIN_MS,
+  UNCERTAIN_WINDOW_MS,
+  WSAA_RETRY_MS,
+  type ArcaClock,
+  type ArcaErrorCode,
+} from '../arca/arca-errors.js';
+import { ArcaWsaaClient } from '../arca/wsaa-client.js';
+import { TraFactory } from '../arca/wsaa-xml.js';
+import { ArcaTicketProvider } from '../arca/ticket-provider.js';
+
+type Tx = Prisma.TransactionClient;
+type Credential = Prisma.ArcaCredentialGetPayload<object>;
+type Profile = Prisma.OrganizationFiscalProfileGetPayload<object>;
+const scope = (org: string) => ({ organizationId: org, environment: 'HOMOLOGATION' as const });
+const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+function profileView(p: Profile | null) {
+  if (!p) return null;
+  return {
+    id: p.id,
+    ...fiscalFieldsSchema.parse(
+      Object.fromEntries(
+        Object.keys(fiscalFieldsSchema.shape).map((k) => [k, p[k as keyof Profile]]),
+      ),
+    ),
+    version: p.version,
+    completeness: fiscalCompleteness(p),
+    createdAt: p.createdAt.toISOString(),
+    updatedAt: p.updatedAt.toISOString(),
+  };
+}
+export function certificateState(
+  c: Pick<Credential, 'certificateStorageKey' | 'validFrom' | 'validTo'>,
+  now: Date,
+) {
+  if (!c.certificateStorageKey) return 'MISSING' as const;
+  if (!c.validFrom || !c.validTo || c.validFrom > now) return 'INVALID' as const;
+  if (c.validTo <= now) return 'EXPIRED' as const;
+  return c.validTo.getTime() - now.getTime() < 30 * 86400000
+    ? ('EXPIRING_SOON' as const)
+    : ('VALID' as const);
+}
+@Injectable()
+export class FiscalService {
+  private readonly tra = new TraFactory();
+  constructor(
+    @Inject(DatabaseService) private readonly db: DatabaseService,
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(CREDENTIAL_STORAGE) private readonly storage: PrivateCredentialStorage,
+    @Inject(OpenSslArcaCrypto) private readonly crypto: OpenSslArcaCrypto,
+    @Inject(CMS_SIGNER) private readonly signer: CmsSigner,
+    @Inject(ArcaWsaaClient) private readonly wsaa: ArcaWsaaClient,
+    @Inject(ArcaTicketProvider) private readonly tickets: ArcaTicketProvider,
+    @Inject(ARCA_CLOCK) private readonly clock: ArcaClock,
+  ) {}
+  private admin(c: RequestActorContext) {
+    if (c.role !== 'ADMIN') throw new ForbiddenException('Esta acción requiere un administrador.');
+  }
+  private async access(c: RequestActorContext, tx: Tx) {
+    this.admin(c);
+    const now = this.clock.now();
+    const [membership, session] = await Promise.all([
+      tx.membership.findFirst({
+        where: {
+          id: c.membershipId,
+          organizationId: c.organizationId,
+          userId: c.userId,
+          role: 'ADMIN',
+          revokedAt: null,
+          user: { disabledAt: null },
+          organization: { archivedAt: null },
+        },
+      }),
+      tx.session.findFirst({
+        where: {
+          id: c.sessionId,
+          userId: c.userId,
+          activeMembershipId: c.membershipId,
+          revokedAt: null,
+          expiresAt: { gt: now },
+          absoluteExpiresAt: { gt: now },
+        },
+      }),
+    ]);
+    if (!membership || !session)
+      throw new ForbiddenException('Tu acceso cambió. Volvé a iniciar sesión.');
+  }
+  private async write<T>(c: RequestActorContext, fn: (tx: Tx) => Promise<T>) {
+    this.admin(c);
+    try {
+      return await this.db.client.$transaction(
+        async (tx) => {
+          // One lock order for profile, generation, install, activation and durable login reservation.
+          await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`fiscal:${c.organizationId}`},0))`;
+          await this.access(c, tx);
+          return fn(tx);
+        },
+        { timeout: 30000, maxWait: 5000 },
+      );
+    } catch (e) {
+      if (e instanceof ArcaError) throw new BadRequestException(e.message);
+      if (typeof e === 'object' && e !== null && 'code' in e) {
+        if (['P2002', 'P2034'].includes(String(e.code)))
+          throw new ConflictException('La configuración cambió. Volvé a cargarla.');
+        if (['P2003', 'P2025'].includes(String(e.code))) throw new NotFoundException();
+      }
+      throw e;
+    }
+  }
+  private version(actual: number, expected: number) {
+    if (actual !== expected)
+      throw new ConflictException(
+        'La configuración cambió desde otra sesión. Cargá la información actual antes de continuar.',
+      );
+  }
+  private async credential(tx: Tx, c: RequestActorContext, id: string) {
+    const row = await tx.arcaCredential.findFirst({ where: { ...scope(c.organizationId), id } });
+    if (!row) throw new NotFoundException();
+    return row;
+  }
+  private async config(tx: Tx, org: string) {
+    return tx.arcaIntegrationConfig.upsert({
+      where: { organizationId: org },
+      create: { organizationId: org },
+      update: {},
+    });
+  }
+  private complete(
+    profile: Profile | null,
+  ): asserts profile is Profile & { legalName: string; cuit: string } {
+    if (fiscalCompleteness(profile) !== 'COMPLETE')
+      throw new BadRequestException('Completá los datos fiscales antes de configurar la conexión.');
+  }
+  async getProfile(c: RequestActorContext) {
+    this.admin(c);
+    return {
+      profile: profileView(
+        await this.db.client.organizationFiscalProfile.findUnique({
+          where: { organizationId: c.organizationId },
+        }),
+      ),
+    };
+  }
+  async updateProfile(c: RequestActorContext, input: FiscalProfileUpdate) {
+    return this.write(c, async (tx) => {
+      const prior = await tx.organizationFiscalProfile.findUnique({
+        where: { organizationId: c.organizationId },
+      });
+      this.version(prior?.version ?? 0, input.expectedVersion);
+      const fields = fiscalFieldsSchema.parse(
+        Object.fromEntries(
+          Object.keys(fiscalFieldsSchema.shape).map((k) => [
+            k,
+            input[k as keyof FiscalProfileUpdate],
+          ]),
+        ),
+      );
+      const row = prior
+        ? await tx.organizationFiscalProfile.update({
+            where: { organizationId: c.organizationId, version: input.expectedVersion },
+            data: { ...fields, version: { increment: 1 } },
+          })
+        : await tx.organizationFiscalProfile.create({
+            data: { organizationId: c.organizationId, ...fields },
+          });
+      await this.audit.success(
+        c,
+        'FISCAL_PROFILE_UPDATED',
+        'OrganizationFiscalProfile',
+        row.id,
+        tx,
+      );
+      return { profile: profileView(row) };
+    });
+  }
+  async readiness(c: RequestActorContext): Promise<ArcaReadiness> {
+    this.admin(c);
+    return this.db.client.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        const p = await tx.organizationFiscalProfile.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        const config = await tx.arcaIntegrationConfig.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        const current = await tx.arcaCredential.findMany({
+          where: {
+            ...scope(c.organizationId),
+            status: { in: ['ACTIVE', 'CSR_READY', 'CERTIFICATE_INSTALLED'] },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        const history = await tx.arcaCredential.findMany({
+          where: { ...scope(c.organizationId), status: 'REPLACED' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          take: 20,
+        });
+        const records = [...current, ...history];
+        const active = current.find((r) => r.status === 'ACTIVE'),
+          pending = current.find((r) => ['CSR_READY', 'CERTIFICATE_INSTALLED'].includes(r.status));
+        const ticket = active ? this.tickets.peek(c.organizationId, active.id) : undefined;
+        const now = this.clock.now(),
+          complete = fiscalCompleteness(p) === 'COMPLETE';
+        let filesValid = false;
+        if (
+          active &&
+          active.cuit === p?.cuit &&
+          active.certificateStorageKey &&
+          ['VALID', 'EXPIRING_SOON'].includes(certificateState(active, now))
+        ) {
+          try {
+            const [key, cert] = await Promise.all([
+              this.storage.read(c.organizationId, active.privateKeyStorageKey),
+              this.storage.read(c.organizationId, active.certificateStorageKey),
+            ]);
+            try {
+              const checked = await this.crypto.certificate(
+                cert,
+                key,
+                active.cuit,
+                active.commonName,
+                now,
+              );
+              filesValid = checked.fingerprint === active.certificateFingerprint;
+            } finally {
+              key.fill(0);
+            }
+          } catch {
+            filesValid = false;
+          }
+        }
+        const usable = Boolean(
+          ticket &&
+          ticket.expiresAt.getTime() - now.getTime() > TICKET_MARGIN_MS &&
+          filesValid &&
+          complete,
+        );
+        const waiting = Boolean(
+          config?.authBlockedUntil && config.authBlockedUntil > now && !usable,
+        );
+        const code = config?.lastResultCode as ArcaErrorCode | undefined;
+        return arcaReadinessSchema.parse({
+          environment: 'HOMOLOGATION',
+          service: 'wsfe',
+          version: config?.version ?? 0,
+          fiscalProfile: complete ? 'COMPLETE' : 'INCOMPLETE',
+          cuitValid: Boolean(p?.cuit && validCuit(p.cuit)),
+          privateKey: Boolean(active || pending),
+          csr: Boolean(active || pending),
+          certificateInstalled: Boolean(
+            active?.certificateStorageKey || pending?.certificateStorageKey,
+          ),
+          certificateMatchesKey: filesValid,
+          canTest: Boolean(complete && filesValid && (!waiting || usable)),
+          activeCredentialId: active?.id ?? null,
+          pendingCredentialId: pending?.id ?? null,
+          credentials: records.map((r) => ({
+            id: r.id,
+            commonName: r.commonName,
+            status: r.status,
+            version: r.version,
+            createdAt: r.createdAt.toISOString(),
+            fingerprint: r.certificateFingerprint,
+            serial: r.certificateSerial,
+            subject: r.certificateSubject,
+            issuer: r.certificateIssuer,
+            validFrom: r.validFrom?.toISOString() ?? null,
+            validTo: r.validTo?.toISOString() ?? null,
+            certificateState: certificateState(r, now),
+          })),
+          access: {
+            status: usable
+              ? 'AUTHENTICATED'
+              : waiting
+                ? 'WAITING'
+                : code && code !== ('SUCCESS' as string)
+                  ? 'ERROR'
+                  : 'PENDING',
+            obtainedAt: config?.lastObtainedAt?.toISOString() ?? null,
+            expiresAt: config?.lastTicketExpiresAt?.toISOString() ?? null,
+            retryAfter: waiting ? config!.authBlockedUntil!.toISOString() : null,
+            message: usable
+              ? 'Conexión correcta con ARCA'
+              : waiting
+                ? arcaMessages.WAITING
+                : code && code in arcaMessages
+                  ? arcaMessages[code]
+                  : null,
+          },
+          trust: usable ? 'VERIFIED_BY_WSAA' : 'PENDING_WSAA',
+          wsfeImplemented: false,
+          productionEnabled: false,
+        });
+      },
+      { isolationLevel: 'RepeatableRead', timeout: 30000 },
+    );
+  }
+  // Files created before commit are removed only after confirming no committed row references them.
+  private async cleanup(org: string, id: string, keys: string[]) {
+    try {
+      const row = await this.db.client.arcaCredential.findFirst({
+        where: { organizationId: org, id },
+      });
+      const retained = new Set([
+        row?.privateKeyStorageKey,
+        row?.csrStorageKey,
+        row?.certificateStorageKey,
+      ]);
+      for (const key of keys)
+        if (!retained.has(key)) await this.storage.remove(org, key).catch(() => {});
+    } catch {
+      /* DB outcome uncertain: keep files, never delete a possibly committed credential. */
+    }
+  }
+  async generate(c: RequestActorContext, input: ArcaGenerate) {
+    const id = randomUUID(),
+      keys: string[] = [];
+    try {
+      await this.write(c, async (tx) => {
+        const hash = digest(input),
+          prior = await tx.arcaCredential.findFirst({
+            where: { organizationId: c.organizationId, generationOperationId: input.operationId },
+          });
+        if (prior) {
+          if (prior.generationHash !== hash)
+            throw new ConflictException('Esta solicitud ya se utilizó con otros datos.');
+          return;
+        }
+        const priorConfig = await tx.arcaIntegrationConfig.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        const pending = await tx.arcaCredential.findFirst({
+          where: {
+            ...scope(c.organizationId),
+            status: { in: ['CSR_READY', 'CERTIFICATE_INSTALLED'] },
+          },
+        });
+        if (pending && !input.replacePending) return;
+        this.version(priorConfig?.version ?? 0, input.expectedVersion);
+        await this.config(tx, c.organizationId);
+        const p = await tx.organizationFiscalProfile.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        this.complete(p);
+        const generated = await this.crypto.generate(p.legalName, p.cuit, input.commonName);
+        try {
+          keys.push(await this.storage.put(c.organizationId, generated.privateKey));
+          keys.push(await this.storage.put(c.organizationId, generated.csr));
+        } finally {
+          generated.privateKey.fill(0);
+        }
+        if (pending)
+          await tx.arcaCredential.update({
+            where: { id: pending.id, organizationId: c.organizationId },
+            data: { status: 'REPLACED', version: { increment: 1 } },
+          });
+        await tx.arcaCredential.create({
+          data: {
+            id,
+            organizationId: c.organizationId,
+            commonName: input.commonName,
+            legalName: p.legalName,
+            cuit: p.cuit,
+            generationOperationId: input.operationId,
+            generationHash: hash,
+            privateKeyStorageKey: keys[0]!,
+            csrStorageKey: keys[1]!,
+          },
+        });
+        await tx.arcaIntegrationConfig.update({
+          where: { organizationId: c.organizationId },
+          data: { version: { increment: 1 } },
+        });
+        await this.audit.success(c, 'ARCA_CREDENTIAL_GENERATED', 'ArcaCredential', id, tx);
+      });
+    } catch (e) {
+      await this.cleanup(c.organizationId, id, keys);
+      throw e;
+    }
+    return this.readiness(c);
+  }
+  async csr(c: RequestActorContext, id: string) {
+    this.admin(c);
+    const row = await this.credential(this.db.client, c, id);
+    return {
+      credentialId: row.id,
+      pem: (await this.storage.read(c.organizationId, row.csrStorageKey)).toString('utf8'),
+    };
+  }
+  async install(c: RequestActorContext, id: string, input: ArcaCertificate) {
+    const keys: string[] = [];
+    try {
+      await this.write(c, async (tx) => {
+        const row = await this.credential(tx, c, id);
+        this.version(row.version, input.expectedVersion);
+        if (row.status !== 'CSR_READY')
+          throw new ConflictException(
+            'Generá una nueva solicitud para reemplazar un certificado instalado.',
+          );
+        const p = await tx.organizationFiscalProfile.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        this.complete(p);
+        if (p.cuit !== row.cuit) throw new ArcaError('CUIT_MISMATCH');
+        const key = await this.storage.read(c.organizationId, row.privateKeyStorageKey);
+        let checked;
+        try {
+          checked = await this.crypto.certificate(
+            Buffer.from(input.certificateBase64, 'base64'),
+            key,
+            p.cuit,
+            row.commonName,
+            this.clock.now(),
+          );
+        } finally {
+          key.fill(0);
+        }
+        keys.push(await this.storage.put(c.organizationId, Buffer.from(checked.pem)));
+        await tx.arcaCredential.update({
+          where: { id, organizationId: c.organizationId, version: input.expectedVersion },
+          data: {
+            status: 'CERTIFICATE_INSTALLED',
+            version: { increment: 1 },
+            certificateStorageKey: keys[0],
+            certificateFingerprint: checked.fingerprint,
+            certificateSerial: checked.serial,
+            certificateSubject: checked.subject,
+            certificateIssuer: checked.issuer,
+            validFrom: checked.validFrom,
+            validTo: checked.validTo,
+          },
+        });
+        await tx.arcaIntegrationConfig.update({
+          where: { organizationId: c.organizationId },
+          data: { version: { increment: 1 } },
+        });
+        await this.audit.success(c, 'ARCA_CERTIFICATE_INSTALLED', 'ArcaCredential', id, tx);
+      });
+    } catch (e) {
+      await this.cleanup(c.organizationId, id, keys);
+      throw e;
+    }
+    return this.readiness(c);
+  }
+  async activate(c: RequestActorContext, id: string, input: ArcaActivate) {
+    await this.write(c, async (tx) => {
+      const row = await this.credential(tx, c, id),
+        config = await this.config(tx, c.organizationId);
+      this.version(row.version, input.expectedVersion);
+      this.version(config.version, input.expectedConfigVersion);
+      if (row.status !== 'CERTIFICATE_INSTALLED' || !row.certificateStorageKey)
+        throw new ArcaError('CERTIFICATE_MISSING');
+      const p = await tx.organizationFiscalProfile.findUnique({
+        where: { organizationId: c.organizationId },
+      });
+      this.complete(p);
+      if (row.cuit !== p.cuit) throw new ArcaError('CUIT_MISMATCH');
+      const key = await this.storage.read(c.organizationId, row.privateKeyStorageKey);
+      try {
+        await this.crypto.certificate(
+          await this.storage.read(c.organizationId, row.certificateStorageKey),
+          key,
+          p.cuit,
+          row.commonName,
+          this.clock.now(),
+        );
+      } finally {
+        key.fill(0);
+      }
+      await tx.arcaCredential.updateMany({
+        where: { ...scope(c.organizationId), status: 'ACTIVE' },
+        data: { status: 'REPLACED', version: { increment: 1 } },
+      });
+      await tx.arcaCredential.update({
+        where: { id, organizationId: c.organizationId },
+        data: { status: 'ACTIVE', version: { increment: 1 } },
+      });
+      // Do not clear a durable reservation during rotation: an old in-flight request may finish.
+      await tx.arcaIntegrationConfig.update({
+        where: { organizationId: c.organizationId },
+        data: {
+          version: { increment: 1 },
+          lastResultCode: null,
+          lastObtainedAt: null,
+          lastTicketExpiresAt: null,
+        },
+      });
+      await this.audit.success(c, 'ARCA_CREDENTIAL_ACTIVATED', 'ArcaCredential', id, tx);
+    });
+    this.tickets.invalidate(c.organizationId);
+    return this.readiness(c);
+  }
+  async testConnection(c: RequestActorContext) {
+    this.admin(c);
+    // Authorize every caller before it can join an in-flight authentication.
+    const identity = await this.write(c, async (tx) => {
+      const p = await tx.organizationFiscalProfile.findUnique({
+        where: { organizationId: c.organizationId },
+      });
+      this.complete(p);
+      const active = await tx.arcaCredential.findFirst({
+        where: { ...scope(c.organizationId), status: 'ACTIVE' },
+      });
+      if (!active?.certificateStorageKey) throw new ArcaError('CERTIFICATE_MISSING');
+      if (active.cuit !== p.cuit) throw new ArcaError('CUIT_MISMATCH');
+      const state = certificateState(active, this.clock.now());
+      if (state === 'EXPIRED') throw new ArcaError('CERTIFICATE_EXPIRED');
+      if (state === 'INVALID') throw new ArcaError('CERTIFICATE_INVALID');
+      return active;
+    });
+    try {
+      await this.tickets.get(c.organizationId, identity.id, async () => {
+        const key = await this.storage.read(c.organizationId, identity.privateKeyStorageKey);
+        try {
+          const certificate = await this.storage.read(
+            c.organizationId,
+            identity.certificateStorageKey!,
+          );
+          await this.crypto.certificate(
+            certificate,
+            key,
+            identity.cuit,
+            identity.commonName,
+            this.clock.now(),
+          );
+          const tra = this.tra.create(this.clock.now()),
+            cms = await this.signer.sign(tra.xml, key, certificate);
+          // Commit reservation BEFORE network I/O. A lost response or restart cannot provoke duplicate loginCms.
+          await this.write(c, async (tx) => {
+            const row = await this.credential(tx, c, identity.id),
+              config = await this.config(tx, c.organizationId);
+            const p = await tx.organizationFiscalProfile.findUnique({
+              where: { organizationId: c.organizationId },
+            });
+            this.complete(p);
+            if (row.status !== 'ACTIVE' || row.version !== identity.version || row.cuit !== p.cuit)
+              throw new ConflictException('La credencial cambió. Volvé a cargarla.');
+            if (config.authBlockedUntil && config.authBlockedUntil > this.clock.now())
+              throw new ArcaError('WAITING');
+            await tx.arcaIntegrationConfig.update({
+              where: { organizationId: c.organizationId },
+              data: {
+                authBlockedUntil: new Date(this.clock.now().getTime() + UNCERTAIN_WINDOW_MS),
+                lastResultCode: 'WAITING',
+              },
+            });
+          });
+          try {
+            const ticket = await this.wsaa.login(
+              cms,
+              { cuit: identity.cuit, commonName: identity.commonName },
+              this.clock.now(),
+            );
+            await this.write(c, async (tx) => {
+              const row = await this.credential(tx, c, identity.id);
+              if (row.status !== 'ACTIVE' || row.version !== identity.version)
+                throw new ConflictException('La credencial cambió. Volvé a cargarla.');
+              await tx.arcaIntegrationConfig.update({
+                where: { organizationId: c.organizationId },
+                data: {
+                  authBlockedUntil: ticket.expiresAt,
+                  lastTicketExpiresAt: ticket.expiresAt,
+                  lastObtainedAt: ticket.obtainedAt,
+                  lastResultCode: 'SUCCESS',
+                },
+              });
+            });
+            return ticket;
+          } catch (e) {
+            const error = e instanceof ArcaError ? e : new ArcaError('NETWORK_ERROR');
+            await this.write(c, async (tx) => {
+              // Unknown delivery/response outcome stays blocked for the maximum TA lifetime.
+              const uncertain = [
+                'NETWORK_ERROR',
+                'INVALID_RESPONSE',
+                'CLOCK_ERROR',
+                'ALREADY_AUTHENTICATED',
+              ].includes(error.code);
+              await tx.arcaIntegrationConfig.update({
+                where: { organizationId: c.organizationId },
+                data: {
+                  lastResultCode: error.code,
+                  ...(uncertain
+                    ? {}
+                    : { authBlockedUntil: new Date(this.clock.now().getTime() + WSAA_RETRY_MS) }),
+                },
+              });
+            });
+            throw error;
+          }
+        } finally {
+          key.fill(0);
+        }
+      });
+      await this.write(c, (tx) =>
+        this.audit.success(c, 'ARCA_WSAA_TEST_SUCCEEDED', 'ArcaCredential', identity.id, tx),
+      );
+    } catch (e) {
+      await this.write(c, async (tx) => {
+        await this.audit.append(
+          {
+            organizationId: c.organizationId,
+            actorUserId: c.userId,
+            sessionId: c.sessionId,
+            requestId: c.requestId,
+            action: 'ARCA_WSAA_TEST_FAILED',
+            resourceType: 'ArcaCredential',
+            resourceId: identity.id,
+            result: 'FAILURE',
+          },
+          tx,
+        );
+      });
+      if (e instanceof ArcaError) throw new BadRequestException(e.message);
+      throw e;
+    }
+    return this.readiness(c);
+  }
+}

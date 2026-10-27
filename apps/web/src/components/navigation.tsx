@@ -13,6 +13,7 @@ const links = [
   { href: '/stock', label: 'Stock', icon: 'products' },
   { href: '/facturacion', label: 'Facturación', icon: 'billing' },
   { href: '/trazabilidad', label: 'Trazabilidad', icon: 'trace' },
+  { href: '/configuracion', label: 'Configuración', icon: 'billing' },
 ] as const;
 export function Navigation() {
   const path = usePathname();

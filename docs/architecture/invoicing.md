@@ -1,5 +1,7 @@
 # Facturación V1 — modelo interno
 
+Actualización V2 (27/10/2026): se implementaron [perfil fiscal, credenciales y WSAA de homologación](arca.md) en un módulo separado. [Configuración y pasos humanos WSASS](arca-homologation-setup.md). No cambia el dominio V1 descrito debajo ni sus reglas DRAFT/READY; completar ARCA no es requisito para crear/editar/marcar READY. V2 no emite comprobantes, no obtiene CAE y no implementa WSFEv1, punto de venta, numeración fiscal, PDF ni producción. La verificación real WSAA queda pendiente de certificado y autorización.
+
 Fecha: 27 de octubre de 2026. Base: HEAD `b992acb509a757ec8acb12b31b7bae78b72260a0` (`main`, Trazabilidad), árbol limpio. Migración nueva `20261027120000_invoicing_v1`. Sin dependencias nuevas. Sin commit ni push.
 
 ## Qué es y qué no es
@@ -113,9 +115,9 @@ Facturación no lee ni escribe InventoryBalance, InventoryMovement, allocations 
 - El Remito no muestra todavía en qué factura quedó (se ve desde Facturación).
 - Sin PDF/impresión de factura.
 
-## Siguientes versiones (no implementadas)
+## Versiones fiscales
 
-- **V2:** perfil fiscal del emisor, WSAA, certificados y homologación.
+- **V2 implementada:** perfil fiscal del emisor, credenciales y autenticación WSAA de homologación; smoke real pendiente de certificado/autorización WSASS.
 - **V3:** WSFEv1, punto de venta, numeración y CAE (estados fiscales y campos ARCA).
 - **V4:** PDF/comprobante fiscal.
 - **V5:** producción y hardening.
