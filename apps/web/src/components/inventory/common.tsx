@@ -16,16 +16,7 @@ export const documentLabels = {
   CONFIRMED: 'Confirmado',
   CANCELLED: 'Cancelado',
 };
-export const quantityLabels = {
-  UNIT: 'unidades',
-  PAIR: 'pares',
-  METER: 'metros',
-  CENTIMETER: 'centímetros',
-  LITER: 'litros',
-  MILLILITER: 'mililitros',
-  KILOGRAM: 'kilogramos',
-  GRAM: 'gramos',
-};
+export { quantityLabels } from '@maxbio/contracts';
 export function useInventoryResource<T>(path: string, schema: { parse(input: unknown): T }) {
   const [revision, setRevision] = useState(0);
   const key = path + ':' + revision;

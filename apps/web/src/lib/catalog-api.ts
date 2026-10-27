@@ -16,14 +16,16 @@ export async function catalogFetch<T>(
     method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
     body?: unknown;
     signal?: AbortSignal;
-    scope?: 'catalog' | 'inventory' | 'customers' | 'delivery-notes';
+    scope?: 'catalog' | 'inventory' | 'customers' | 'delivery-notes' | 'traceability';
   } = {},
 ): Promise<T> {
   const method = options.method ?? 'GET';
   let response: Response;
   try {
     const url =
-      options.scope === 'customers' || options.scope === 'delivery-notes'
+      options.scope === 'customers' ||
+      options.scope === 'delivery-notes' ||
+      options.scope === 'traceability'
         ? `/api/${options.scope}${path ? (path.startsWith('?') ? '' : '/') + path : ''}`
         : `/api/${options.scope ?? 'catalog'}/${path}`;
     response = await fetch(url, {

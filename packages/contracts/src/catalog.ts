@@ -21,6 +21,17 @@ export const unitLabels: Record<z.infer<typeof unitOfMeasureSchema>, string> = {
   KILOGRAM: 'Kilogramo',
   GRAM: 'Gramo',
 };
+// Plural labels shown next to a quantity ("3 unidades").
+export const quantityLabels: Record<z.infer<typeof unitOfMeasureSchema>, string> = {
+  UNIT: 'unidades',
+  PAIR: 'pares',
+  METER: 'metros',
+  CENTIMETER: 'centímetros',
+  LITER: 'litros',
+  MILLILITER: 'mililitros',
+  KILOGRAM: 'kilogramos',
+  GRAM: 'gramos',
+};
 export const identifierLabels: Record<z.infer<typeof identifierKindSchema>, string> = {
   GTIN: 'GTIN / EAN / UPC',
   INTERNAL_CODE: 'Código interno',
@@ -124,7 +135,7 @@ export const supplierProductUpdateSchema = z
     'Indicá qué información querés actualizar.',
   );
 
-const queryInteger = (fallback: string, max: number) =>
+export const queryInteger = (fallback: string, max: number) =>
   z
     .string()
     .regex(/^[1-9][0-9]*$/, 'Usá un número entero positivo.')

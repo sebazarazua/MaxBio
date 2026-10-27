@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { healthResponseSchema } from '@maxbio/contracts';
-import { Icon } from './icon';
+import { Icon } from './icon.tsx';
 
 type Status = 'checking' | 'connected' | 'unavailable';
 

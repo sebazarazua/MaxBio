@@ -63,6 +63,9 @@ function ProductBody({ product, reload }: { product: ProductView; reload: () => 
         </div>
         <Status archived={product.archivedAt} />
       </div>
+      <p>
+        <Link href={'/trazabilidad?productId=' + product.id}>Ver trazabilidad</Link>
+      </p>
       {isAdmin && (
         <div className="actions">
           {!product.archivedAt && (

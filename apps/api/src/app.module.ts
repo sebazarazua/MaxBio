@@ -10,6 +10,7 @@ import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { InventoryModule } from './modules/inventory/inventory.module.js';
 import { CustomersModule } from './modules/customers/customers.module.js';
 import { DeliveryNotesModule } from './modules/delivery-notes/delivery-notes.module.js';
+import { TraceabilityModule } from './modules/traceability/traceability.module.js';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { DeliveryNotesModule } from './modules/delivery-notes/delivery-notes.mod
     InventoryModule,
     CustomersModule,
     DeliveryNotesModule,
+    TraceabilityModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: CsrfGuard },

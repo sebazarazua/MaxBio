@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Icon } from './icon';
+import { Icon } from './icon.tsx';
 const links = [
   { href: '/', label: 'Inicio', icon: 'home' },
   { href: '/productos', label: 'Productos', icon: 'products' },
@@ -11,6 +11,7 @@ const links = [
   { href: '/identificar', label: 'Identificar producto', icon: 'products' },
   { href: '/remitos', label: 'Remitos', icon: 'products' },
   { href: '/stock', label: 'Stock', icon: 'products' },
+  { href: '/trazabilidad', label: 'Trazabilidad', icon: 'trace' },
 ] as const;
 export function Navigation() {
   const path = usePathname();

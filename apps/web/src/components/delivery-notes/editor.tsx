@@ -921,7 +921,9 @@ function ReadOnly({ doc }: { doc: DeliveryNoteView }) {
           {l.physicalTraces.map((a) => (
             <p key={a.id}>
               {a.quantity} · {a.lotNumber ? 'Lote ' + a.lotNumber : 'Sin lote'} ·{' '}
-              {a.expirationDate ? 'Vence ' + a.expirationDate : 'Sin vencimiento'}
+              {a.expirationDate
+                ? 'Vence ' + a.expirationDate.split('-').reverse().join('/')
+                : 'Sin vencimiento'}
               {a.serialNumber ? ' · Serie ' + a.serialNumber : ''} ·{' '}
               {a.origin === 'INVENTORY' ? 'Vinculado a Stock' : 'Registrado solo en el Remito'}
             </p>
@@ -933,6 +935,18 @@ function ReadOnly({ doc }: { doc: DeliveryNoteView }) {
           )}
         </div>
       ))}
+      {doc.status === 'CONFIRMED' && doc.lines.some((l) => l.physicalTraces.length > 0) && (
+        <p>
+          <Link
+            href={
+              '/trazabilidad?search=' +
+              encodeURIComponent(doc.documentPrefix + '-' + doc.documentNumber)
+            }
+          >
+            Ver en Trazabilidad
+          </Link>
+        </p>
+      )}
       {doc.notes && <p className="preserve-lines">Observaciones: {doc.notes}</p>}
       {doc.confirmedAt && (
         <p>

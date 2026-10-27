@@ -3,8 +3,8 @@
 import { createContext, useContext, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import type { IdentityResponse } from '@maxbio/contracts';
-import { IdentityScreen } from './identity-screen';
-import { Navigation } from './navigation';
+import { IdentityScreen } from './identity-screen.tsx';
+import { Navigation } from './navigation.tsx';
 
 const WorkspaceContext = createContext<IdentityResponse | null>(null);
 export function useWorkspace() {

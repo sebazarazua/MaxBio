@@ -6,13 +6,13 @@ import {
   supplierListSchema,
   supplierSchema,
 } from '@maxbio/contracts';
-import { catalogFetch, CatalogHttpError, humanError } from '@/lib/catalog-api';
-import { useWorkspace } from '../workspace';
+import { catalogFetch, CatalogHttpError, humanError } from '../../lib/catalog-api.ts';
+import { useWorkspace } from '../workspace.tsx';
 
 export function useResource<T>(
   path: string | null,
   schema: { parse(input: unknown): T },
-  scope: 'catalog' | 'inventory' | 'customers' | 'delivery-notes' = 'catalog',
+  scope: 'catalog' | 'inventory' | 'customers' | 'delivery-notes' | 'traceability' = 'catalog',
 ) {
   const [revision, setRevision] = useState(0);
   const resourcePath = scope + ':' + path;

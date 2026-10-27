@@ -249,3 +249,7 @@ No lector físico, impresora ni homologación de layout HID; el DOM se prueba co
 ### 10.7 Operación de migración y rollback conceptual
 
 Migración aditiva: no elimina ni reescribe líneas, allocations, ledger o snapshots comerciales históricos. Si hay histórico sin fuente confiable o un borrador preexistente con serie duplicada, se detiene en vez de deduplicar o inventar datos; resolver la inconsistencia con una revisión controlada antes de desplegar. Conservar respaldo de DB y artifacts antes de cambios de versión. No hay downgrade automático que borre declaraciones: un rollback de aplicación debe preservar/exportar los datos documentales nuevos y tratar expresamente los guards de traces, porque el código Stage 4 no las escribe. La vuelta completa de schema requiere una operación de mantenimiento planificada, nunca db push/reset ni eliminación silenciosa de traces.
+
+## 11. Consulta operativa
+
+Los datos físicos documentados por Stages 4–5 ya son consultables en **Operaciones → Trazabilidad** (`GET /api/v1/traceability`), de solo lectura, sobre traces de Remitos confirmados y sin cambios de schema. Ver [Trazabilidad](traceability.md).

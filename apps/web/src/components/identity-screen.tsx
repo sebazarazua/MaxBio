@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { apiErrorSchema, identityResponseSchema } from '@maxbio/contracts';
 import type { IdentityResponse } from '@maxbio/contracts';
-import { ConnectionStatus } from './connection-status';
+import { ConnectionStatus } from './connection-status.tsx';
 
 export function IdentityScreen({
   children,

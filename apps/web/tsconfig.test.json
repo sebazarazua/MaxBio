@@ -7,7 +7,11 @@
     "jsx": "react-jsx",
     "rootDir": ".",
     "outDir": "dist-test",
-    "rewriteRelativeImportExtensions": true
+    "rewriteRelativeImportExtensions": true,
+    "paths": {
+      "next/link": ["./test/next-link.d.ts"],
+      "next/navigation": ["./node_modules/next/navigation.d.ts"]
+    }
   },
   "include": [
     "test/**/*.tsx",
