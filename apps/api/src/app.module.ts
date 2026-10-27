@@ -11,6 +11,7 @@ import { InventoryModule } from './modules/inventory/inventory.module.js';
 import { CustomersModule } from './modules/customers/customers.module.js';
 import { DeliveryNotesModule } from './modules/delivery-notes/delivery-notes.module.js';
 import { TraceabilityModule } from './modules/traceability/traceability.module.js';
+import { InvoicingModule } from './modules/invoicing/invoicing.module.js';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { TraceabilityModule } from './modules/traceability/traceability.module.j
     CustomersModule,
     DeliveryNotesModule,
     TraceabilityModule,
+    InvoicingModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: CsrfGuard },

@@ -12,7 +12,13 @@ import { useWorkspace } from '../workspace.tsx';
 export function useResource<T>(
   path: string | null,
   schema: { parse(input: unknown): T },
-  scope: 'catalog' | 'inventory' | 'customers' | 'delivery-notes' | 'traceability' = 'catalog',
+  scope:
+    | 'catalog'
+    | 'inventory'
+    | 'customers'
+    | 'delivery-notes'
+    | 'traceability'
+    | 'invoices' = 'catalog',
 ) {
   const [revision, setRevision] = useState(0);
   const resourcePath = scope + ':' + path;

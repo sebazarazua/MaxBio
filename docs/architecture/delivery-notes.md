@@ -104,7 +104,7 @@ Eventos CREATED, UPDATED, CONFIRMED y CANCELLED mediante AuditService.success, r
 
 Printing ya agrega PrintTemplate con definition JSON tipado, PNG privado, dimensiones/coordenadas mm, tipografía, PrinterCalibration y PrintArtifact. No cambia los datos de DeliveryNote ni provoca movimientos al generar o reimprimir. La UI permite preview del borrador guardado; el overlay operativo exige CONFIRMED. Ver [arquitectura de impresión](delivery-note-printing.md).
 
-Facturación podrá relacionarse con remitos CONFIRMED y sus líneas mediante entidades propias, sin un billingStatus anticipado ni imponer todavía uno-a-uno o facturación completa. Devoluciones/reversiones deberán crear nuevos movimientos y vínculos al original; nunca reabrir ni reescribir el OUTBOUND.
+Facturación V1 (interna, sin ARCA) se relaciona con remitos CONFIRMED y sus líneas mediante `InvoiceDeliveryNote`/`InvoiceLine`, sin billingStatus en el Remito: pendiente = confirmado sin factura. Ver [invoicing.md](invoicing.md). Devoluciones/reversiones deberán crear nuevos movimientos y vínculos al original; nunca reabrir ni reescribir el OUTBOUND.
 
 ## Migración de Inventory opcional (26 de octubre de 2026)
 

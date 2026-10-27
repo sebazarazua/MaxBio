@@ -420,7 +420,7 @@ function TraceDetail({ id, isAdmin, close }: { id: string; isAdmin: boolean; clo
 }
 
 // Picks a filter value with the existing catalog/customer searches; the trace query only gets the id.
-function FilterChoice({
+export function FilterChoice({
   label,
   kind,
   value,

@@ -35,7 +35,8 @@ test(
         { cwd: root, env: { ...process.env, DATABASE_URL: url }, stdio: 'pipe', timeout: 60000 },
       ).toString();
     try {
-      for (const name of names.filter((n) => n !== last))
+      // Only the migrations that precede Stage 5; later ones depend on its objects.
+      for (const name of names.filter((n) => n < last))
         await cp(join(source, name), join(migrations, name), { recursive: true });
       for (const mode of ['upgrade', 'corrupt', 'empty']) {
         const name = 'maxbio_trace_migration_' + randomUUID().replaceAll('-', '');
@@ -48,7 +49,8 @@ test(
         try {
           if (mode !== 'empty') {
             // The prior stages contain no table; fixtures are written only in this disposable database.
-            await rm(join(migrations, last), { recursive: true, force: true });
+            for (const name of names.filter((n) => n >= last))
+              await rm(join(migrations, name), { recursive: true, force: true });
             cli(url.toString(), ['migrate', 'deploy']);
             const org = await client.organization.create({
               data: { name: 'Legacy', slug: randomUUID() },
@@ -196,7 +198,9 @@ test(
               );
             }
           }
-          await cp(join(source, last), join(migrations, last), { recursive: true });
+          // Stage 5 and every later migration, so the result is compared with the current schema.
+          for (const name of names.filter((n) => n >= last))
+            await cp(join(source, name), join(migrations, name), { recursive: true });
           if (mode === 'corrupt') {
             assert.throws(() => cli(url.toString(), ['migrate', 'deploy']), /./);
             continue;

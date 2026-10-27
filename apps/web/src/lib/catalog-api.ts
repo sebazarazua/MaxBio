@@ -16,7 +16,7 @@ export async function catalogFetch<T>(
     method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
     body?: unknown;
     signal?: AbortSignal;
-    scope?: 'catalog' | 'inventory' | 'customers' | 'delivery-notes' | 'traceability';
+    scope?: 'catalog' | 'inventory' | 'customers' | 'delivery-notes' | 'traceability' | 'invoices';
   } = {},
 ): Promise<T> {
   const method = options.method ?? 'GET';
@@ -25,7 +25,8 @@ export async function catalogFetch<T>(
     const url =
       options.scope === 'customers' ||
       options.scope === 'delivery-notes' ||
-      options.scope === 'traceability'
+      options.scope === 'traceability' ||
+      options.scope === 'invoices'
         ? `/api/${options.scope}${path ? (path.startsWith('?') ? '' : '/') + path : ''}`
         : `/api/${options.scope ?? 'catalog'}/${path}`;
     response = await fetch(url, {

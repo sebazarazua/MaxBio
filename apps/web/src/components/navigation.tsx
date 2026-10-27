@@ -11,6 +11,7 @@ const links = [
   { href: '/identificar', label: 'Identificar producto', icon: 'products' },
   { href: '/remitos', label: 'Remitos', icon: 'products' },
   { href: '/stock', label: 'Stock', icon: 'products' },
+  { href: '/facturacion', label: 'Facturación', icon: 'billing' },
   { href: '/trazabilidad', label: 'Trazabilidad', icon: 'trace' },
 ] as const;
 export function Navigation() {

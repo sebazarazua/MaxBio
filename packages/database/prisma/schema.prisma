@@ -58,6 +58,9 @@ model Organization {
   printAssets PrintAsset[]
   printArtifacts PrintArtifact[]
   printConfiguration PrintConfiguration?
+  invoices Invoice[]
+  invoiceLines InvoiceLine[]
+  invoiceDeliveryNotes InvoiceDeliveryNote[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -93,6 +96,7 @@ model Membership {
   inventoryMovements InventoryMovement[]
   confirmedDeliveryNotes DeliveryNote[]
   printArtifacts PrintArtifact[]
+  readyInvoices Invoice[]
 
   @@unique([organizationId, userId])
   @@unique([id, userId])
@@ -191,6 +195,7 @@ model Customer {
   organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
   deliveryNotes DeliveryNote[]
+  invoices Invoice[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, cuit])
@@ -235,6 +240,7 @@ model Product {
   inventoryMovementLines InventoryMovementLine[]
 
   deliveryNoteLines DeliveryNoteLine[]
+  invoiceLines InvoiceLine[]
 
   @@unique([organizationId, id])
   @@index([organizationId, archivedAt, name, id])
@@ -929,8 +935,10 @@ model DeliveryNote {
   lines DeliveryNoteLine[]
   movement InventoryMovement?
   printArtifacts PrintArtifact[]
+  invoiceLink InvoiceDeliveryNote?
 
   @@unique([organizationId, id])
+  @@unique([organizationId, id, customerId], map: "delivery_note_customer_scope")
   @@unique([organizationId, documentPrefix, documentNumber])
   @@unique([organizationId, confirmationOperationId])
   @@index([organizationId, documentDate, id])
@@ -954,6 +962,7 @@ model DeliveryNoteLine {
   gtinSnapshot String? @db.VarChar(14)
   allocations DeliveryNoteAllocation[]
   physicalTraces DeliveryNoteLineTrace[]
+  invoiceLines InvoiceLine[]
 
   @@unique([organizationId, productId, id])
   @@unique([organizationId, deliveryNoteId, productId, id], map: "delivery_trace_line_scope")
@@ -1140,4 +1149,113 @@ model DeliveryNoteNumbering {
   version Int @default(1)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+// Facturación V1: documento comercial interno. No es un comprobante fiscal ni está
+// autorizado por ARCA; READY = validada internamente y lista para autorizar más adelante.
+enum InvoiceStatus {
+  DRAFT
+  READY
+}
+
+enum InvoiceType {
+  INVOICE_A
+  INVOICE_B
+  INVOICE_C
+}
+
+// Semántica interna; los códigos de ARCA se mapean en la integración futura.
+enum InvoiceVatRate {
+  VAT_0
+  VAT_10_5
+  VAT_21
+  VAT_27
+  EXEMPT
+  NOT_TAXED
+}
+
+model Invoice {
+  id String @id @db.Uuid
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  customerId String @db.Uuid
+  customer Customer @relation(fields: [organizationId, customerId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  status InvoiceStatus @default(DRAFT)
+  version Int @default(1)
+  invoiceType InvoiceType?
+  issueDate DateTime @db.Date
+  currency String @default("ARS") @db.Char(3)
+  exchangeRate Decimal @default(1) @db.Decimal(18,6)
+  netAmount Decimal @default(0) @db.Decimal(18,2)
+  vatAmount Decimal @default(0) @db.Decimal(18,2)
+  totalAmount Decimal @default(0) @db.Decimal(18,2)
+  notes String? @db.VarChar(1000)
+  customerSnapshot Json?
+  creationHash String @db.Char(64)
+  lastOperationId String? @db.Uuid
+  lastOperationHash String? @db.Char(64)
+  readyAt DateTime? @db.Timestamptz(3)
+  readyByUserId String? @db.Uuid
+  readyByMembershipId String? @db.Uuid
+  readyBy Membership? @relation(fields: [organizationId, readyByMembershipId, readyByUserId], references: [organizationId, id, userId], onDelete: Restrict, onUpdate: Restrict)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  lines InvoiceLine[]
+  deliveryNotes InvoiceDeliveryNote[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, id, customerId], map: "invoice_customer_scope")
+  @@index([organizationId, status, issueDate, id])
+  @@index([organizationId, customerId])
+  @@index([organizationId, lastOperationId])
+}
+
+// Un Remito confirmado pertenece como máximo a una factura; mismo Customer por FK.
+model InvoiceDeliveryNote {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  invoiceId String @db.Uuid
+  customerId String @db.Uuid
+  invoice Invoice @relation(fields: [organizationId, invoiceId, customerId], references: [organizationId, id, customerId], onDelete: Restrict, onUpdate: Restrict)
+  deliveryNoteId String @db.Uuid
+  deliveryNote DeliveryNote @relation(fields: [organizationId, deliveryNoteId, customerId], references: [organizationId, id, customerId], onDelete: Restrict, onUpdate: Restrict)
+  ordinal Int
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  lines InvoiceLine[]
+
+  @@unique([organizationId, deliveryNoteId])
+  @@unique([organizationId, deliveryNoteId, customerId])
+  @@unique([organizationId, invoiceId, deliveryNoteId])
+  @@index([organizationId, invoiceId, ordinal])
+}
+
+// Copia comercial de una línea de Remito. Cantidad, producto y unidad fijos (Remito completo);
+// descripción, precio e IVA editables en DRAFT. Montos calculados por el backend.
+model InvoiceLine {
+  id String @id @db.Uuid
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  invoiceId String @db.Uuid
+  invoice Invoice @relation(fields: [organizationId, invoiceId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  deliveryNoteId String @db.Uuid
+  link InvoiceDeliveryNote @relation(fields: [organizationId, invoiceId, deliveryNoteId], references: [organizationId, invoiceId, deliveryNoteId], onDelete: Restrict, onUpdate: Restrict)
+  deliveryNoteLineId String @db.Uuid
+  productId String @db.Uuid
+  product Product @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  deliveryNoteLine DeliveryNoteLine @relation(fields: [organizationId, deliveryNoteId, productId, deliveryNoteLineId], references: [organizationId, deliveryNoteId, productId, id], onDelete: Restrict, onUpdate: Restrict)
+  ordinal Int
+  description String @db.VarChar(500)
+  productNameSnapshot String @db.VarChar(200)
+  presentationSnapshot String? @db.VarChar(200)
+  unitOfMeasure UnitOfMeasure
+  quantity Decimal @db.Decimal(20,6)
+  unitPrice Decimal? @db.Decimal(18,2)
+  vatRate InvoiceVatRate?
+  netAmount Decimal? @db.Decimal(18,2)
+  vatAmount Decimal? @db.Decimal(18,2)
+  totalAmount Decimal? @db.Decimal(18,2)
+
+  @@unique([organizationId, deliveryNoteLineId])
+  @@index([organizationId, invoiceId, ordinal])
 }

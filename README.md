@@ -169,7 +169,7 @@ El build no requiere una base activa. Para probar las aplicaciones compiladas, e
 
 ## Alcance y próximo paso
 
-Catálogo, listas, identificación HID, Clientes, Inventory V1, Remitos con salida OUTBOUND, impresión con plantilla/preview/PDF overlay/calibración y la consulta de Trazabilidad están implementados. La plantilla física real de Bourbon requiere sus referencias, medidas y prueba de impresora. No se implementaron reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, Digital Link, parser GS1 completo, facturación, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
+Catálogo, listas, identificación HID, Clientes, Inventory V1, Remitos con salida OUTBOUND, impresión con plantilla/preview/PDF overlay/calibración, la consulta de Trazabilidad y Facturación V1 interna están implementados. La plantilla física real de Bourbon requiere sus referencias, medidas y prueba de impresora. No se implementaron reservas, transferencias, packaging, recuento avanzado, reversión completa, cámara, Digital Link, parser GS1 completo, facturación fiscal, ARCA, ANMAT, presupuestos, mensajería, IA, analytics ni microservicios. Quedan diferidos panel administrativo de usuarios, recuperación/cambio de contraseña, RLS y despliegue productivo. El limiter es local a una instancia, no distribuido.
 
 El siguiente paso es probar Inventory y Remitos con usuarios, lectores HID y datos reales, validar unidades/políticas y el procedimiento de conteo gradual, y preparar/calibrar el formulario real del talonario. Las decisiones están registradas en [decisiones](docs/architecture/decisions.md).
 
@@ -192,6 +192,10 @@ Ver [implementación y reporte completo](docs/architecture/inventory.md), [dise�
 La plantilla **Bourbon Remito 203x271 - Provisional** está creada en MaxBio como revisión 2 **DRAFT**, sin activar: 203 × 271 mm, tolerancias X ±4 / Y ±3 mm y calibración nominal 0 / 0. Usa el PNG real privado, con el margen transparente autorizado y sus píxeles originales conservados. Usá **Ajustar ubicación de textos** para probarla con datos de ejemplo; **Historial de cambios → Probar esta plantilla** permite elegir otro borrador. También podés usar un remito guardado en la prueba. El año y CUIT presentan límites de espacio frente a las tolerancias, por lo que la validación física sigue pendiente. No se publica automáticamente. Ver [coordenadas, editor, gaps y prueba física pendiente](docs/architecture/bourbon-provisional.md).
 
 Reimprimir registra otra generación con el mismo archivo; no confirma de nuevo ni modifica stock. Los archivos son privados: `PRINT_STORAGE_DIR` opcional configura un directorio persistente; por defecto `.maxbio-private-print` en el directorio de ejecución de API, ignorado por Git. Respaldarlo junto con la base. No hay Word runtime ni numeración automática. Ver [dominio y API](docs/architecture/delivery-notes.md), [impresión y configuración](docs/architecture/delivery-note-printing.md) y [resultados reales de verificación](docs/architecture/delivery-note-printing-verification.md).
+
+## Facturación
+
+**Facturación** (barra lateral) lista los Remitos confirmados **pendientes de facturar**. Elegí uno o varios del mismo cliente, **Crear factura**, completá precio e IVA de cada línea, revisá los totales y **Marcar lista para autorizar**. Solo ADMIN crea y modifica facturas; OPERATOR consulta. Es una factura **interna**: todavía no se envía a ARCA, no tiene CAE ni validez fiscal. Ver [modelo, cálculos y límites](docs/architecture/invoicing.md).
 
 ## Trazabilidad
 

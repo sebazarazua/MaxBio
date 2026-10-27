@@ -4,6 +4,9 @@ import { PrismaClient } from './generated/prisma/client.js';
 export { PrismaClient } from './generated/prisma/client.js';
 export { MembershipRole } from './generated/prisma/enums.js';
 export type { Prisma, Session, Membership, User, Customer } from './generated/prisma/client.js';
+import { Prisma as PrismaRuntime } from './generated/prisma/client.js';
+// SQL NULL for nullable Json columns (plain null is rejected by Prisma for Json fields).
+export const DbNull = PrismaRuntime.DbNull;
 
 // La API es dueña del ciclo de vida; no hay singleton global compartido con la web.
 export function createDatabaseClient(connectionString: string): PrismaClient {
