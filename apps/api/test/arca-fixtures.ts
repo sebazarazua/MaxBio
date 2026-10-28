@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, writeFile, unlink, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { generateKeyPair } from 'node:crypto';
+import { promisify } from 'node:util';
 import { OpenSslArcaCrypto } from '../src/modules/fiscal/arca/openssl-crypto.js';
 // Test-only convenience for this Windows workstation, not a runtime fallback.
 if (
@@ -49,6 +51,66 @@ export async function testCertificate(
       'keyUsage=critical,digitalSignature',
       ...extra,
     ]),
+  );
+}
+// Mirrors WSASS: signs the CSR and replaces its DN with "SERIALNUMBER=CUIT n, CN=<alias>" (no C, no O).
+export async function wsassCertificate(
+  csr: Buffer,
+  {
+    cuit = '27110247244',
+    alias = 'maxbiohomologacion',
+    issuer = 'Computadores Test',
+    ca = false,
+  } = {},
+) {
+  const { privateKey } = await promisify(generateKeyPair)('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  return ephemeralFiles(
+    {
+      'ca.key': privateKey,
+      'ca.pem': '',
+      'request.csr': csr,
+      'ext.cnf': `basicConstraints=critical,CA:${ca ? 'TRUE' : 'FALSE'}\nkeyUsage=critical,digitalSignature,nonRepudiation,keyEncipherment\n`,
+    },
+    async (dir) => {
+      const issuerCert = await crypto.command([
+        'req',
+        '-new',
+        '-x509',
+        '-utf8',
+        '-key',
+        join(dir, 'ca.key'),
+        '-days',
+        '30',
+        '-subj',
+        `/C=AR/O=AFIP/CN=${issuer}`,
+        '-addext',
+        'basicConstraints=critical,CA:TRUE',
+        '-addext',
+        'keyUsage=critical,keyCertSign',
+      ]);
+      await writeFile(join(dir, 'ca.pem'), issuerCert);
+      return crypto.command([
+        'x509',
+        '-req',
+        '-sha512',
+        '-in',
+        join(dir, 'request.csr'),
+        '-CA',
+        join(dir, 'ca.pem'),
+        '-CAkey',
+        join(dir, 'ca.key'),
+        '-days',
+        '2',
+        '-subj',
+        `/serialNumber=CUIT ${cuit}/CN=${alias}`,
+        '-extfile',
+        join(dir, 'ext.cnf'),
+      ]);
+    },
   );
 }
 export const now = new Date(Date.now() + 10000);

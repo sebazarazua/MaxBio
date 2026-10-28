@@ -26,7 +26,7 @@ import { ARCA_CLOCK, ArcaError } from '../src/modules/fiscal/arca/arca-errors.js
 import { ArcaWsaaClient } from '../src/modules/fiscal/arca/wsaa-client.js';
 import { ArcaTicketProvider } from '../src/modules/fiscal/arca/ticket-provider.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
-import { crypto, ephemeralFiles, testCertificate } from './arca-fixtures.js';
+import { crypto, ephemeralFiles, testCertificate, wsassCertificate } from './arca-fixtures.js';
 
 process.env.NODE_ENV = 'test';
 process.env.WEB_ORIGIN = 'http://localhost:3000';
@@ -44,7 +44,8 @@ let app: INestApplication,
 let at = new Date(Date.now() + 10000),
   calls = 0,
   failWsaa = false,
-  failAudit = false;
+  failAudit = false,
+  wsaaIdentity: { cuit: string; commonName: string } | undefined;
 const cookies: string[] = [];
 const fields = {
   // Accented legal name: OpenSSL for Windows must receive UTF-8 argv (OPENSSL_WIN32_UTF8).
@@ -166,8 +167,9 @@ before(
       })
       .overrideProvider(ArcaWsaaClient)
       .useValue({
-        login: async () => {
+        login: async (_cms: string, identity: { cuit: string; commonName: string }) => {
           calls++;
+          wsaaIdentity = identity;
           if (failWsaa) throw new ArcaError('SERVICE_UNAUTHORIZED');
           return {
             token: 'SECRET_TEST_TOKEN',
@@ -324,7 +326,8 @@ test('Credential HTTP: idempotent generation, CSR only, cross-tenant and upload 
       }),
       400,
     );
-    const cert = await testCertificate(key);
+    // Real WSASS DN: "SERIALNUMBER=CUIT n, CN=<alias>", no C, CN differs from the CSR CN.
+    const cert = await wsassCertificate(await storage.read(org, row.csrStorageKey));
     a = arcaReadinessSchema.parse(
       await checked(
         await request(`arca/credentials/${id}/certificate`, 'POST', {
@@ -333,8 +336,16 @@ test('Credential HTTP: idempotent generation, CSR only, cross-tenant and upload 
         }),
       ),
     );
+    const installed = a.credentials.find((c) => c.id === id)!;
+    assert.equal(installed.status, 'CERTIFICATE_INSTALLED');
+    // Same condition the UI uses to enable "Activar credencial de homologación".
+    assert.ok(['VALID', 'EXPIRING_SOON'].includes(installed.certificateState));
+    assert.ok(installed.validFrom && installed.validTo);
+    assert.match(installed.subject ?? '', /CN=maxbiohomologacion/);
+    assert.equal(installed.commonName, 'MaxBio Homologacion');
     assert.equal(a.canTest, false);
     assert.equal(a.trust, 'PENDING_WSAA');
+    assert.equal(calls, 0);
     a = arcaReadinessSchema.parse(
       await checked(
         await request(`arca/credentials/${id}/activate`, 'POST', {
@@ -360,6 +371,7 @@ test('WSAA HTTP: 20 calls single flight, server-only tickets, restart reservatio
     assert.doesNotMatch(JSON.stringify(b), /SECRET_TEST|BEGIN PRIVATE|token|"sign"/);
   }
   assert.equal(calls, 1);
+  assert.deepEqual(wsaaIdentity, { cuit: '27110247244', commonName: 'maxbiohomologacion' });
   await checked(await request('arca/wsaa/test', 'POST', {}));
   assert.equal(calls, 1);
   app.get(ArcaTicketProvider).invalidate(org);

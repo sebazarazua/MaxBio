@@ -249,13 +249,7 @@ export class FiscalService {
               this.storage.read(c.organizationId, active.certificateStorageKey),
             ]);
             try {
-              const checked = await this.crypto.certificate(
-                cert,
-                key,
-                active.cuit,
-                active.commonName,
-                now,
-              );
+              const checked = await this.crypto.certificate(cert, key, active.cuit, now);
               filesValid = checked.fingerprint === active.certificateFingerprint;
             } finally {
               key.fill(0);
@@ -445,7 +439,6 @@ export class FiscalService {
             Buffer.from(input.certificateBase64, 'base64'),
             key,
             p.cuit,
-            row.commonName,
             this.clock.now(),
           );
         } finally {
@@ -497,7 +490,6 @@ export class FiscalService {
           await this.storage.read(c.organizationId, row.certificateStorageKey),
           key,
           p.cuit,
-          row.commonName,
           this.clock.now(),
         );
       } finally {
@@ -552,11 +544,11 @@ export class FiscalService {
             c.organizationId,
             identity.certificateStorageKey!,
           );
-          await this.crypto.certificate(
+          // WSAA echoes the certificate DN as destination: its CN is the WSASS alias, not the CSR CN.
+          const { commonName } = await this.crypto.certificate(
             certificate,
             key,
             identity.cuit,
-            identity.commonName,
             this.clock.now(),
           );
           const tra = this.tra.create(this.clock.now()),
@@ -584,7 +576,7 @@ export class FiscalService {
           try {
             const ticket = await this.wsaa.login(
               cms,
-              { cuit: identity.cuit, commonName: identity.commonName },
+              { cuit: identity.cuit, commonName },
               this.clock.now(),
             );
             await this.write(c, async (tx) => {

@@ -25,6 +25,8 @@ export type CertificateMetadata = {
   fingerprint: string;
   serial: string;
   subject: string;
+  /** CN as issued by WSASS (its alias); may differ from the CN requested in the CSR. */
+  commonName: string;
   issuer: string;
   validFrom: Date;
   validTo: Date;
@@ -186,7 +188,6 @@ export class OpenSslArcaCrypto implements CmsSigner, OnApplicationBootstrap {
     bytes: Buffer,
     key: Buffer,
     cuit: string,
-    commonName: string,
     now: Date,
   ): Promise<CertificateMetadata> {
     try {
@@ -214,7 +215,15 @@ export class OpenSslArcaCrypto implements CmsSigner, OnApplicationBootstrap {
         throw new ArcaError('CERTIFICATE_INVALID');
       const subject = cert.toLegacyObject().subject;
       if (subject.serialNumber !== `CUIT ${cuit}`) throw new ArcaError('CUIT_MISMATCH');
-      if (subject.C !== 'AR' || subject.CN !== commonName)
+      // WSASS issues "SERIALNUMBER=CUIT n, CN=<alias>" by design: no C, and CN is the WSASS alias,
+      // not the CSR CN. Identity is the exact CUIT plus the key match below.
+      const commonName = subject.CN;
+      if (
+        typeof commonName !== 'string' ||
+        !commonName.trim() ||
+        commonName.length > 64 ||
+        /\p{Cc}/u.test(commonName)
+      )
         throw new ArcaError('CERTIFICATE_INVALID');
       if (/producci[oó]n|production/i.test(cert.issuer)) throw new ArcaError('PRODUCTION_BLOCKED');
       const challenge = randomBytes(32);
@@ -234,6 +243,9 @@ export class OpenSslArcaCrypto implements CmsSigner, OnApplicationBootstrap {
       ).toString('utf8');
       const usage = /X509v3 Key Usage:[^\r\n]*\r?\n\s*([^\r\n]+)/.exec(details)?.[1];
       if (usage && !usage.includes('Digital Signature')) throw new ArcaError('CERTIFICATE_INVALID');
+      // cert.ca follows X509_check_ca, which ignores CA:TRUE when Key Usage lacks keyCertSign.
+      if (/X509v3 Basic Constraints:[^\r\n]*\r?\n\s*CA:TRUE/.test(details))
+        throw new ArcaError('CERTIFICATE_INVALID');
       if (cert.subject.length > 2000 || cert.issuer.length > 2000 || cert.serialNumber.length > 128)
         throw new ArcaError('CERTIFICATE_INVALID');
       return {
@@ -241,6 +253,7 @@ export class OpenSslArcaCrypto implements CmsSigner, OnApplicationBootstrap {
         fingerprint: cert.fingerprint256,
         serial: cert.serialNumber,
         subject: cert.subject,
+        commonName,
         issuer: cert.issuer,
         validFrom,
         validTo,

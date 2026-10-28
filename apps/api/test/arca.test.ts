@@ -1,7 +1,8 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { randomUUID, createPublicKey } from 'node:crypto';
+import { randomUUID, createPublicKey, generateKeyPair, X509Certificate } from 'node:crypto';
+import { promisify } from 'node:util';
 import { mkdtemp, readdir, rmdir, stat, symlink, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -39,6 +40,7 @@ import {
   soapFault,
   testCertificate,
   ticketXml,
+  wsassCertificate,
 } from './arca-fixtures.js';
 
 export const profileInput = {
@@ -184,13 +186,7 @@ test('CSR PKCS#10 and CMS: independent OpenSSL verifies RSA, subject, public key
       );
     });
     const cert = await testCertificate(generated.privateKey);
-    const checked = await crypto.certificate(
-      cert,
-      generated.privateKey,
-      '27110247244',
-      'MaxBio Homologacion',
-      now,
-    );
+    const checked = await crypto.certificate(cert, generated.privateKey, '27110247244', now);
     assert.ok(checked.fingerprint);
     const xml = new TraFactory().create(now).xml,
       cms = await crypto.sign(xml, generated.privateKey, cert);
@@ -229,14 +225,14 @@ test('CSR PKCS#10 and CMS: independent OpenSSL verifies RSA, subject, public key
     const other = await crypto.generate('Otra', '27110247244', 'MaxBio Homologacion');
     try {
       await assert.rejects(
-        crypto.certificate(cert, other.privateKey, '27110247244', 'MaxBio Homologacion', now),
+        crypto.certificate(cert, other.privateKey, '27110247244', now),
         (e) => e instanceof ArcaError && e.code === 'KEY_MISMATCH',
       );
     } finally {
       other.privateKey.fill(0);
     }
     await assert.rejects(
-      crypto.certificate(cert, generated.privateKey, '20123456786', 'MaxBio Homologacion', now),
+      crypto.certificate(cert, generated.privateKey, '20123456786', now),
       /CUIT/,
     );
     await assert.rejects(
@@ -244,32 +240,138 @@ test('CSR PKCS#10 and CMS: independent OpenSSL verifies RSA, subject, public key
         cert,
         generated.privateKey,
         '27110247244',
-        'MaxBio Homologacion',
         new Date(now.getTime() + 4 * 86400000),
       ),
       /vencido/,
     );
     await assert.rejects(
-      crypto.certificate(
-        Buffer.from('bad'),
-        generated.privateKey,
-        '27110247244',
-        'MaxBio Homologacion',
-        now,
-      ),
+      crypto.certificate(Buffer.from('bad'), generated.privateKey, '27110247244', now),
     );
     await assert.rejects(
-      crypto.certificate(
-        Buffer.concat([cert, cert]),
-        generated.privateKey,
-        '27110247244',
-        'MaxBio Homologacion',
-        now,
-      ),
+      crypto.certificate(Buffer.concat([cert, cert]), generated.privateKey, '27110247244', now),
     );
   } finally {
     generated.privateKey.fill(0);
   }
+});
+test('WSASS certificate: DN "SERIALNUMBER=CUIT n, CN=<alias>" accepted; strong checks kept', async () => {
+  const cuit = '27110247244';
+  const generated = await crypto.generate('Adriana Lucía Leis', cuit, 'MaxBio Homologacion');
+  const code = (expected: string) => (e: unknown) => e instanceof ArcaError && e.code === expected;
+  try {
+    await ephemeralFiles({ 'request.csr': generated.csr }, async (dir) => {
+      const csrSubject = (
+        await crypto.command([
+          'req',
+          '-in',
+          join(dir, 'request.csr'),
+          '-noout',
+          '-subject',
+          '-nameopt',
+          'RFC2253,-esc_msb',
+        ])
+      ).toString('utf8');
+      assert.match(csrSubject, /C=AR/);
+      assert.match(csrSubject, /O=Adriana Lucía Leis/);
+      assert.match(csrSubject, /CN=MaxBio Homologacion/);
+      assert.match(csrSubject, /serialNumber=CUIT 27110247244/);
+    });
+    const cert = await wsassCertificate(generated.csr);
+    const checked = await crypto.certificate(cert, generated.privateKey, cuit, now);
+    const subject = new X509Certificate(cert).toLegacyObject().subject;
+    assert.equal(subject.C, undefined);
+    assert.equal(subject.O, undefined);
+    assert.equal(subject.serialNumber, `CUIT ${cuit}`);
+    assert.equal(checked.commonName, 'maxbiohomologacion');
+    assert.match(checked.subject, /CN=maxbiohomologacion/);
+    assert.doesNotMatch(checked.subject, /MaxBio Homologacion|C=AR/);
+    assert.match(checked.issuer, /CN=Computadores Test/);
+    // WSAA echoes the issued DN as destination; the ticket identity is the issued CN.
+    assert.equal(
+      parseSoapTicket(
+        soap(
+          ticketXml().replace(
+            /<destination>[^<]*<\/destination>/,
+            `<destination>SERIALNUMBER=CUIT ${cuit}, CN=maxbiohomologacion</destination>`,
+          ),
+        ),
+        { cuit, commonName: checked.commonName },
+        now,
+      ).token,
+      'SECRET_TEST_TOKEN',
+    );
+
+    const other = await crypto.generate('Adriana Lucía Leis', cuit, 'MaxBio Homologacion');
+    try {
+      await assert.rejects(
+        crypto.certificate(cert, other.privateKey, cuit, now),
+        code('KEY_MISMATCH'),
+      );
+    } finally {
+      other.privateKey.fill(0);
+    }
+    await assert.rejects(
+      crypto.certificate(
+        await wsassCertificate(generated.csr, { cuit: '20123456786' }),
+        generated.privateKey,
+        cuit,
+        now,
+      ),
+      code('CUIT_MISMATCH'),
+    );
+    await assert.rejects(
+      crypto.certificate(cert, generated.privateKey, cuit, new Date(now.getTime() + 4 * 86400000)),
+      code('CERTIFICATE_EXPIRED'),
+    );
+    await assert.rejects(
+      crypto.certificate(
+        await wsassCertificate(generated.csr, { ca: true }),
+        generated.privateKey,
+        cuit,
+        now,
+      ),
+      code('CERTIFICATE_INVALID'),
+    );
+    await assert.rejects(
+      crypto.certificate(
+        await wsassCertificate(generated.csr, { issuer: 'Computadores Producción' }),
+        generated.privateKey,
+        cuit,
+        now,
+      ),
+      code('PRODUCTION_BLOCKED'),
+    );
+    await assert.rejects(
+      crypto.certificate(
+        await wsassCertificate(generated.csr, { alias: '' }),
+        generated.privateKey,
+        cuit,
+        now,
+      ),
+      code('CERTIFICATE_INVALID'),
+    );
+  } finally {
+    generated.privateKey.fill(0);
+  }
+  const { privateKey: weak } = await promisify(generateKeyPair)('rsa', {
+    modulusLength: 1024,
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  const weakCsr = await ephemeralFiles({ 'key.pem': weak }, (dir) =>
+    crypto.command([
+      'req',
+      '-new',
+      '-key',
+      join(dir, 'key.pem'),
+      '-subj',
+      `/C=AR/CN=MaxBio Homologacion/serialNumber=CUIT ${cuit}`,
+    ]),
+  );
+  await assert.rejects(
+    crypto.certificate(await wsassCertificate(weakCsr), Buffer.from(weak), cuit, now),
+    code('CERTIFICATE_INVALID'),
+  );
 });
 test('TRA service is wsfe, temporal uint32 uniqueness, UTC and skew', () => {
   const f = new TraFactory(),
