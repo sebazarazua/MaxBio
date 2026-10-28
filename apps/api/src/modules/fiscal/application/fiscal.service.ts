@@ -5,6 +5,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Prisma } from '@maxbio/database';
@@ -17,6 +18,7 @@ import {
   type ArcaCertificate,
   type ArcaGenerate,
   type ArcaReadiness,
+  type ArcaDiscard,
   type FiscalProfileUpdate,
 } from '@maxbio/contracts';
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
@@ -46,6 +48,15 @@ type Credential = Prisma.ArcaCredentialGetPayload<object>;
 type Profile = Prisma.OrganizationFiscalProfileGetPayload<object>;
 const scope = (org: string) => ({ organizationId: org, environment: 'HOMOLOGATION' as const });
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+// Also fail closed if a restored/corrupt database is missing the partial unique index.
+export function uniqueActive<T extends { status: string }>(rows: T[]): T | undefined {
+  const active = rows.filter((row) => row.status === 'ACTIVE');
+  if (active.length > 1)
+    throw new ConflictException(
+      'La configuración ARCA es inconsistente: hay varias credenciales activas.',
+    );
+  return active[0];
+}
 function profileView(p: Profile | null) {
   if (!p) return null;
   return {
@@ -150,6 +161,14 @@ export class FiscalService {
     if (!row) throw new NotFoundException();
     return row;
   }
+  private async active(tx: Tx, org: string) {
+    return uniqueActive(
+      await tx.arcaCredential.findMany({
+        where: { ...scope(org), status: 'ACTIVE' },
+        take: 2,
+      }),
+    );
+  }
   private async config(tx: Tx, org: string) {
     return tx.arcaIntegrationConfig.upsert({
       where: { organizationId: org },
@@ -226,13 +245,26 @@ export class FiscalService {
           orderBy: { createdAt: 'desc' },
         });
         const history = await tx.arcaCredential.findMany({
-          where: { ...scope(c.organizationId), status: 'REPLACED' },
+          where: { ...scope(c.organizationId), status: { in: ['REPLACED', 'DISCARDED'] } },
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           take: 20,
         });
         const records = [...current, ...history];
-        const active = current.find((r) => r.status === 'ACTIVE'),
+        const active = uniqueActive(current),
           pending = current.find((r) => ['CSR_READY', 'CERTIFICATE_INSTALLED'].includes(r.status));
+        const verified = active
+          ? await tx.auditEvent.findFirst({
+              where: {
+                organizationId: c.organizationId,
+                resourceType: 'ArcaCredential',
+                resourceId: active.id,
+                action: 'ARCA_WSAA_TEST_SUCCEEDED',
+                result: 'SUCCESS',
+              },
+              orderBy: { createdAt: 'desc' },
+              select: { createdAt: true },
+            })
+          : null;
         const ticket = active ? this.tickets.peek(c.organizationId, active.id) : undefined;
         const now = this.clock.now(),
           complete = fiscalCompleteness(p) === 'COMPLETE';
@@ -274,6 +306,8 @@ export class FiscalService {
           version: config?.version ?? 0,
           fiscalProfile: complete ? 'COMPLETE' : 'INCOMPLETE',
           cuitValid: Boolean(p?.cuit && validCuit(p.cuit)),
+          cuit: p?.cuit ?? null,
+          lastVerifiedAt: verified?.createdAt.toISOString() ?? null,
           openssl: openssl ? 'AVAILABLE' : 'UNAVAILABLE',
           privateKey: Boolean(active || pending),
           csr: Boolean(active || pending),
@@ -290,6 +324,9 @@ export class FiscalService {
             status: r.status,
             version: r.version,
             createdAt: r.createdAt.toISOString(),
+            replacedAt: r.replacedAt?.toISOString() ?? null,
+            discardedAt: r.discardedAt?.toISOString() ?? null,
+            secretsDeletedAt: r.secretsDeletedAt?.toISOString() ?? null,
             fingerprint: r.certificateFingerprint,
             serial: r.certificateSerial,
             subject: r.certificateSubject,
@@ -345,6 +382,7 @@ export class FiscalService {
   async generate(c: RequestActorContext, input: ArcaGenerate) {
     const id = randomUUID(),
       keys: string[] = [];
+    let retiredId: string | undefined;
     try {
       await this.write(c, async (tx) => {
         const hash = digest(input),
@@ -354,8 +392,13 @@ export class FiscalService {
         if (prior) {
           if (prior.generationHash !== hash)
             throw new ConflictException('Esta solicitud ya se utilizó con otros datos.');
+          if (['DISCARDED', 'REPLACED'].includes(prior.status))
+            throw new ConflictException(
+              'Esta solicitud ya no puede utilizarse. Creá una nueva solicitud.',
+            );
           return;
         }
+        await this.active(tx, c.organizationId);
         const priorConfig = await tx.arcaIntegrationConfig.findUnique({
           where: { organizationId: c.organizationId },
         });
@@ -379,11 +422,20 @@ export class FiscalService {
         } finally {
           generated.privateKey.fill(0);
         }
-        if (pending)
+        if (pending) {
           await tx.arcaCredential.update({
             where: { id: pending.id, organizationId: c.organizationId },
-            data: { status: 'REPLACED', version: { increment: 1 } },
+            data: { status: 'DISCARDED', discardedAt: this.clock.now(), version: { increment: 1 } },
           });
+          await this.audit.success(
+            c,
+            'ARCA_CREDENTIAL_DISCARDED',
+            'ArcaCredential',
+            pending.id,
+            tx,
+          );
+          retiredId = pending.id;
+        }
         await tx.arcaCredential.create({
           data: {
             id,
@@ -407,11 +459,14 @@ export class FiscalService {
       await this.cleanup(c.organizationId, id, keys);
       throw e;
     }
+    if (retiredId) await this.purgeRetired(c, retiredId);
     return this.readiness(c);
   }
   async csr(c: RequestActorContext, id: string) {
     this.admin(c);
     const row = await this.credential(this.db.client, c, id);
+    if (!['CSR_READY', 'CERTIFICATE_INSTALLED'].includes(row.status))
+      throw new ConflictException('Esta solicitud ya no está pendiente.');
     return {
       credentialId: row.id,
       pem: (await this.storage.read(c.organizationId, row.csrStorageKey)).toString('utf8'),
@@ -472,9 +527,11 @@ export class FiscalService {
     return this.readiness(c);
   }
   async activate(c: RequestActorContext, id: string, input: ArcaActivate) {
+    let retiredId: string | undefined;
     await this.write(c, async (tx) => {
       const row = await this.credential(tx, c, id),
         config = await this.config(tx, c.organizationId);
+      const active = await this.active(tx, c.organizationId);
       this.version(row.version, input.expectedVersion);
       this.version(config.version, input.expectedConfigVersion);
       if (row.status !== 'CERTIFICATE_INSTALLED' || !row.certificateStorageKey)
@@ -495,10 +552,13 @@ export class FiscalService {
       } finally {
         key.fill(0);
       }
-      await tx.arcaCredential.updateMany({
-        where: { ...scope(c.organizationId), status: 'ACTIVE' },
-        data: { status: 'REPLACED', version: { increment: 1 } },
-      });
+      if (active) {
+        await tx.arcaCredential.update({
+          where: { id: active.id, organizationId: c.organizationId },
+          data: { status: 'REPLACED', replacedAt: this.clock.now(), version: { increment: 1 } },
+        });
+        retiredId = active.id;
+      }
       await tx.arcaCredential.update({
         where: { id, organizationId: c.organizationId },
         data: { status: 'ACTIVE', version: { increment: 1 } },
@@ -516,19 +576,88 @@ export class FiscalService {
       await this.audit.success(c, 'ARCA_CREDENTIAL_ACTIVATED', 'ArcaCredential', id, tx);
     });
     this.tickets.invalidate(c.organizationId);
+    if (retiredId) await this.purgeRetired(c, retiredId);
+    return this.readiness(c);
+  }
+  async discard(c: RequestActorContext, id: string, input: ArcaDiscard) {
+    // Commit a terminal state and its audit BEFORE touching storage. A failed commit keeps files.
+    await this.write(c, async (tx) => {
+      const row = await this.credential(tx, c, id);
+      await this.active(tx, c.organizationId);
+      if (row.status === 'DISCARDED') return; // Retry resumes any interrupted deletion.
+      if (!['CSR_READY', 'CERTIFICATE_INSTALLED'].includes(row.status))
+        throw new ConflictException(
+          'Solo se pueden descartar solicitudes pendientes. La credencial activa se conserva.',
+        );
+      this.version(row.version, input.expectedVersion);
+      // Pending states have no fiscal references: auth resolves ACTIVE exclusively. This model
+      // has no invoice/TA FK to a credential; the audit resource is intentionally retained.
+      await tx.arcaCredential.update({
+        where: { id, organizationId: c.organizationId },
+        data: { status: 'DISCARDED', discardedAt: this.clock.now(), version: { increment: 1 } },
+      });
+      await tx.arcaIntegrationConfig.update({
+        where: { organizationId: c.organizationId },
+        data: { version: { increment: 1 } },
+      });
+      await this.audit.success(c, 'ARCA_CREDENTIAL_DISCARDED', 'ArcaCredential', id, tx);
+    });
+    await this.purgeRetired(c, id);
+    return this.readiness(c);
+  }
+  private async purgeRetired(c: RequestActorContext, id: string) {
+    await this.write(c, async (tx) => {
+      const row = await this.credential(tx, c, id);
+      if (!['DISCARDED', 'REPLACED'].includes(row.status))
+        throw new ConflictException('La limpieza solo admite solicitudes descartadas o historial.');
+      if (row.secretsDeletedAt) return;
+      const keys = [row.privateKeyStorageKey, row.csrStorageKey, row.certificateStorageKey].filter(
+        (key): key is string => key !== null,
+      );
+      // Check every column, including cross-column references in legacy/corrupt data. Never
+      // delete a file another credential could need, even if it belongs to another tenant.
+      const referenced = await tx.arcaCredential.count({
+        where: {
+          id: { not: id },
+          OR: [
+            { privateKeyStorageKey: { in: keys } },
+            { csrStorageKey: { in: keys } },
+            { certificateStorageKey: { in: keys } },
+          ],
+        },
+      });
+      if (referenced)
+        throw new ConflictException(
+          'Hay referencias compartidas. Se requiere revisar la configuración ARCA.',
+        );
+      try {
+        for (const key of new Set(keys)) await this.storage.remove(c.organizationId, key);
+      } catch {
+        throw new ServiceUnavailableException(
+          'La solicitud ya está retirada. La limpieza quedó pendiente; volvé a intentar para completarla.',
+        );
+      }
+      await tx.arcaCredential.update({
+        where: { id, organizationId: c.organizationId },
+        data: { secretsDeletedAt: this.clock.now() },
+      });
+      await this.audit.success(c, 'ARCA_CREDENTIAL_SECRETS_REMOVED', 'ArcaCredential', id, tx);
+    });
+  }
+  async cleanupRetired(c: RequestActorContext, id: string) {
+    await this.purgeRetired(c, id);
     return this.readiness(c);
   }
   async testConnection(c: RequestActorContext) {
     this.admin(c);
     // Authorize every caller before it can join an in-flight authentication.
     const identity = await this.write(c, async (tx) => {
+      const active = await this.active(tx, c.organizationId);
+      if (!active) throw new BadRequestException('No hay una credencial ARCA activa.');
       const p = await tx.organizationFiscalProfile.findUnique({
         where: { organizationId: c.organizationId },
       });
       this.complete(p);
-      const active = await tx.arcaCredential.findFirst({
-        where: { ...scope(c.organizationId), status: 'ACTIVE' },
-      });
       if (!active?.certificateStorageKey) throw new ArcaError('CERTIFICATE_MISSING');
       if (active.cuit !== p.cuit) throw new ArcaError('CUIT_MISMATCH');
       const state = certificateState(active, this.clock.now());
@@ -557,6 +686,7 @@ export class FiscalService {
           await this.write(c, async (tx) => {
             const row = await this.credential(tx, c, identity.id),
               config = await this.config(tx, c.organizationId);
+            await this.active(tx, c.organizationId);
             const p = await tx.organizationFiscalProfile.findUnique({
               where: { organizationId: c.organizationId },
             });
@@ -595,8 +725,13 @@ export class FiscalService {
             });
             return ticket;
           } catch (e) {
+            // A late response from a retired credential must not overwrite the new ACTIVE's
+            // readiness or shorten its durable reservation during rotation.
+            if (e instanceof ConflictException) throw e;
             const error = e instanceof ArcaError ? e : new ArcaError('NETWORK_ERROR');
             await this.write(c, async (tx) => {
+              const row = await this.credential(tx, c, identity.id);
+              if (row.status !== 'ACTIVE' || row.version !== identity.version) return;
               // Unknown delivery/response outcome stays blocked for the maximum TA lifetime.
               const uncertain = [
                 'NETWORK_ERROR',
@@ -620,9 +755,12 @@ export class FiscalService {
           key.fill(0);
         }
       });
-      await this.write(c, (tx) =>
-        this.audit.success(c, 'ARCA_WSAA_TEST_SUCCEEDED', 'ArcaCredential', identity.id, tx),
-      );
+      await this.write(c, async (tx) => {
+        const active = await this.active(tx, c.organizationId);
+        if (active?.id !== identity.id || active.version !== identity.version)
+          throw new ConflictException('La credencial cambió. Volvé a cargarla.');
+        await this.audit.success(c, 'ARCA_WSAA_TEST_SUCCEEDED', 'ArcaCredential', identity.id, tx);
+      });
     } catch (e) {
       await this.write(c, async (tx) => {
         await this.audit.append(

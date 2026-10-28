@@ -85,16 +85,16 @@ export function FiscalSettingsView({ isAdmin }: { isAdmin: boolean }) {
           <button className="secondary-button" disabled={status === 'loading'} onClick={reload}>
             Cargar información actual
           </button>
+          <ArcaConnection
+            key={revision}
+            arca={data.arca}
+            changed={(arca) => setData((d) => (d ? { ...d, arca } : d))}
+          />
           <FiscalProfileForm
             key={data.profile?.version ?? 'new'}
             profile={data.profile}
             saved={(p) => setData((d) => (d ? { ...d, profile: p } : d))}
             refresh={reload}
-          />
-          <ArcaConnection
-            key={revision}
-            arca={data.arca}
-            changed={(arca) => setData((d) => (d ? { ...d, arca } : d))}
           />
         </>
       )}
@@ -240,7 +240,14 @@ function FiscalProfileForm({
     </section>
   );
 }
-const date = (v: string | null) => (v ? new Date(v).toLocaleString('es-AR') : 'Pendiente');
+const date = (v: string | null) =>
+  v
+    ? new Date(v).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
+    : 'Pendiente';
+const day = (v: string | null) =>
+  v
+    ? new Date(v).toLocaleDateString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
+    : 'Pendiente';
 export function ArcaConnection({
   arca,
   changed,
@@ -254,7 +261,8 @@ export function ArcaConnection({
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [commonName, setCommonName] = useState('MaxBio Homologacion'),
-    [rotate, setRotate] = useState(false);
+    [rotate, setRotate] = useState(false),
+    [confirmDiscard, setConfirmDiscard] = useState(false);
   const pending = arca.credentials.find((c) => c.id === arca.pendingCredentialId),
     active = arca.credentials.find((c) => c.id === arca.activeCredentialId);
   async function run(task: () => Promise<void>) {
@@ -316,180 +324,283 @@ export function ArcaConnection({
         certificateBase64: btoa(binary),
       }),
     );
-    setNotice('Certificado instalado. Activá esta credencial para probar la conexión.');
+    setNotice(
+      'Certificado instalado en la nueva solicitud. La credencial activa se conserva hasta que actives su reemplazo.',
+    );
   }
+  const valid = Boolean(active && ['VALID', 'EXPIRING_SOON'].includes(active.certificateState)),
+    connected =
+      valid &&
+      arca.certificateMatchesKey &&
+      arca.fiscalProfile === 'COMPLETE' &&
+      Boolean(arca.lastVerifiedAt || arca.access.status === 'AUTHENTICATED') &&
+      arca.access.status !== 'ERROR',
+    history = arca.credentials.filter((c) => ['REPLACED', 'DISCARDED'].includes(c.status));
   return (
-    <section className="catalog-panel" aria-labelledby="arca-title">
-      <h2 id="arca-title">Conexión con ARCA</h2>
-      <p>
-        Entorno: <strong>Homologación</strong>. Esta conexión de prueba no emite facturas.
-      </p>
-      <ul>
-        <li>Datos fiscales: {arca.fiscalProfile === 'COMPLETE' ? 'completos' : 'pendientes'}</li>
-        <li>CUIT: {arca.cuitValid ? 'válido' : 'pendiente'}</li>
-        <li>
-          OpenSSL en el servidor: {arca.openssl === 'AVAILABLE' ? 'disponible' : 'no disponible'}
-        </li>
-        <li>Clave privada: {arca.privateKey ? 'generada en el servidor' : 'pendiente'}</li>
-        <li>Solicitud: {arca.csr ? 'creada' : 'pendiente'}</li>
-        <li>Certificado ARCA: {arca.certificateInstalled ? 'instalado' : 'pendiente'}</li>
-        <li>
-          Certificado activo:{' '}
-          {active
-            ? {
-                VALID: 'vigente',
-                EXPIRING_SOON: 'próximo a vencer',
-                EXPIRED: 'vencido',
-                INVALID: 'inválido',
-                MISSING: 'pendiente',
-              }[active.certificateState]
-            : 'pendiente de activación'}
-        </li>
-        <li>
-          Certificado y clave:{' '}
-          {arca.certificateMatchesKey
-            ? 'verificados'
-            : 'pendientes de verificar en la credencial activa'}
-        </li>
-        <li>
-          Acceso:{' '}
-          {arca.access.status === 'AUTHENTICATED'
-            ? 'Conexión correcta con ARCA'
-            : arca.access.status === 'WAITING'
-              ? 'Esperando vencimiento'
-              : arca.access.status === 'ERROR'
-                ? 'Requiere revisión'
-                : 'Pendiente'}
-        </li>
-        <li>Ticket de acceso: válido hasta {date(arca.access.expiresAt)}</li>
-        <li>WSFEv1: todavía no implementado</li>
-        <li>Producción: no configurada</li>
-      </ul>
-      {arca.openssl === 'UNAVAILABLE' && (
-        <p role="alert">OpenSSL no está disponible en el servidor. Revisá ARCA_OPENSSL_PATH.</p>
-      )}
-      {arca.access.message && <p role="status">{arca.access.message}</p>}
-      {arca.access.retryAfter && (
-        <p>Podés volver a probar a partir de {date(arca.access.retryAfter)}.</p>
-      )}
-      {arca.trust === 'PENDING_WSAA' && (
-        <p>
-          La aceptación del certificado y su autorización se comprueban al probar la conexión con
-          ARCA.
+    <section className="catalog-panel arca-settings" aria-labelledby="arca-title">
+      <h2 id="arca-title">ARCA</h2>
+      <div className={connected ? 'arca-overview arca-connected' : 'arca-overview'}>
+        <p className="arca-connection-state" role="status">
+          {connected
+            ? '✓ ARCA conectado'
+            : active
+              ? 'Conexión pendiente de verificar'
+              : 'ARCA sin conectar'}
         </p>
+        <dl className="arca-facts">
+          <div>
+            <dt>Ambiente</dt>
+            <dd>Homologación</dd>
+          </div>
+          <div>
+            <dt>CUIT</dt>
+            <dd>{arca.cuit ? formatFiscalCuit(arca.cuit) : 'Pendiente'}</dd>
+          </div>
+          <div>
+            <dt>Certificado</dt>
+            <dd>
+              {valid
+                ? `Vigente hasta ${day(active!.validTo)}`
+                : active?.certificateState === 'EXPIRED'
+                  ? 'vencido'
+                  : 'Pendiente de un certificado activo vigente'}
+            </dd>
+          </div>
+          <div>
+            <dt>Última verificación exitosa</dt>
+            <dd>{arca.lastVerifiedAt ? date(arca.lastVerifiedAt) : 'Todavía no registrada'}</dd>
+          </div>
+        </dl>
+        {active?.certificateState === 'EXPIRING_SOON' && (
+          <p role="status">
+            El certificado está próximo a vencer. Prepará su renovación desde Acciones avanzadas.
+          </p>
+        )}
+        <button
+          className="primary-button"
+          disabled={busy || !arca.canTest}
+          onClick={() =>
+            void run(async () => {
+              changed(await fiscalFetch('arca/wsaa/test', arcaReadinessSchema, 'POST', {}));
+              setNotice('Conexión con ARCA verificada correctamente.');
+            })
+          }
+        >
+          Probar conexión con ARCA
+        </button>
+        {arca.access.message && arca.access.status === 'ERROR' && (
+          <p role="alert">{arca.access.message}</p>
+        )}
+        {arca.access.retryAfter && (
+          <p>
+            Podés volver a probar a partir de {date(arca.access.retryAfter)}. La última verificación
+            exitosa se conserva; el acceso temporal debe renovarse después de su vencimiento.
+          </p>
+        )}
+        {!connected && !arca.lastVerifiedAt && (
+          <p>Probá la conexión para verificar la aceptación del certificado por ARCA.</p>
+        )}
+      </div>
+      <p>Esta conexión de homologación no emite facturas.</p>
+      {active && (
+        <section aria-labelledby="arca-active-title" className="arca-active">
+          <h3 id="arca-active-title">Credencial activa</h3>
+          <p>
+            <strong>{active.commonName}</strong> · Activa
+          </p>
+          <p>Emitido por: {active.issuer?.replaceAll('\n', ' · ') ?? 'Pendiente'}</p>
+          <p>
+            Vigencia: {day(active.validFrom)} — {day(active.validTo)}
+          </p>
+        </section>
       )}
-      <h3>1. Solicitud de certificado</h3>
-      {(!pending || rotate) && (
-        <>
-          <label className="field" htmlFor="arca-common-name">
-            Nombre del sistema
-            <input
-              id="arca-common-name"
-              value={commonName}
-              onChange={(e) => {
-                setCommonName(e.target.value);
-                attempt.current = null;
-              }}
-              maxLength={64}
+      <details className="arca-secondary">
+        <summary>Solicitudes e historial{pending ? ' · 1 solicitud pendiente' : ''}</summary>
+        {pending ? (
+          <section aria-label="Solicitud pendiente">
+            <h3>Solicitud pendiente</h3>
+            <p>
+              Solicitud creada: <strong>{pending.commonName}</strong> · {date(pending.createdAt)}
+            </p>
+            <p>
+              {pending.status === 'CSR_READY'
+                ? 'Esperando el certificado de ARCA.'
+                : 'Certificado instalado, pendiente de activación.'}{' '}
+              {active && 'La conexión actual sigue utilizando la credencial activa.'}
+            </p>
+            <button
+              className="secondary-button"
               disabled={busy}
-            />
-          </label>
-          <button
-            className="primary-button"
-            disabled={busy || arca.fiscalProfile !== 'COMPLETE' || arca.openssl !== 'AVAILABLE'}
-            onClick={() => void run(generate)}
-          >
-            {rotate ? 'Confirmar nueva solicitud' : 'Generar solicitud'}
-          </button>
-        </>
-      )}
-      {pending && (
-        <>
-          <p>Solicitud creada: {pending.commonName}</p>
-          <button
-            className="secondary-button"
-            disabled={busy}
-            onClick={() => void run(() => download(pending.id))}
-          >
-            Descargar archivo para ARCA
-          </button>
-        </>
-      )}
-      <p>
-        Ingresá manualmente a ARCA, abrí WSASS, utilizá este archivo para obtener un certificado de
-        homologación y autorizalo para Facturación Electrónica (wsfe). Volvé a MaxBio para cargar el
-        certificado.
-      </p>
-      <a href="https://www.arca.gob.ar/ws/WSASS/html/index.html" target="_blank" rel="noreferrer">
-        Instrucciones oficiales de WSASS
-      </a>
-      <h3>2. Cargar certificado</h3>
-      {pending?.status === 'CSR_READY' && (
-        <label className="field" htmlFor="arca-certificate">
-          Certificado ARCA (PEM o CRT, hasta 100 KiB)
-          <input
-            id="arca-certificate"
-            type="file"
-            accept=".pem,.crt,.cer"
-            disabled={busy}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = '';
-              if (file) void run(() => upload(file));
-            }}
-          />
-        </label>
-      )}
-      {pending?.status === 'CERTIFICATE_INSTALLED' && (
-        <>
-          <p>
-            Certificado instalado. Válido desde {date(pending.validFrom)} hasta{' '}
-            {date(pending.validTo)}.
-          </p>
-          <p>
-            {active
-              ? 'Activar reemplazará expresamente la credencial activa y conservará su historial.'
-              : 'Activá la credencial para habilitar la prueba.'}
-          </p>
-          <button
-            disabled={busy || !['VALID', 'EXPIRING_SOON'].includes(pending.certificateState)}
-            onClick={() =>
-              void run(async () =>
-                changed(
-                  await fiscalFetch(
-                    `arca/credentials/${pending.id}/activate`,
-                    arcaReadinessSchema,
-                    'POST',
-                    { expectedVersion: pending.version, expectedConfigVersion: arca.version },
-                  ),
-                ),
-              )
-            }
-          >
-            Activar credencial de homologación
-          </button>
-        </>
-      )}
-      <h3>3. Probar conexión</h3>
-      <button
-        className="primary-button"
-        disabled={busy || !arca.canTest}
-        onClick={() =>
-          void run(async () => {
-            changed(await fiscalFetch('arca/wsaa/test', arcaReadinessSchema, 'POST', {}));
-            setNotice('Conexión correcta con ARCA');
-          })
-        }
-      >
-        Probar conexión con ARCA
-      </button>
-      {(pending || active) && (
-        <details>
-          <summary>Generar nueva credencial</summary>
-          <p>
-            Se generará otra clave. Un certificado emitido para una solicitud anterior no servirá
-            para la nueva. La credencial activa se conserva hasta que actives su reemplazo.
-          </p>
+              onClick={() => void run(() => download(pending.id))}
+            >
+              Descargar CSR
+            </button>
+            {pending.status === 'CSR_READY' && (
+              <>
+                <p>
+                  Usá esta solicitud en WSASS para obtener y autorizar el certificado de
+                  homologación para wsfe. Luego cargalo aquí.
+                </p>
+                <a
+                  href="https://www.arca.gob.ar/ws/WSASS/html/index.html"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Instrucciones oficiales de WSASS
+                </a>
+                <label className="field" htmlFor="arca-certificate">
+                  Certificado ARCA (PEM o CRT, hasta 100 KiB)
+                  <input
+                    id="arca-certificate"
+                    type="file"
+                    accept=".pem,.crt,.cer"
+                    disabled={busy}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      if (file) void run(() => upload(file));
+                    }}
+                  />
+                </label>
+              </>
+            )}
+            {pending.status === 'CERTIFICATE_INSTALLED' && (
+              <>
+                <p>
+                  Vigencia: {day(pending.validFrom)} — {day(pending.validTo)}
+                </p>
+                <p>
+                  {active
+                    ? 'Al activar esta solicitud se reemplaza la credencial activa, se conserva su historial y se elimina su material privado.'
+                    : 'Activá la credencial para habilitar la prueba.'}
+                </p>
+                <button
+                  disabled={busy || !['VALID', 'EXPIRING_SOON'].includes(pending.certificateState)}
+                  onClick={() =>
+                    void run(async () =>
+                      changed(
+                        await fiscalFetch(
+                          `arca/credentials/${pending.id}/activate`,
+                          arcaReadinessSchema,
+                          'POST',
+                          { expectedVersion: pending.version, expectedConfigVersion: arca.version },
+                        ),
+                      ),
+                    )
+                  }
+                >
+                  Activar credencial de homologación
+                </button>
+              </>
+            )}
+            {!confirmDiscard ? (
+              <button
+                className="secondary-button"
+                disabled={busy}
+                onClick={() => setConfirmDiscard(true)}
+              >
+                Descartar solicitud
+              </button>
+            ) : (
+              <div role="group" aria-label="Confirmar descarte">
+                <p>
+                  Esta solicitud dejará de poder usarse y se eliminarán sus archivos del servidor.
+                  La credencial activa se conserva.
+                </p>
+                <button
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      changed(
+                        await fiscalFetch(
+                          `arca/credentials/${pending.id}/discard`,
+                          arcaReadinessSchema,
+                          'POST',
+                          { expectedVersion: pending.version },
+                        ),
+                      );
+                      setConfirmDiscard(false);
+                      attempt.current = null;
+                      setNotice('Solicitud descartada. La credencial activa se conserva.');
+                    })
+                  }
+                >
+                  Confirmar descarte
+                </button>
+                <button disabled={busy} onClick={() => setConfirmDiscard(false)}>
+                  Conservar solicitud
+                </button>
+              </div>
+            )}
+          </section>
+        ) : (
+          <p>No hay solicitudes pendientes.</p>
+        )}
+        {history.length > 0 && (
+          <section aria-labelledby="arca-history-title">
+            <h3 id="arca-history-title">Historial</h3>
+            {history.map((c) => (
+              <div key={c.id} className="arca-history-item">
+                <p>
+                  <strong>{c.commonName}</strong> ·{' '}
+                  {c.status === 'REPLACED' ? 'Reemplazada' : 'Solicitud descartada'}
+                </p>
+                <p>
+                  Creada: {date(c.createdAt)} ·{' '}
+                  {c.status === 'REPLACED' ? 'Reemplazada' : 'Descartada'}:{' '}
+                  {date(c.replacedAt ?? c.discardedAt)}
+                </p>
+                {c.validTo && (
+                  <p>
+                    Vigencia: {day(c.validFrom)} — {day(c.validTo)}
+                  </p>
+                )}
+                {c.issuer && <p>Emisor: {c.issuer}</p>}
+                {c.fingerprint && (
+                  <details>
+                    <summary>Datos del certificado histórico</summary>
+                    <p>Huella pública: {c.fingerprint}</p>
+                  </details>
+                )}
+                {!c.secretsDeletedAt && (
+                  <>
+                    <p>Limpieza de archivos pendiente. Este registro ya no puede utilizarse.</p>
+                    <button
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          changed(
+                            await fiscalFetch(
+                              `arca/credentials/${c.id}/cleanup`,
+                              arcaReadinessSchema,
+                              'POST',
+                              {},
+                            ),
+                          );
+                          setNotice('Limpieza completada. Se conserva el historial.');
+                        })
+                      }
+                    >
+                      Completar limpieza
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
+      </details>
+      <details className="arca-secondary">
+        <summary>Acciones avanzadas</summary>
+        <p>
+          {active
+            ? 'La credencial activa sigue funcionando mientras tramitás una nueva solicitud. Solo cambia cuando activás expresamente el nuevo certificado.'
+            : 'Generá una solicitud y obtené su certificado de homologación en ARCA.'}
+        </p>
+        {pending && !rotate && (
+          <p>Completá o descartá la solicitud pendiente antes de crear otra.</p>
+        )}
+        {!pending && !rotate && active && (
           <button
             disabled={busy}
             onClick={() => {
@@ -499,35 +610,44 @@ export function ArcaConnection({
           >
             Preparar nueva solicitud
           </button>
-          {rotate && (
-            <button disabled={busy} onClick={() => setRotate(false)}>
-              Cancelar nueva solicitud
-            </button>
-          )}
-        </details>
-      )}
-      <details>
-        <summary>Información técnica</summary>
-        {arca.credentials.map((c) => (
-          <div key={c.id}>
-            <p>
-              {c.commonName} · {c.status} · {date(c.createdAt)}
-            </p>
-            <p>
-              Vigencia: {date(c.validFrom)} — {date(c.validTo)}
-            </p>
-            <p>Huella: {c.fingerprint ?? 'Pendiente'}</p>
-            <p>Emisor del certificado: {c.issuer ?? 'Pendiente'}</p>
+        )}
+        {!pending && (!active || rotate) && (
+          <>
+            <label className="field" htmlFor="arca-common-name">
+              Nombre del sistema
+              <input
+                id="arca-common-name"
+                value={commonName}
+                onChange={(e) => {
+                  setCommonName(e.target.value);
+                  attempt.current = null;
+                }}
+                maxLength={64}
+                disabled={busy}
+              />
+            </label>
             <button
-              className="secondary-button"
-              disabled={busy}
-              onClick={() => void run(() => download(c.id))}
+              className="primary-button"
+              disabled={busy || arca.fiscalProfile !== 'COMPLETE' || arca.openssl !== 'AVAILABLE'}
+              onClick={() => void run(generate)}
             >
-              Descargar CSR de esta solicitud
+              {rotate ? 'Confirmar nueva solicitud' : 'Generar solicitud'}
             </button>
-          </div>
-        ))}
+            {rotate && (
+              <button disabled={busy} onClick={() => setRotate(false)}>
+                Cancelar nueva solicitud
+              </button>
+            )}
+          </>
+        )}
+        <p>
+          OpenSSL en el servidor: {arca.openssl === 'AVAILABLE' ? 'disponible' : 'no disponible'}
+        </p>
+        <p>Datos fiscales: {arca.fiscalProfile === 'COMPLETE' ? 'completos' : 'pendientes'}</p>
       </details>
+      {arca.openssl === 'UNAVAILABLE' && (
+        <p role="alert">OpenSSL no está disponible en el servidor. Revisá ARCA_OPENSSL_PATH.</p>
+      )}
       {busy && <p role="status">Procesando…</p>}
       {error && (
         <p className="catalog-error" role="alert">

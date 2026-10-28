@@ -44,6 +44,7 @@ test(
         url.pathname = '/' + name;
         const client = createDatabaseClient(url.toString());
         try {
+          let activeId: string | undefined;
           if (mode === 'upgrade') {
             cli(url.toString(), ['migrate', 'deploy']);
             const org = await client.organization.create({
@@ -52,7 +53,25 @@ test(
             await client.customer.create({
               data: { organizationId: org.id, name: 'Existing customer', kind: 'COMPANY' },
             });
-            for (const n of names.filter((n) => n >= '20261027161753'))
+            for (const n of names.filter((n) => n >= '20261027161753' && n < '20261028190000'))
+              await cp(join(source, n), join(migrations, n), { recursive: true });
+            cli(url.toString(), ['migrate', 'deploy']);
+            activeId = randomUUID();
+            // Existing ACTIVE and an abandoned REPLACED request, before the lifecycle migration.
+            for (const status of ['ACTIVE', 'REPLACED']) {
+              const id = status === 'ACTIVE' ? activeId : randomUUID();
+              await client.$executeRaw`INSERT INTO "ArcaCredential" (
+                id, "organizationId", "commonName", "legalName", cuit, status,
+                "generationOperationId", "generationHash", "privateKeyStorageKey", "csrStorageKey",
+                "certificateStorageKey", "certificateFingerprint", "certificateSerial", "certificateSubject", "certificateIssuer", "validFrom", "validTo", "updatedAt"
+              ) VALUES (
+                ${id}::uuid, ${org.id}::uuid, 'Preserved', 'Test', '27110247244', ${status}::"ArcaCredentialStatus",
+                ${randomUUID()}::uuid, ${'a'.repeat(64)}, ${org.id + '/' + randomUUID()}, ${org.id + '/' + randomUUID()},
+                ${org.id + '/' + randomUUID()}, 'public fingerprint', '123', 'subject', 'issuer',
+                '2026-01-01'::timestamptz, '2028-01-01'::timestamptz, '2026-10-27'::timestamptz
+              )`;
+            }
+            for (const n of names.filter((n) => n >= '20261028190000'))
               await cp(join(source, n), join(migrations, n), { recursive: true });
           }
           cli(url.toString(), ['migrate', 'deploy']);
@@ -68,7 +87,21 @@ test(
           assert.equal(await client.customer.count(), mode === 'upgrade' ? 1 : 0);
           assert.equal(await client.invoice.count(), 0);
           assert.equal(await client.organizationFiscalProfile.count(), 0);
-          assert.equal(await client.arcaCredential.count(), 0);
+          assert.equal(await client.arcaCredential.count(), mode === 'upgrade' ? 2 : 0);
+          if (activeId) {
+            const active = await client.arcaCredential.findUniqueOrThrow({
+              where: { id: activeId },
+            });
+            assert.equal(active.status, 'ACTIVE');
+            assert.equal(active.updatedAt.toISOString(), '2026-10-27T00:00:00.000Z');
+            assert.equal(active.replacedAt, null);
+            assert.equal(active.discardedAt, null);
+            assert.equal(active.secretsDeletedAt, null);
+            const replaced = await client.arcaCredential.findFirstOrThrow({
+              where: { status: 'REPLACED' },
+            });
+            assert.equal(replaced.replacedAt?.toISOString(), '2026-10-27T00:00:00.000Z');
+          }
           assert.equal(await client.arcaIntegrationConfig.count(), 0);
           const org = await client.organization.create({
             data: { name: 'Constraint test', slug: randomUUID() },

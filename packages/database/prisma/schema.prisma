@@ -1287,6 +1287,7 @@ enum ArcaCredentialStatus {
   CERTIFICATE_INSTALLED
   ACTIVE
   REPLACED
+  DISCARDED
 }
 
 model OrganizationFiscalProfile {
@@ -1346,6 +1347,10 @@ model ArcaCredential {
   certificateIssuer String? @db.VarChar(2000)
   validFrom DateTime? @db.Timestamptz(3)
   validTo DateTime? @db.Timestamptz(3)
+  replacedAt DateTime? @db.Timestamptz(3)
+  discardedAt DateTime? @db.Timestamptz(3)
+  // References remain as deletion receipts; retired credentials can never be reused.
+  secretsDeletedAt DateTime? @db.Timestamptz(3)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

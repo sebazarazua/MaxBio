@@ -101,9 +101,12 @@ export const arcaCredentialSchema = z
   .object({
     id: z.uuidv4(),
     commonName: z.string(),
-    status: z.enum(['CSR_READY', 'CERTIFICATE_INSTALLED', 'ACTIVE', 'REPLACED']),
+    status: z.enum(['CSR_READY', 'CERTIFICATE_INSTALLED', 'ACTIVE', 'REPLACED', 'DISCARDED']),
     version: z.number().int().positive(),
     createdAt: z.iso.datetime(),
+    replacedAt: z.iso.datetime().nullable(),
+    discardedAt: z.iso.datetime().nullable(),
+    secretsDeletedAt: z.iso.datetime().nullable(),
     fingerprint: z.string().nullable(),
     serial: z.string().nullable(),
     subject: z.string().nullable(),
@@ -120,6 +123,8 @@ export const arcaReadinessSchema = z
     version: z.number().int().nonnegative(),
     fiscalProfile: z.enum(['COMPLETE', 'INCOMPLETE']),
     cuitValid: z.boolean(),
+    cuit: z.string().nullable(),
+    lastVerifiedAt: z.iso.datetime().nullable(),
     openssl: z.enum(['AVAILABLE', 'UNAVAILABLE']),
     privateKey: z.boolean(),
     csr: z.boolean(),
@@ -172,6 +177,9 @@ export const arcaActivateSchema = z
     expectedConfigVersion: z.number().int().positive(),
   })
   .strict();
+export const arcaDiscardSchema = z
+  .object({ expectedVersion: z.number().int().positive() })
+  .strict();
 export const arcaCsrSchema = z
   .object({
     credentialId: z.uuidv4(),
@@ -190,6 +198,7 @@ export type ArcaReadiness = z.infer<typeof arcaReadinessSchema>;
 export type ArcaGenerate = z.infer<typeof arcaGenerateSchema>;
 export type ArcaCertificate = z.infer<typeof arcaCertificateSchema>;
 export type ArcaActivate = z.infer<typeof arcaActivateSchema>;
+export type ArcaDiscard = z.infer<typeof arcaDiscardSchema>;
 export function fiscalRouteContract(path: string, method: string) {
   const id = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}';
   if (path === 'fiscal/profile' && method === 'GET')
@@ -206,6 +215,10 @@ export function fiscalRouteContract(path: string, method: string) {
     return { body: arcaCertificateSchema, response: arcaReadinessSchema };
   if (new RegExp(`^fiscal/arca/credentials/${id}/activate$`).test(path) && method === 'POST')
     return { body: arcaActivateSchema, response: arcaReadinessSchema };
+  if (new RegExp(`^fiscal/arca/credentials/${id}/discard$`).test(path) && method === 'POST')
+    return { body: arcaDiscardSchema, response: arcaReadinessSchema };
+  if (new RegExp(`^fiscal/arca/credentials/${id}/cleanup$`).test(path) && method === 'POST')
+    return { body: arcaTestSchema, response: arcaReadinessSchema };
   if (path === 'fiscal/arca/wsaa/test' && method === 'POST')
     return { body: arcaTestSchema, response: arcaReadinessSchema };
   return null;

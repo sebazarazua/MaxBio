@@ -18,6 +18,7 @@ import {
   arcaActivateSchema,
   arcaCertificateSchema,
   arcaGenerateSchema,
+  arcaDiscardSchema,
   arcaTestSchema,
   fiscalProfileUpdateSchema,
 } from '@maxbio/contracts';
@@ -87,6 +88,25 @@ export class FiscalController {
   ) {
     emptyQuery(q);
     return this.service.activate(actor(r), id, parse(arcaActivateSchema, b));
+  }
+  @Post('arca/credentials/:id/discard') @HttpCode(200) discard(
+    @Req() r: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() b: unknown,
+    @Query() q: unknown,
+  ) {
+    emptyQuery(q);
+    return this.service.discard(actor(r), id, parse(arcaDiscardSchema, b));
+  }
+  @Post('arca/credentials/:id/cleanup') @HttpCode(200) cleanup(
+    @Req() r: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() b: unknown,
+    @Query() q: unknown,
+  ) {
+    emptyQuery(q);
+    parse(arcaTestSchema, b);
+    return this.service.cleanupRetired(actor(r), id);
   }
   @Post('arca/wsaa/test') @HttpCode(200) test(
     @Req() r: AuthenticatedRequest,

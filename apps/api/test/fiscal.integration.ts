@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, X509Certificate } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readdir, rmdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -25,6 +25,7 @@ import {
 import { ARCA_CLOCK, ArcaError } from '../src/modules/fiscal/arca/arca-errors.js';
 import { ArcaWsaaClient } from '../src/modules/fiscal/arca/wsaa-client.js';
 import { ArcaTicketProvider } from '../src/modules/fiscal/arca/ticket-provider.js';
+import { CMS_SIGNER } from '../src/modules/fiscal/arca/openssl-crypto.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
 import { crypto, ephemeralFiles, testCertificate, wsassCertificate } from './arca-fixtures.js';
 
@@ -46,6 +47,9 @@ let at = new Date(Date.now() + 10000),
   failWsaa = false,
   failAudit = false,
   wsaaIdentity: { cuit: string; commonName: string } | undefined;
+let failRemoveKey: string | undefined;
+let wsaaGate: { entered: () => void; wait: Promise<void> } | undefined;
+const signedFingerprints: string[] = [];
 const cookies: string[] = [];
 const fields = {
   // Accented legal name: OpenSSL for Windows must receive UTF-8 argv (OPENSSL_WIN32_UTF8).
@@ -154,7 +158,21 @@ before(
         },
       })
       .overrideProvider(CREDENTIAL_STORAGE)
-      .useValue(storage)
+      .useValue({
+        put: storage.put.bind(storage),
+        read: storage.read.bind(storage),
+        remove: async (org: string, key: string) => {
+          if (key === failRemoveKey) throw new Error('Injected storage failure');
+          await storage.remove(org, key);
+        },
+      })
+      .overrideProvider(CMS_SIGNER)
+      .useValue({
+        sign: async (xml: string, key: Buffer, cert: Buffer) => {
+          signedFingerprints.push(new X509Certificate(cert).fingerprint256);
+          return crypto.sign(xml, key, cert);
+        },
+      })
       .overrideProvider(ARCA_CLOCK)
       .useValue({ now: () => at })
       .overrideProvider(AuditService)
@@ -170,6 +188,9 @@ before(
         login: async (_cms: string, identity: { cuit: string; commonName: string }) => {
           calls++;
           wsaaIdentity = identity;
+          const gate = wsaaGate;
+          gate?.entered();
+          await gate?.wait;
           if (failWsaa) throw new ArcaError('SERVICE_UNAUTHORIZED');
           return {
             token: 'SECRET_TEST_TOKEN',
@@ -207,6 +228,8 @@ test('Fiscal HTTP: partial/complete, version race, strict inputs, roles and CSRF
   const initial = await readiness();
   assert.equal(initial.fiscalProfile, 'INCOMPLETE');
   assert.equal(initial.openssl, 'AVAILABLE');
+  const noActive = await checked(await request('arca/wsaa/test', 'POST', {}), 400);
+  assert.match(JSON.stringify(noActive), /No hay una credencial ARCA activa/);
   await checked(
     await request('profile', 'PUT', { ...fields, cuit: '27110247245', expectedVersion: 0 }),
     400,
@@ -415,6 +438,143 @@ test('WSAA HTTP: 20 calls single flight, server-only tickets, restart reservatio
   assert.equal(calls, 3);
   at = new Date(Date.now() + 10000);
 });
+test('ACTIVE + pending: WSAA signs with ACTIVE; discard is authorized, audited, retryable and leaves ACTIVE untouched', async () => {
+  const a = await generate(await readiness());
+  const activeId = a.activeCredentialId!,
+    id = a.pendingCredentialId!;
+  const activeBefore = await client.arcaCredential.findUniqueOrThrow({ where: { id: activeId } });
+  const row = await client.arcaCredential.findUniqueOrThrow({ where: { id } });
+  assert.equal(row.status, 'CSR_READY');
+  assert.equal(row.certificateStorageKey, null);
+  assert.equal(a.certificateMatchesKey, true);
+  // Fresh CMS, not only cache reuse. Isolated test DB and mock WSAA.
+  app.get(ArcaTicketProvider).invalidate(org);
+  await client.arcaIntegrationConfig.update({
+    where: { organizationId: org },
+    data: { authBlockedUntil: null },
+  });
+  const previousCalls = calls;
+  const verified = arcaReadinessSchema.parse(
+    await checked(await request('arca/wsaa/test', 'POST', {})),
+  );
+  assert.equal(calls, previousCalls + 1);
+  assert.equal(signedFingerprints.at(-1), activeBefore.certificateFingerprint);
+  assert.ok(verified.lastVerifiedAt);
+  assert.equal(verified.activeCredentialId, activeId);
+  const body = { expectedVersion: row.version };
+  await checked(await request(`arca/credentials/${id}/discard`, 'POST', body, 1), 403);
+  await checked(await request(`arca/credentials/${id}/discard`, 'POST', body, 2), 404);
+  await checked(await request(`arca/credentials/${id}/discard`, 'POST', body, 0, false), 403);
+  await checked(
+    await request(`arca/credentials/${activeId}/discard`, 'POST', {
+      expectedVersion: activeBefore.version,
+    }),
+    409,
+  );
+  await checked(await request(`arca/credentials/${activeId}/cleanup`, 'POST', {}), 409);
+  await checked(
+    await request(`arca/credentials/${id}/discard`, 'POST', { expectedVersion: row.version + 1 }),
+    409,
+  );
+  failAudit = true;
+  await checked(await request(`arca/credentials/${id}/discard`, 'POST', body), 500);
+  failAudit = false;
+  assert.equal(
+    (await client.arcaCredential.findUniqueOrThrow({ where: { id } })).status,
+    'CSR_READY',
+  );
+  (await storage.read(org, row.privateKeyStorageKey)).fill(0);
+  failRemoveKey = row.csrStorageKey;
+  await checked(await request(`arca/credentials/${id}/discard`, 'POST', body), 503);
+  const retired = await client.arcaCredential.findUniqueOrThrow({ where: { id } });
+  assert.equal(retired.status, 'DISCARDED');
+  assert.ok(retired.discardedAt);
+  assert.equal(retired.secretsDeletedAt, null);
+  await assert.rejects(storage.read(org, row.privateKeyStorageKey));
+  assert.ok(await storage.read(org, row.csrStorageKey));
+  await checked(await request(`arca/credentials/${id}/csr`), 409);
+  failRemoveKey = undefined;
+  const discarded = arcaReadinessSchema.parse(
+    await checked(await request(`arca/credentials/${id}/discard`, 'POST', body)),
+  );
+  assert.equal(discarded.activeCredentialId, activeId);
+  assert.equal(discarded.pendingCredentialId, null);
+  assert.ok(discarded.credentials.find((c) => c.id === id)?.secretsDeletedAt);
+  await assert.rejects(storage.read(org, row.privateKeyStorageKey));
+  await assert.rejects(storage.read(org, row.csrStorageKey));
+  await checked(await request(`arca/credentials/${id}/discard`, 'POST', body));
+  assert.equal(
+    await client.auditEvent.count({
+      where: { resourceId: id, action: 'ARCA_CREDENTIAL_DISCARDED' },
+    }),
+    1,
+  );
+  assert.equal(
+    await client.auditEvent.count({
+      where: { resourceId: id, action: 'ARCA_CREDENTIAL_SECRETS_REMOVED' },
+    }),
+    1,
+  );
+  await checked(await request('arca/wsaa/test', 'POST', {}));
+  assert.equal(calls, previousCalls + 1, 'existing ticket reused for ACTIVE');
+  assert.deepEqual(
+    await client.arcaCredential.findUniqueOrThrow({ where: { id: activeId } }),
+    activeBefore,
+  );
+  await checked(
+    await request('arca/credentials/generate', 'POST', {
+      operationId: row.generationOperationId,
+      expectedVersion: a.version - 1,
+      commonName: row.commonName,
+    }),
+    409,
+  );
+});
+
+test('Discard installed certificate removes all three files; shared references fail closed', async () => {
+  let a = await generate(await readiness());
+  const id = a.pendingCredentialId!,
+    activeId = a.activeCredentialId!;
+  let row = await client.arcaCredential.findUniqueOrThrow({ where: { id } });
+  const key = await storage.read(org, row.privateKeyStorageKey);
+  try {
+    const cert = await testCertificate(key);
+    a = arcaReadinessSchema.parse(
+      await checked(
+        await request(`arca/credentials/${id}/certificate`, 'POST', {
+          expectedVersion: row.version,
+          certificateBase64: cert.toString('base64'),
+        }),
+      ),
+    );
+  } finally {
+    key.fill(0);
+  }
+  row = await client.arcaCredential.findUniqueOrThrow({ where: { id } });
+  assert.equal(a.activeCredentialId, activeId);
+  const active = await client.arcaCredential.findUniqueOrThrow({ where: { id: activeId } });
+  // A legacy cross-column reference must not allow deletion of ACTIVE's key.
+  await client.arcaCredential.update({
+    where: { id },
+    data: { csrStorageKey: active.privateKeyStorageKey },
+  });
+  await checked(
+    await request(`arca/credentials/${id}/discard`, 'POST', { expectedVersion: row.version }),
+    409,
+  );
+  (await storage.read(org, active.privateKeyStorageKey)).fill(0);
+  await client.arcaCredential.update({ where: { id }, data: { csrStorageKey: row.csrStorageKey } });
+  a = arcaReadinessSchema.parse(
+    await checked(
+      await request(`arca/credentials/${id}/discard`, 'POST', { expectedVersion: row.version }),
+    ),
+  );
+  for (const reference of [row.privateKeyStorageKey, row.csrStorageKey, row.certificateStorageKey!])
+    await assert.rejects(storage.read(org, reference));
+  assert.equal(a.activeCredentialId, activeId);
+  assert.equal(a.certificateMatchesKey, true);
+});
+
 test('Rotation and rollback: no overwritten key, stale activation, failed transaction removes only new files', async () => {
   let a = await readiness();
   const old = a.activeCredentialId!;
@@ -452,6 +612,19 @@ test('Rotation and rollback: no overwritten key, stale activation, failed transa
         }),
       ),
     );
+    assert.equal(a.activeCredentialId, old, 'installing B must not change ACTIVE A');
+    assert.equal(a.certificateMatchesKey, true);
+    failAudit = true;
+    await checked(
+      await request(`arca/credentials/${next}/activate`, 'POST', {
+        expectedVersion: 2,
+        expectedConfigVersion: a.version,
+      }),
+      500,
+    );
+    failAudit = false;
+    assert.equal((await readiness()).activeCredentialId, old, 'activation rolls back atomically');
+    (await storage.read(org, oldRow.privateKeyStorageKey)).fill(0);
     await checked(
       await request(`arca/credentials/${next}/activate`, 'POST', {
         expectedVersion: 1,
@@ -469,12 +642,23 @@ test('Rotation and rollback: no overwritten key, stale activation, failed transa
     );
     assert.equal(a.activeCredentialId, next);
     assert.equal(a.credentials.find((c) => c.id === old)?.status, 'REPLACED');
+    assert.ok(a.credentials.find((c) => c.id === old)?.replacedAt);
+    assert.ok(a.credentials.find((c) => c.id === old)?.secretsDeletedAt);
+    for (const reference of [
+      oldRow.privateKeyStorageKey,
+      oldRow.csrStorageKey,
+      oldRow.certificateStorageKey!,
+    ])
+      await assert.rejects(storage.read(org, reference));
     assert.equal(
       await client.arcaCredential.count({ where: { organizationId: org, status: 'ACTIVE' } }),
       1,
     );
     await assert.rejects(
-      client.arcaCredential.update({ where: { id: old }, data: { status: 'ACTIVE' } }),
+      client.arcaCredential.update({
+        where: { id: old },
+        data: { status: 'ACTIVE', secretsDeletedAt: null },
+      }),
     );
   } finally {
     key.fill(0);
@@ -482,4 +666,139 @@ test('Rotation and rollback: no overwritten key, stale activation, failed transa
   assert.equal(await client.invoice.count(), 0);
   assert.equal(await client.inventoryMovement.count(), 0);
   assert.equal(await client.deliveryNote.count(), 0);
+});
+
+test('Concurrent discard / activation has one winner and never removes the winning ACTIVE files', async () => {
+  let a = await generate(await readiness());
+  const id = a.pendingCredentialId!;
+  const row = await client.arcaCredential.findUniqueOrThrow({ where: { id } });
+  const key = await storage.read(org, row.privateKeyStorageKey);
+  try {
+    a = arcaReadinessSchema.parse(
+      await checked(
+        await request(`arca/credentials/${id}/certificate`, 'POST', {
+          expectedVersion: row.version,
+          certificateBase64: (await testCertificate(key)).toString('base64'),
+        }),
+      ),
+    );
+  } finally {
+    key.fill(0);
+  }
+  const results = await Promise.all([
+    request(`arca/credentials/${id}/activate`, 'POST', {
+      expectedVersion: 2,
+      expectedConfigVersion: a.version,
+    }),
+    request(`arca/credentials/${id}/discard`, 'POST', { expectedVersion: 2 }),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  const active = await client.arcaCredential.findMany({
+    where: { organizationId: org, status: 'ACTIVE' },
+  });
+  assert.equal(active.length, 1);
+  assert.equal(active[0]!.secretsDeletedAt, null);
+  (await storage.read(org, active[0]!.privateKeyStorageKey)).fill(0);
+  assert.ok(await storage.read(org, active[0]!.certificateStorageKey!));
+  assert.equal((await readiness()).certificateMatchesKey, true);
+});
+
+test('Late WSAA response for replaced A cannot overwrite readiness for new ACTIVE B', async () => {
+  let a = await generate(await readiness());
+  const old = a.activeCredentialId!,
+    id = a.pendingCredentialId!;
+  const row = await client.arcaCredential.findUniqueOrThrow({ where: { id } });
+  const key = await storage.read(org, row.privateKeyStorageKey);
+  try {
+    a = arcaReadinessSchema.parse(
+      await checked(
+        await request(`arca/credentials/${id}/certificate`, 'POST', {
+          expectedVersion: row.version,
+          certificateBase64: (await testCertificate(key)).toString('base64'),
+        }),
+      ),
+    );
+  } finally {
+    key.fill(0);
+  }
+  app.get(ArcaTicketProvider).invalidate(org);
+  await client.arcaIntegrationConfig.update({
+    where: { organizationId: org },
+    data: { authBlockedUntil: null },
+  });
+  let release: () => void = () => {};
+  let entered: () => void = () => {};
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  wsaaGate = {
+    entered,
+    wait: new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  };
+  const flight = request('arca/wsaa/test', 'POST', {});
+  try {
+    await waiting;
+    a = arcaReadinessSchema.parse(
+      await checked(
+        await request(`arca/credentials/${id}/activate`, 'POST', {
+          expectedVersion: 2,
+          expectedConfigVersion: a.version,
+        }),
+      ),
+    );
+    assert.equal(a.activeCredentialId, id);
+    const reservation = await client.arcaIntegrationConfig.findUniqueOrThrow({
+      where: { organizationId: org },
+    });
+    release();
+    await checked(await flight, 409);
+    const config = await client.arcaIntegrationConfig.findUniqueOrThrow({
+      where: { organizationId: org },
+    });
+    assert.equal(config.lastResultCode, null);
+    assert.deepEqual(config.authBlockedUntil, reservation.authBlockedUntil);
+    assert.equal((await readiness()).lastVerifiedAt, null);
+    assert.equal(
+      (await client.arcaCredential.findUniqueOrThrow({ where: { id: old } })).status,
+      'REPLACED',
+    );
+  } finally {
+    release();
+    wsaaGate = undefined;
+  }
+});
+
+test('Corrupt multiple ACTIVE rows fail closed in readiness and WSAA; no CMS or WSAA call', async () => {
+  const old = await client.arcaCredential.findFirstOrThrow({
+    where: { organizationId: org, status: 'REPLACED', certificateStorageKey: { not: null } },
+  });
+  const previousCalls = calls,
+    previousSignatures = signedFingerprints.length;
+  // Only this disposable test DB. Simulate a restore without its partial unique index.
+  await client.$executeRawUnsafe('DROP INDEX arca_one_active');
+  try {
+    await client.arcaCredential.update({
+      where: { id: old.id },
+      data: { status: 'ACTIVE', secretsDeletedAt: null },
+    });
+    for (const [path, method, body] of [
+      ['arca/readiness', 'GET', undefined],
+      ['arca/wsaa/test', 'POST', {}],
+    ] as const) {
+      const response = await checked(await request(path, method, body), 409);
+      assert.match(JSON.stringify(response), /inconsistente/);
+    }
+    assert.equal(calls, previousCalls);
+    assert.equal(signedFingerprints.length, previousSignatures);
+  } finally {
+    await client.arcaCredential.update({
+      where: { id: old.id },
+      data: { status: old.status, secretsDeletedAt: old.secretsDeletedAt },
+    });
+    await client.$executeRawUnsafe(
+      `CREATE UNIQUE INDEX arca_one_active ON "ArcaCredential" ("organizationId", "environment") WHERE status = 'ACTIVE'`,
+    );
+  }
 });

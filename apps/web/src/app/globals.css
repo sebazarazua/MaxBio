@@ -1492,6 +1492,53 @@ main:has(.geometry-workspace) {
   border-radius: 12px;
   background: #edf0ef;
 }
+.arca-overview {
+  border: 1px solid #c8d4cf;
+  border-radius: 10px;
+  background: #f5f8f6;
+  padding: 20px;
+  margin-block: 16px;
+}
+.arca-connected {
+  border-color: #77a98e;
+  background: #eff8f1;
+}
+.arca-connection-state {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin-top: 0;
+}
+.arca-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+}
+.arca-facts dt {
+  color: #475d53;
+  font-size: 0.9rem;
+}
+.arca-facts dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+.arca-secondary {
+  border-top: 1px solid #d8e1dc;
+  padding-block: 16px;
+}
+.arca-secondary > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.arca-settings button {
+  margin: 6px 8px 6px 0;
+}
+.arca-history-item {
+  padding-block: 8px;
+  border-bottom: 1px solid #e1e7e3;
+}
+.arca-settings p {
+  overflow-wrap: anywhere;
+}
 .remito-expanded-dialog::backdrop {
   background: #102820c9;
 }

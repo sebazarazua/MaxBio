@@ -79,8 +79,15 @@ export class LocalPrivateCredentialStorage implements PrivateCredentialStorage {
   }
   async remove(org: string, key: string) {
     const target = this.path(org, key);
-    await this.directory(org, false);
-    if ((await lstat(target)).isSymbolicLink()) throw new Error('Invalid credential file');
-    await unlink(target);
+    try {
+      await this.directory(org, false);
+      const stat = await lstat(target);
+      if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('Invalid credential file');
+      await unlink(target);
+    } catch (e) {
+      // A retry after a partial deletion (including an absent tenant directory) is safe.
+      if (!(typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT'))
+        throw new Error('Credential removal unavailable');
+    }
   }
 }

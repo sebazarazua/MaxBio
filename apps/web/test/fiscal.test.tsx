@@ -43,6 +43,8 @@ function readiness(extra: Partial<ArcaReadiness> = {}): ArcaReadiness {
     version: 0,
     fiscalProfile: 'INCOMPLETE',
     cuitValid: false,
+    cuit: null,
+    lastVerifiedAt: null,
     openssl: 'AVAILABLE',
     privateKey: false,
     csr: false,
@@ -89,6 +91,152 @@ const button = (host: HTMLElement, text: string) => {
   assert.ok(b, text);
   return b;
 };
+const credential = (
+  extra: Partial<ArcaReadiness['credentials'][number]> = {},
+): ArcaReadiness['credentials'][number] => ({
+  id,
+  commonName: 'MaxBio Homologacion',
+  status: 'ACTIVE',
+  version: 3,
+  createdAt: '2026-10-27T20:36:36.542Z',
+  replacedAt: null,
+  discardedAt: null,
+  secretsDeletedAt: null,
+  fingerprint: 'PUBLIC_FINGERPRINT',
+  serial: '123',
+  subject: 'CN=Test',
+  issuer: 'CN=Computadores Test\nO=AFIP\nC=AR',
+  validFrom: '2026-10-28T16:03:37.000Z',
+  validTo: '2028-10-27T16:03:37.000Z',
+  certificateState: 'VALID',
+  ...extra,
+});
+
+test('ARCA overview shows active connection and 2028 expiry; pending/history and advanced actions stay collapsed', async () => {
+  const pendingId = '00000000-0000-4000-8000-000000000002';
+  const a = readiness({
+    cuit: '27110247244',
+    cuitValid: true,
+    fiscalProfile: 'COMPLETE',
+    certificateMatchesKey: true,
+    activeCredentialId: id,
+    pendingCredentialId: pendingId,
+    lastVerifiedAt: '2026-10-28T18:29:47.130Z',
+    credentials: [
+      credential({ id: pendingId, status: 'CSR_READY', commonName: 'New request' }),
+      credential(),
+      credential({
+        id: '00000000-0000-4000-8000-000000000003',
+        status: 'REPLACED',
+        commonName: 'Old request',
+        secretsDeletedAt: '2026-10-28T19:00:00.000Z',
+      }),
+    ],
+  });
+  const ui = await mount(<ArcaConnection arca={a} changed={() => {}} />);
+  try {
+    const overview = ui.host.querySelector('.arca-overview')!;
+    assert.match(overview.textContent!, /ARCA conectado/);
+    assert.match(overview.textContent!, /27-11024724-4/);
+    assert.match(overview.textContent!, /27\/10\/2028/);
+    assert.match(overview.textContent!, /Última verificación exitosa/);
+    assert.doesNotMatch(
+      overview.textContent!,
+      /New request|Old request|CSR_READY|REPLACED|00000000/,
+    );
+    for (const details of ui.host.querySelectorAll('details')) assert.equal(details.open, false);
+    assert.match(
+      ui.host.querySelector('[aria-labelledby=arca-active-title]')!.textContent!,
+      /Computadores Test.*AFIP/,
+    );
+    assert.equal(ui.host.querySelectorAll('input[type=file]').length, 1);
+  } finally {
+    await ui.close();
+  }
+});
+
+test('Discard UI requires explicit confirmation, uses pending id/version and preserves active overview', async () => {
+  const pendingId = '00000000-0000-4000-8000-000000000002';
+  const a = readiness({
+    activeCredentialId: id,
+    pendingCredentialId: pendingId,
+    credentials: [credential(), credential({ id: pendingId, status: 'CSR_READY', version: 1 })],
+  });
+  const requests: { path: string; body: unknown }[] = [];
+  let next: ArcaReadiness | undefined;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ path: String(url), body: JSON.parse(String(init?.body)) });
+    return Response.json({
+      ...a,
+      pendingCredentialId: null,
+      credentials: [
+        credential(),
+        credential({
+          id: pendingId,
+          status: 'DISCARDED',
+          discardedAt: '2026-10-28T19:00:00.000Z',
+          secretsDeletedAt: '2026-10-28T19:00:00.000Z',
+        }),
+      ],
+    });
+  };
+  const ui = await mount(
+    <ArcaConnection
+      arca={a}
+      changed={(value) => {
+        next = value;
+      }}
+    />,
+  );
+  try {
+    await act(async () => button(ui.host, 'Descartar solicitud').click());
+    assert.equal(requests.length, 0);
+    assert.match(ui.host.textContent!, /La credencial activa se conserva/);
+    await act(async () => button(ui.host, 'Conservar solicitud').click());
+    assert.equal(requests.length, 0);
+    await act(async () => button(ui.host, 'Descartar solicitud').click());
+    await act(async () => {
+      button(ui.host, 'Confirmar descarte').click();
+      button(ui.host, 'Confirmar descarte').click();
+    });
+    assert.deepEqual(requests, [
+      { path: `/api/fiscal/arca/credentials/${pendingId}/discard`, body: { expectedVersion: 1 } },
+    ]);
+    assert.equal(next?.activeCredentialId, id);
+    assert.equal(next?.pendingCredentialId, null);
+    assert.match(ui.host.textContent!, /Solicitud descartada/);
+  } finally {
+    await ui.close();
+  }
+});
+
+test('Discard BFF enforces CSRF, tenant-free strict body and safe response contract', async () => {
+  process.env.API_BASE_URL = 'http://127.0.0.1:3001';
+  process.env.WEB_ORIGIN = 'http://localhost:3000';
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    calls++;
+    assert.equal(String(url), `http://127.0.0.1:3001/api/v1/fiscal/arca/credentials/${id}/discard`);
+    return Response.json(readiness());
+  };
+  const post = (body: unknown, csrf = true) =>
+    proxyFiscal(
+      new Request(`http://localhost:3000/api/fiscal/arca/credentials/${id}/discard`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(csrf ? { Origin: 'http://localhost:3000', 'X-Maxbio-Csrf': '1' } : {}),
+        },
+        body: JSON.stringify(body),
+      }),
+      ['arca', 'credentials', id, 'discard'],
+    );
+  assert.equal((await post({ expectedVersion: 1 }, false)).status, 403);
+  assert.equal((await post({ expectedVersion: 1, organizationId: id })).status, 400);
+  assert.equal(calls, 0);
+  assert.equal((await post({ expectedVersion: 1 })).status, 200);
+  assert.equal(calls, 1);
+});
 test('Fiscal settings: operator has no configuration requests or credential controls', async () => {
   let calls = 0;
   globalThis.fetch = async () => {
@@ -150,6 +298,9 @@ test('ARCA UI: generate once, pending request, certificate activation, expiry, e
     status: 'CSR_READY' as const,
     version: 1,
     createdAt: '2026-10-27T10:00:00.000Z',
+    replacedAt: null,
+    discardedAt: null,
+    secretsDeletedAt: null,
     fingerprint: null,
     serial: null,
     subject: null,
@@ -194,7 +345,7 @@ test('ARCA UI: generate once, pending request, certificate activation, expiry, e
       ),
     );
     assert.match(ui.host.textContent!, /Solicitud creada/);
-    assert.ok(button(ui.host, 'Descargar archivo para ARCA'));
+    assert.ok(button(ui.host, 'Descargar CSR'));
     assert.ok(ui.host.querySelector('input[type=file]'));
     const installed = {
       ...pending,
