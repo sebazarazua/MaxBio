@@ -35,6 +35,7 @@ Object.assign(globalThis, {
 const { createRoot } = await import('react-dom/client');
 const { FiscalSettingsView, ArcaConnection } = await import('../src/components/fiscal/settings.js');
 const { proxyFiscal } = await import('../src/lib/server/fiscal-proxy.js');
+const { WsfeSettings } = await import('../src/components/fiscal/invoicing-settings.js');
 const id = '00000000-0000-4000-8000-000000000001';
 function readiness(extra: Partial<ArcaReadiness> = {}): ArcaReadiness {
   return arcaReadinessSchema.parse({
@@ -455,7 +456,11 @@ test('Fiscal settings: GET profile and readiness succeed, OpenSSL state is shown
   };
   const ui = await mount(<FiscalSettingsView isAdmin />);
   try {
-    assert.deepEqual(paths.sort(), ['/api/fiscal/arca/readiness', '/api/fiscal/profile']);
+    assert.deepEqual(paths.sort(), [
+      '/api/fiscal/arca/invoicing',
+      '/api/fiscal/arca/readiness',
+      '/api/fiscal/profile',
+    ]);
     assert.doesNotMatch(ui.host.textContent!, /Cargando configuración/);
     assert.match(ui.host.textContent!, /OpenSSL en el servidor: no disponible/);
     assert.match(ui.host.textContent!, /Revisá ARCA_OPENSSL_PATH/);
@@ -583,5 +588,72 @@ test('Fiscal BFF: distinguishes config, network, timeout, JSON and contract fail
   } finally {
     console.error = original;
     process.env.API_BASE_URL = 'http://127.0.0.1:3001';
+  }
+});
+
+test('V3 POS UI: source is ARCA, single point is proposed and requires explicit confirmation', async () => {
+  const cfg = {
+    environment: 'HOMOLOGATION',
+    version: 2,
+    pointOfSale: null,
+    checkedAt: '2026-10-28T18:00:00.000Z',
+    ready: false,
+    reasons: ['Elegí un punto de venta.'],
+    references: {
+      points: [23],
+      conditions: { A: [], B: [], C: [] },
+      documentTypes: [],
+      ivaTypes: [],
+    },
+  };
+  const writes: { url: string; body: unknown }[] = [];
+  globalThis.fetch = async (url, init) => {
+    if (init?.method === 'POST') {
+      writes.push({ url: String(url), body: JSON.parse(String(init.body)) });
+      return Response.json({ ...cfg, pointOfSale: 23, ready: true, reasons: [] });
+    }
+    return Response.json(cfg);
+  };
+  const ui = await mount(<WsfeSettings />);
+  try {
+    const select = ui.host.querySelector('select')!;
+    assert.equal(select.value, '23');
+    assert.equal(ui.host.querySelectorAll('input').length, 0);
+    assert.equal(writes.length, 0);
+    await act(async () => button(ui.host, 'Confirmar punto de venta de homologación').click());
+    assert.deepEqual(writes, [
+      {
+        url: '/api/fiscal/arca/invoicing/point-of-sale',
+        body: { expectedVersion: 2, pointOfSale: 23 },
+      },
+    ]);
+    assert.match(ui.host.textContent!, /Listo para emitir en homologación/);
+  } finally {
+    await ui.close();
+  }
+});
+test('V3 POS UI: no points gives a human ARCA setup message, no numeric input', async () => {
+  globalThis.fetch = async () =>
+    Response.json({
+      environment: 'HOMOLOGATION',
+      version: 0,
+      pointOfSale: null,
+      checkedAt: null,
+      ready: false,
+      reasons: [],
+      references: {
+        points: [],
+        conditions: { A: [], B: [], C: [] },
+        documentTypes: [],
+        ivaTypes: [],
+      },
+    });
+  const ui = await mount(<WsfeSettings />);
+  try {
+    assert.match(ui.host.textContent!, /No hay un punto de venta habilitado/);
+    assert.match(ui.host.textContent!, /Comprobantes en Línea/);
+    assert.equal(ui.host.querySelectorAll('input,select').length, 0);
+  } finally {
+    await ui.close();
   }
 });

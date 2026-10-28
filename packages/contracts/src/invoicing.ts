@@ -2,6 +2,12 @@ import { z } from 'zod';
 import { queryInteger, unitOfMeasureSchema, versionInputSchema } from './catalog.js';
 import { deliveryNoteCustomerSchema } from './delivery-notes.js';
 import { inventoryQuantitySchema } from './inventory.js';
+import {
+  invoiceFiscalSchema,
+  invoiceFiscalStatusSchema,
+  invoiceFiscalReceiverSchema,
+  invoiceFiscalReadinessSchema,
+} from './invoice-fiscal.js';
 
 // Facturación V1: factura comercial interna. READY = validada internamente y lista para
 // autorizar en una integración fiscal futura; nunca significa autorizada por ARCA.
@@ -224,6 +230,7 @@ export const invoiceSchema = z
   .object({
     id: z.uuidv4(),
     status: invoiceStatusSchema,
+    fiscal: invoiceFiscalSchema.optional(),
     version: z.number().int().positive(),
     invoiceType: invoiceTypeSchema.nullable(),
     issueDate: z.iso.date(),
@@ -288,6 +295,7 @@ export const invoiceListSchema = z
         .object({
           id: z.uuidv4(),
           status: invoiceStatusSchema,
+          fiscalStatus: invoiceFiscalStatusSchema.optional(),
           invoiceType: invoiceTypeSchema.nullable(),
           issueDate: z.iso.date(),
           customer: reference,
@@ -330,6 +338,14 @@ export function invoiceRouteContract(path: string, method: string) {
   }
   if (new RegExp(`^invoices/${id}/(ready|reopen)$`).test(path) && method === 'POST')
     return { body: invoiceTransitionSchema, query: null, response: invoiceSchema };
+  if (new RegExp(`^invoices/${id}/fiscal/readiness$`).test(path) && method === 'GET')
+    return { body: null, query: null, response: invoiceFiscalReadinessSchema };
+  if (new RegExp(`^invoices/${id}/fiscal/authorize$`).test(path) && method === 'POST')
+    return { body: invoiceTransitionSchema, query: null, response: invoiceSchema };
+  if (new RegExp(`^invoices/${id}/fiscal/receiver$`).test(path) && method === 'POST')
+    return { body: invoiceFiscalReceiverSchema, query: null, response: invoiceSchema };
+  if (new RegExp(`^invoices/${id}/fiscal/verify$`).test(path) && method === 'POST')
+    return { body: z.object({}).strict(), query: null, response: invoiceSchema };
   if (new RegExp(`^invoices/${id}/discard$`).test(path) && method === 'POST')
     return {
       body: versionInputSchema,

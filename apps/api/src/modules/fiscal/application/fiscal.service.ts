@@ -355,7 +355,7 @@ export class FiscalService {
                   : null,
           },
           trust: usable ? 'VERIFIED_BY_WSAA' : 'PENDING_WSAA',
-          wsfeImplemented: false,
+          wsfeImplemented: true,
           productionEnabled: false,
         });
       },
@@ -648,7 +648,8 @@ export class FiscalService {
     await this.purgeRetired(c, id);
     return this.readiness(c);
   }
-  async testConnection(c: RequestActorContext) {
+  // Server-only port: never exposed through a controller/contract.
+  async authenticate(c: RequestActorContext, recordTest = false) {
     this.admin(c);
     // Authorize every caller before it can join an in-flight authentication.
     const identity = await this.write(c, async (tx) => {
@@ -666,7 +667,7 @@ export class FiscalService {
       return active;
     });
     try {
-      await this.tickets.get(c.organizationId, identity.id, async () => {
+      const ticket = await this.tickets.get(c.organizationId, identity.id, async () => {
         const key = await this.storage.read(c.organizationId, identity.privateKeyStorageKey);
         try {
           const certificate = await this.storage.read(
@@ -759,27 +760,39 @@ export class FiscalService {
         const active = await this.active(tx, c.organizationId);
         if (active?.id !== identity.id || active.version !== identity.version)
           throw new ConflictException('La credencial cambió. Volvé a cargarla.');
-        await this.audit.success(c, 'ARCA_WSAA_TEST_SUCCEEDED', 'ArcaCredential', identity.id, tx);
+        if (recordTest)
+          await this.audit.success(
+            c,
+            'ARCA_WSAA_TEST_SUCCEEDED',
+            'ArcaCredential',
+            identity.id,
+            tx,
+          );
       });
+      return { ticket, cuit: identity.cuit, credentialId: identity.id };
     } catch (e) {
-      await this.write(c, async (tx) => {
-        await this.audit.append(
-          {
-            organizationId: c.organizationId,
-            actorUserId: c.userId,
-            sessionId: c.sessionId,
-            requestId: c.requestId,
-            action: 'ARCA_WSAA_TEST_FAILED',
-            resourceType: 'ArcaCredential',
-            resourceId: identity.id,
-            result: 'FAILURE',
-          },
-          tx,
-        );
-      });
+      if (recordTest)
+        await this.write(c, async (tx) => {
+          await this.audit.append(
+            {
+              organizationId: c.organizationId,
+              actorUserId: c.userId,
+              sessionId: c.sessionId,
+              requestId: c.requestId,
+              action: 'ARCA_WSAA_TEST_FAILED',
+              resourceType: 'ArcaCredential',
+              resourceId: identity.id,
+              result: 'FAILURE',
+            },
+            tx,
+          );
+        });
       if (e instanceof ArcaError) throw new BadRequestException(e.message);
       throw e;
     }
+  }
+  async testConnection(c: RequestActorContext) {
+    await this.authenticate(c, true);
     return this.readiness(c);
   }
 }

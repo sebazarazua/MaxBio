@@ -14,6 +14,7 @@ import {
 } from '@maxbio/contracts';
 import { fiscalFetch } from '../../lib/fiscal-api.ts';
 import { useWorkspace } from '../workspace.tsx';
+import { WsfeSettings } from './invoicing-settings.tsx';
 
 export function FiscalSettings() {
   const { isAdmin } = useWorkspace();
@@ -95,6 +96,9 @@ export function FiscalSettingsView({ isAdmin }: { isAdmin: boolean }) {
             profile={data.profile}
             saved={(p) => setData((d) => (d ? { ...d, profile: p } : d))}
             refresh={reload}
+          />
+          <WsfeSettings
+            key={`${revision}:${data.profile?.version ?? 0}:${data.arca.activeCredentialId}:${data.arca.access.status}`}
           />
         </>
       )}

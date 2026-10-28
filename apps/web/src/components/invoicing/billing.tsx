@@ -6,6 +6,7 @@ import {
   invoicePendingListSchema,
   invoiceSchema,
   invoiceStatusLabels,
+  invoiceFiscalStatusLabels,
   invoiceTypeLabels,
   type InvoiceList,
   type InvoicePendingList,
@@ -78,7 +79,8 @@ export function BillingView({
         </div>
       </header>
       <p className="catalog-notice">
-        Facturas internas de MaxBio. Todavía no se envían a ARCA: no tienen CAE ni validez fiscal.
+        Los borradores y las facturas sin autorizar no tienen CAE ni validez fiscal. Las
+        autorizaciones de homologación son de prueba y no tienen efecto fiscal real.
       </p>
       <div className="actions" role="tablist" aria-label="Secciones de facturación">
         <button
@@ -370,7 +372,9 @@ function Invoices() {
                     <td>{i.invoiceType ? invoiceTypeLabels[i.invoiceType] : 'Sin elegir'}</td>
                     <td>
                       <span className={'status-tag' + (i.status === 'DRAFT' ? ' archived' : '')}>
-                        {invoiceStatusLabels[i.status]}
+                        {i.fiscalStatus && i.fiscalStatus !== 'NOT_SUBMITTED'
+                          ? invoiceFiscalStatusLabels[i.fiscalStatus]
+                          : invoiceStatusLabels[i.status]}
                       </span>
                     </td>
                     <td>

@@ -64,6 +64,8 @@ model Organization {
   fiscalProfile OrganizationFiscalProfile?
   arcaConfiguration ArcaIntegrationConfig?
   arcaCredentials ArcaCredential[]
+  invoiceFiscalAttempts InvoiceFiscalAttempt[]
+  fiscalSequences FiscalSequence[]
 }
 
 // Identidad global. El rol y el acceso pertenecen a Membership.
@@ -182,6 +184,8 @@ model Customer {
   legalName        String?      @db.VarChar(200)
   cuit             String?      @db.VarChar(11)
   taxConditionText String?      @db.VarChar(80)
+  arcaVatConditionId Int?
+  arcaVatConditionLabel String? @db.VarChar(180)
   addressLine      String?      @db.VarChar(250)
   locality         String?      @db.VarChar(120)
   province         String?      @db.VarChar(100)
@@ -1184,6 +1188,9 @@ model Invoice {
   customerId String @db.Uuid
   customer Customer @relation(fields: [organizationId, customerId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
   status InvoiceStatus @default(DRAFT)
+  fiscalStatus InvoiceFiscalStatus @default(NOT_SUBMITTED)
+  receiverVatConditionId Int?
+  receiverVatConditionLabel String? @db.VarChar(180)
   version Int @default(1)
   invoiceType InvoiceType?
   issueDate DateTime @db.Date
@@ -1205,6 +1212,7 @@ model Invoice {
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
   lines InvoiceLine[]
   deliveryNotes InvoiceDeliveryNote[]
+  fiscalAttempts InvoiceFiscalAttempt[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, id, customerId], map: "invoice_customer_scope")
@@ -1323,7 +1331,90 @@ model ArcaIntegrationConfig {
   lastTicketExpiresAt DateTime? @db.Timestamptz(3)
   lastObtainedAt DateTime? @db.Timestamptz(3)
   lastResultCode String? @db.VarChar(40)
+  pointOfSale Int?
+  pointOfSaleCuit String? @db.VarChar(11)
+  pointOfSaleValidatedAt DateTime? @db.Timestamptz(3)
+  wsfeReferences Json?
+  wsfeCheckedAt DateTime? @db.Timestamptz(3)
+  wsfeCuit String? @db.VarChar(11)
+  wsfeCredentialId String? @db.Uuid
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+enum InvoiceFiscalStatus {
+  NOT_SUBMITTED
+  AUTHORIZING
+  AUTHORIZED
+  REJECTED
+  UNCERTAIN
+  CONFLICT
+}
+
+enum InvoiceFiscalAttemptStatus {
+  PREPARING
+  AUTHORIZING
+  AUTHORIZED
+  REJECTED
+  UNCERTAIN
+  CONFLICT
+  NOT_FOUND
+  ABORTED
+}
+
+model InvoiceFiscalAttempt {
+  id String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  invoiceId String @db.Uuid
+  invoice Invoice @relation(fields: [organizationId, invoiceId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  ordinal Int
+  operationId String @db.Uuid
+  operationHash String @db.Char(64)
+  environment ArcaEnvironment @default(HOMOLOGATION)
+  issuerCuit String @db.VarChar(11)
+  pointOfSale Int
+  documentType Int
+  documentNumber Int?
+  status InvoiceFiscalAttemptStatus @default(PREPARING)
+  ownerId String @db.Uuid
+  leaseUntil DateTime @db.Timestamptz(3)
+  issuerSnapshot Json
+  payload Json
+  requestHash String? @db.Char(64)
+  result String? @db.Char(1)
+  messages Json @default("[]")
+  observations Json @default("[]")
+  events Json @default("[]")
+  cae String? @db.VarChar(14)
+  caeExpiration DateTime? @db.Date
+  authorizedAt DateTime? @db.Timestamptz(3)
+  sentAt DateTime? @db.Timestamptz(3)
+  completedAt DateTime? @db.Timestamptz(3)
+  verifiedAt DateTime? @db.Timestamptz(3)
+  reconciliation String? @db.VarChar(40)
+  notFoundChecks Int @default(0)
+  lastNotFoundAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, operationId])
+  @@unique([organizationId, invoiceId, ordinal])
+  @@index([organizationId, environment, pointOfSale, documentType, status])
+  blockedSequences FiscalSequence[]
+}
+
+model FiscalSequence {
+  organizationId String @db.Uuid
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  environment ArcaEnvironment @default(HOMOLOGATION)
+  pointOfSale Int
+  documentType Int
+  blockedAttemptId String? @db.Uuid
+  blockedAttempt InvoiceFiscalAttempt? @relation(fields: [organizationId, blockedAttemptId], references: [organizationId, id], onDelete: Restrict, onUpdate: Restrict)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([organizationId, environment, pointOfSale, documentType])
 }
 
 model ArcaCredential {

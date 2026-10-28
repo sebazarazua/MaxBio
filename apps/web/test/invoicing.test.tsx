@@ -47,6 +47,7 @@ const { BillingView } = await import('../src/components/invoicing/billing.js');
 const { InvoiceDetailView, readyProblem } =
   await import('../src/components/invoicing/invoice-detail.js');
 const { proxyInvoices } = await import('../src/lib/server/invoices-proxy.js');
+const { InvoiceFiscalPanel } = await import('../src/components/invoicing/fiscal-panel.js');
 
 const u = (n: number) => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
 const OSDE = { id: u(1), name: 'OSDE' };
@@ -533,4 +534,150 @@ test('BFF facturación: allowlist, CSRF, cuerpo estricto y respuesta validada', 
   globalThis.fetch = (async () =>
     Response.json({ ...invoice(), cae: '123' })) as unknown as typeof fetch;
   assert.equal((await call([u(50)])).status, 503);
+});
+
+const fiscalInvoice = (
+  status: NonNullable<InvoiceView['fiscal']>['status'] = 'NOT_SUBMITTED',
+): InvoiceView =>
+  invoiceSchema.parse({
+    ...priced('READY'),
+    fiscal: {
+      status,
+      receiverVatConditionId: 1,
+      receiverVatConditionLabel: 'Responsable Inscripto',
+      attempts:
+        status === 'NOT_SUBMITTED'
+          ? []
+          : [
+              {
+                id: u(91),
+                status,
+                pointOfSale: 23,
+                documentType: 1,
+                documentNumber: 1,
+                cae: status === 'AUTHORIZED' ? '74123456789012' : null,
+                caeExpiration: status === 'AUTHORIZED' ? '2026-11-07' : null,
+                authorizedAt: status === 'AUTHORIZED' ? '2026-10-28T18:00:00.000Z' : null,
+                createdAt: '2026-10-28T18:00:00.000Z',
+                sentAt: '2026-10-28T18:00:00.000Z',
+                completedAt: status === 'AUTHORIZED' ? '2026-10-28T18:00:01.000Z' : null,
+                verifiedAt: null,
+                messages: [],
+                observations:
+                  status === 'REJECTED' ? [{ code: '10016', message: 'Rechazo controlado' }] : [],
+                reconciliation: null,
+              },
+            ],
+    },
+  });
+test('V3 UI: explicit homologation confirmation, stable operation and no double submission', async () => {
+  let changed: InvoiceView | undefined;
+  serve((c) =>
+    c.url.endsWith('/readiness')
+      ? {
+          body: {
+            ready: true,
+            reasons: [],
+            pointOfSale: 23,
+            conditions: [{ id: 1, label: 'Responsable Inscripto' }],
+            receiverVatConditionId: 1,
+          },
+        }
+      : { body: fiscalInvoice('AUTHORIZED') },
+  );
+  await mount(
+    <InvoiceFiscalPanel
+      invoice={fiscalInvoice()}
+      isAdmin
+      changed={(i) => {
+        changed = i;
+      }}
+      reload={() => {}}
+    />,
+  );
+  await click(button('Autorizar en ARCA'));
+  assert.match(text(), /HOMOLOGACIÓN/);
+  assert.match(text(), /no tiene efecto fiscal real/);
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+  await act(async () => {
+    button('Confirmar autorización de prueba')!.click();
+    button('Confirmar autorización de prueba')!.click();
+  });
+  await settle();
+  const sends = calls.filter((c) => c.url.endsWith('/authorize'));
+  assert.equal(sends.length, 1);
+  assert.match((sends[0]!.body as { operationId: string }).operationId, /^[a-f0-9-]{36}$/);
+  assert.deepEqual(Object.keys(sends[0]!.body as object).sort(), [
+    'expectedVersion',
+    'operationId',
+  ]);
+  assert.equal(changed?.fiscal?.status, 'AUTHORIZED');
+});
+test('V3 UI: authorized shows CAE and verify; uncertain has no emission retry or edit controls; operator is read only', async () => {
+  serve(() => ({ body: fiscalInvoice('AUTHORIZED') }));
+  await mount(<InvoiceDetailView id={u(50)} isAdmin discarded={() => {}} />);
+  assert.match(text(), /Autorizada por ARCA/);
+  assert.match(text(), /74123456789012/);
+  assert.ok(button('Verificar en ARCA'));
+  assert.equal(button('Volver a borrador'), undefined);
+  assert.equal(button('Descartar borrador'), undefined);
+  assert.equal(button('Autorizar en ARCA'), undefined);
+  await act(async () => root?.unmount());
+  serve(() => ({ body: fiscalInvoice('UNCERTAIN') }));
+  await mount(<InvoiceDetailView id={u(50)} isAdmin discarded={() => {}} />);
+  assert.match(text(), /Estamos verificando si ARCA registró/);
+  assert.ok(button('Verificar con ARCA'));
+  assert.equal(button('Autorizar en ARCA'), undefined);
+  assert.equal(button('Volver a borrador'), undefined);
+  await act(async () => root?.unmount());
+  serve(() => ({ body: fiscalInvoice('AUTHORIZED') }));
+  await mount(<InvoiceDetailView id={u(50)} isAdmin={false} discarded={() => {}} />);
+  assert.equal(button('Verificar en ARCA'), undefined);
+  assert.equal(calls.length, 1);
+  assert.match(text(), /74123456789012/);
+});
+test('V3 UI: rejection explains ARCA code and offers explicit correction', async () => {
+  serve(() => ({ body: fiscalInvoice('REJECTED') }));
+  await mount(<InvoiceDetailView id={u(50)} isAdmin discarded={() => {}} />);
+  assert.match(text(), /No autorizada por ARCA/);
+  assert.match(text(), /10016: Rechazo controlado/);
+  assert.ok(button('Corregir factura'));
+  assert.equal(button('Autorizar en ARCA'), undefined);
+});
+test('V3 BFF: fiscal routes strict, no browser CAE/numbers/tenant and safe response', async () => {
+  process.env.API_BASE_URL = 'http://127.0.0.1:3001';
+  process.env.WEB_ORIGIN = 'http://localhost:3000';
+  let sends = 0;
+  globalThis.fetch = async () => {
+    sends++;
+    return Response.json(fiscalInvoice('AUTHORIZED'));
+  };
+  const post = (body: unknown, csrf = true) =>
+    proxyInvoices(
+      new Request(`http://localhost:3000/api/invoices/${u(50)}/fiscal/authorize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(csrf ? { Origin: 'http://localhost:3000', 'X-Maxbio-Csrf': '1' } : {}),
+        },
+        body: JSON.stringify(body),
+      }),
+      [u(50), 'fiscal', 'authorize'],
+    );
+  const body = { expectedVersion: 3, operationId: u(94) };
+  assert.equal((await post(body, false)).status, 403);
+  for (const extra of [
+    { cae: '74123456789012' },
+    { documentNumber: 1 },
+    { organizationId: u(1) },
+    { pointOfSale: 23 },
+    { totalAmount: '1.00' },
+  ])
+    assert.equal((await post({ ...body, ...extra })).status, 400);
+  assert.equal(sends, 0);
+  assert.equal((await post(body)).status, 200);
+  globalThis.fetch = async () => Response.json({ ...fiscalInvoice(), Token: 'TEST_SECRET' });
+  const rejected = await post(body);
+  assert.equal(rejected.status, 503);
+  assert.doesNotMatch(await rejected.text(), /TEST_SECRET/);
 });

@@ -93,7 +93,7 @@ export async function proxyInvoices(request: Request, parts: string[]) {
     const upstream = await fetch(url, {
       method: request.method,
       cache: 'no-store',
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(60000),
       headers: {
         ...(cookie ? { Cookie: cookie } : {}),
         ...(write

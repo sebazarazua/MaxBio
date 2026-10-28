@@ -34,13 +34,16 @@ type XmlNode = {
   attributes: Record<string, string>;
 };
 // Tiny bounded tree on the existing SAX parser. No DTD/entity resolution, recovery or arbitrary paths.
-export function parseWsaaXml(xml: string): XmlNode {
+export function parseWsaaXml(
+  xml: string,
+  limits = { bytes: 262144, nodes: 100, depth: 12 },
+): XmlNode {
   const invalid = (): never => {
     throw new ArcaError('INVALID_RESPONSE');
   };
   if (
     !xml ||
-    Buffer.byteLength(xml) > 262144 ||
+    Buffer.byteLength(xml) > limits.bytes ||
     /<!\s*(?:DOCTYPE|ENTITY)/i.test(xml) ||
     Array.from(xml).some((c) => c.charCodeAt(0) < 32 && ![9, 10, 13].includes(c.charCodeAt(0)))
   )
@@ -55,7 +58,7 @@ export function parseWsaaXml(xml: string): XmlNode {
     return decode(text);
   };
   parser.on('openTag', (rawName, attrs, decode) => {
-    if (++count > 100 || stack.length >= 12) invalid();
+    if (++count > limits.nodes || stack.length >= limits.depth) invalid();
     const attributes = Object.fromEntries(
       Object.entries(attrs()).map(([k, v]) => [k, decodeStrict(v, decode)]),
     );

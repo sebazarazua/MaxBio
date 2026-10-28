@@ -1,5 +1,10 @@
 # Facturación V2: perfil fiscal y WSAA de homologación
 
+Actualización V3 (28/10/2026): [Facturación WSFEv1](invoicing-v3-wsfev1.md) consume
+el nuevo puerto server-side `FiscalService.authenticate`, reutilizando ACTIVE y el TA
+existentes sin exponerlos a HTTP. Este documento conserva la descripción histórica V2;
+V3 agrega los métodos de negocio, configuración POS e intentos fiscales separados.
+
 Implementación del 27 de octubre de 2026 sobre `fe0a5a0c10c5d67eb8e174dca0986764b6835700`, rama `main`, working tree inicialmente limpio. No se hicieron commit ni push. [Procedimiento manual](arca-homologation-setup.md) y [reporte de verificación](arca-verification.md).
 
 ## Frontera

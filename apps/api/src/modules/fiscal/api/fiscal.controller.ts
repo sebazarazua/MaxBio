@@ -21,10 +21,12 @@ import {
   arcaDiscardSchema,
   arcaTestSchema,
   fiscalProfileUpdateSchema,
+  wsfeSelectPointSchema,
 } from '@maxbio/contracts';
 import type { AuthenticatedRequest } from '../../../common/auth/request-context.js';
 import { Roles } from '../../../common/auth/roles.decorator.js';
 import { FiscalService } from '../application/fiscal.service.js';
+import { WsfeConfigurationService } from '../application/wsfe-configuration.service.js';
 const uuid = new ParseUUIDPipe({ version: '4' });
 function parse<T>(schema: z.ZodType<T>, body: unknown) {
   const result = schema.safeParse(body);
@@ -42,7 +44,31 @@ function actor(r: AuthenticatedRequest) {
 @Controller('fiscal')
 @Roles('ADMIN')
 export class FiscalController {
-  constructor(@Inject(FiscalService) private readonly service: FiscalService) {}
+  constructor(
+    @Inject(FiscalService) private readonly service: FiscalService,
+    @Inject(WsfeConfigurationService) private readonly invoicing: WsfeConfigurationService,
+  ) {}
+  @Get('arca/invoicing') configuration(@Req() r: AuthenticatedRequest, @Query() q: unknown) {
+    emptyQuery(q);
+    return this.invoicing.get(actor(r));
+  }
+  @Post('arca/invoicing/refresh') @HttpCode(200) refreshReferences(
+    @Req() r: AuthenticatedRequest,
+    @Query() q: unknown,
+    @Body() b: unknown,
+  ) {
+    emptyQuery(q);
+    parse(arcaTestSchema, b);
+    return this.invoicing.refresh(actor(r));
+  }
+  @Post('arca/invoicing/point-of-sale') @HttpCode(200) selectPoint(
+    @Req() r: AuthenticatedRequest,
+    @Query() q: unknown,
+    @Body() b: unknown,
+  ) {
+    emptyQuery(q);
+    return this.invoicing.selectPoint(actor(r), parse(wsfeSelectPointSchema, b));
+  }
   @Get('profile') profile(@Req() r: AuthenticatedRequest, @Query() q: unknown) {
     emptyQuery(q);
     return this.service.getProfile(actor(r));

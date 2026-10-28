@@ -302,6 +302,7 @@ export class InvoicingService {
         items: rows.map((i) => ({
           id: i.id,
           status: i.status,
+          fiscalStatus: i.fiscalStatus,
           invoiceType: i.invoiceType,
           issueDate: i.issueDate.toISOString().slice(0, 10),
           customer:
@@ -571,6 +572,9 @@ export class InvoicingService {
           version: { increment: 1 },
           // Frozen commercial snapshot: later Customer edits never rewrite this invoice.
           customerSnapshot: customerView(i.customer),
+          receiverVatConditionId: i.receiverVatConditionId ?? i.customer.arcaVatConditionId,
+          receiverVatConditionLabel:
+            i.receiverVatConditionLabel ?? i.customer.arcaVatConditionLabel,
           readyAt: new Date(),
           readyByUserId: c.userId,
           readyByMembershipId: c.membershipId,
@@ -586,11 +590,16 @@ export class InvoicingService {
   async reopen(c: RequestActorContext, id: string, input: InvoiceTransition) {
     return this.transition(c, id, input, 'reopen', async (tx, i, digest) => {
       if (i.status !== 'READY') throw new ConflictException('Esta factura ya es un borrador.');
+      if (!['NOT_SUBMITTED', 'REJECTED'].includes(i.fiscalStatus))
+        throw new ConflictException(
+          'No se puede corregir una factura autorizada o con un resultado fiscal pendiente de verificar.',
+        );
       this.version(i, input.expectedVersion);
       await tx.invoice.update({
         where: { organizationId_id: { organizationId: c.organizationId, id: i.id } },
         data: {
           status: 'DRAFT',
+          fiscalStatus: 'NOT_SUBMITTED',
           version: { increment: 1 },
           customerSnapshot: DbNull,
           readyAt: null,
@@ -610,6 +619,10 @@ export class InvoicingService {
       const i = await this.lock(tx, c, id);
       this.draft(i);
       this.version(i, expectedVersion);
+      if (i.fiscalAttempts.length)
+        throw new ConflictException(
+          'Esta factura tiene historial fiscal y debe conservarse. Podés corregir su borrador.',
+        );
       const scope = { organizationId: c.organizationId, invoiceId: id };
       await tx.invoiceLine.deleteMany({ where: scope });
       await tx.invoiceDeliveryNote.deleteMany({ where: scope });

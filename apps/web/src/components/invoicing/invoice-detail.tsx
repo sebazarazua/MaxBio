@@ -25,6 +25,7 @@ import {
   parseMoneyInput,
 } from '../../lib/invoicing.ts';
 import { Feedback, Field, useMutation } from '../catalog/common.tsx';
+import { InvoiceFiscalPanel } from './fiscal-panel.tsx';
 
 type Draft = {
   invoiceType: InvoiceView['invoiceType'];
@@ -104,7 +105,11 @@ export function InvoiceDetailView({
         <div>
           <p className="eyebrow">Facturación</p>
           <h1>
-            {invoice?.status === 'READY' ? 'Factura lista para autorizar' : 'Borrador de factura'}
+            {invoice?.fiscal?.status === 'AUTHORIZED'
+              ? 'Factura autorizada en homologación'
+              : invoice?.status === 'READY'
+                ? 'Factura lista para autorizar'
+                : 'Borrador de factura'}
           </h1>
           {invoice && <p className="muted">{internalReference(invoice.id)}</p>}
         </div>
@@ -230,15 +235,20 @@ function InvoiceBody({
   return (
     <>
       {i.status === 'READY' ? (
-        <p className="catalog-notice" role="status">
-          <strong>Lista para autorizar.</strong> Validada internamente en MaxBio. Todavía no fue
-          enviada ni autorizada por ARCA: no tiene CAE ni validez fiscal. Integración ARCA
-          pendiente.
-        </p>
+        i.fiscal ? null : (
+          <p className="catalog-notice" role="status">
+            <strong>Lista para autorizar.</strong> Validada internamente en MaxBio. Todavía no fue
+            enviada ni autorizada por ARCA: no tiene CAE ni validez fiscal. Integración ARCA
+            pendiente.
+          </p>
+        )
       ) : (
         <p className="catalog-notice">
           Borrador interno. Completá precio e IVA de cada línea y revisá los totales.
         </p>
+      )}
+      {i.fiscal && (
+        <InvoiceFiscalPanel invoice={i} isAdmin={isAdmin} changed={changed} reload={reload} />
       )}
       <section className="catalog-panel">
         <h2>Cliente</h2>
@@ -492,24 +502,31 @@ function InvoiceBody({
               </button>
             </>
           ) : (
-            <button type="button" className="text-button" onClick={() => setConfirmDiscard(true)}>
+            <button
+              type="button"
+              className="text-button"
+              hidden={Boolean(i.fiscal?.attempts.length)}
+              onClick={() => setConfirmDiscard(true)}
+            >
               Descartar borrador
             </button>
           )}
         </div>
       )}
-      {isAdmin && i.status === 'READY' && (
-        <div className="actions">
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={mutation.busy}
-            onClick={() => void transition('reopen')}
-          >
-            Volver a borrador
-          </button>
-        </div>
-      )}
+      {isAdmin &&
+        i.status === 'READY' &&
+        (!i.fiscal || ['NOT_SUBMITTED', 'REJECTED'].includes(i.fiscal.status)) && (
+          <div className="actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={mutation.busy}
+              onClick={() => void transition('reopen')}
+            >
+              {i.fiscal?.status === 'REJECTED' ? 'Corregir factura' : 'Volver a borrador'}
+            </button>
+          </div>
+        )}
       {!isAdmin && <p className="muted">Solo un administrador puede modificar facturas.</p>}
       <section className="catalog-panel">
         <h2>Historial</h2>

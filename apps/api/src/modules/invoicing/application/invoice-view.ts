@@ -1,7 +1,9 @@
 import type { Prisma } from '@maxbio/database';
+import { z } from 'zod';
 import {
   deliveryNoteCustomerSchema,
   invoiceHistoryActionSchema,
+  fiscalMessageSchema,
   type InvoiceView,
 } from '@maxbio/contracts';
 import { amount, quantity } from '../../inventory/domain/quantity.js';
@@ -26,6 +28,7 @@ export const invoiceInclude = {
     },
   },
   lines: { orderBy: { ordinal: 'asc' } },
+  fiscalAttempts: { orderBy: { ordinal: 'desc' }, take: 20 },
 } satisfies Prisma.InvoiceInclude;
 export type InvoiceRecord = Prisma.InvoiceGetPayload<{ include: typeof invoiceInclude }>;
 type History = InvoiceView['history'];
@@ -63,6 +66,28 @@ export function invoiceView(i: InvoiceRecord, history: History, replayed = false
   return {
     id: i.id,
     status: i.status,
+    fiscal: {
+      status: i.fiscalStatus,
+      receiverVatConditionId: i.receiverVatConditionId,
+      receiverVatConditionLabel: i.receiverVatConditionLabel,
+      attempts: i.fiscalAttempts.map((a) => ({
+        id: a.id,
+        status: a.status,
+        pointOfSale: a.pointOfSale,
+        documentType: a.documentType,
+        documentNumber: a.documentNumber,
+        cae: a.cae,
+        caeExpiration: a.caeExpiration ? day(a.caeExpiration) : null,
+        authorizedAt: a.authorizedAt?.toISOString() ?? null,
+        createdAt: a.createdAt.toISOString(),
+        sentAt: a.sentAt?.toISOString() ?? null,
+        completedAt: a.completedAt?.toISOString() ?? null,
+        verifiedAt: a.verifiedAt?.toISOString() ?? null,
+        messages: fiscalMessages(a.messages),
+        observations: fiscalMessages(a.observations),
+        reconciliation: a.reconciliation,
+      })),
+    },
     version: i.version,
     invoiceType: i.invoiceType,
     issueDate: day(i.issueDate),
@@ -104,4 +129,7 @@ export function invoiceView(i: InvoiceRecord, history: History, replayed = false
     })),
     history,
   };
+}
+function fiscalMessages(value: Prisma.JsonValue) {
+  return z.array(fiscalMessageSchema).parse(value);
 }

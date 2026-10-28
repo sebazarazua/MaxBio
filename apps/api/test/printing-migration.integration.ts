@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, cp, writeFile, rm } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { createDatabaseClient } from '@maxbio/database';
+import { connectedTestDatabaseManagement } from './test-database-management.js';
 
 test(
   'Printing migration: upgrade desde HEAD, from zero, status, drift y guards SQL',
@@ -25,7 +26,7 @@ test(
       "import {defineConfig} from 'prisma/config';export default defineConfig({schema:'schema.prisma',migrations:{path:'migrations'},datasource:{url:process.env.DATABASE_URL}});",
     );
     const names = (await readdir(source)).filter((n) => /^\d+_/.test(n)).sort();
-    const parent = createDatabaseClient(process.env.DATABASE_URL!),
+    const parent = await connectedTestDatabaseManagement(process.env.DATABASE_URL!),
       created: string[] = [];
     function cli(url: string, args: string[]) {
       return execFileSync(
@@ -41,7 +42,7 @@ test(
       for (const mode of ['upgrade', 'empty']) {
         const name = 'maxbio_print_migration_' + randomUUID().replaceAll('-', '');
         assert.match(name, /^maxbio_print_migration_[a-f0-9]{32}$/);
-        await parent.$executeRawUnsafe('CREATE DATABASE "' + name + '"');
+        await parent.query('CREATE DATABASE "' + name + '"');
         created.push(name);
         const url = new URL(process.env.DATABASE_URL!);
         url.pathname = '/' + name;
@@ -57,6 +58,7 @@ test(
               data: { name: 'HEAD printing upgrade', slug: randomUUID() },
             });
             await client.customer.create({
+              select: { id: true },
               data: { organizationId: org.id, name: 'Cliente anterior', kind: 'COMPANY' },
             });
             await client.product.create({
@@ -179,9 +181,9 @@ test(
     } finally {
       for (const name of created) {
         assert.match(name, /^maxbio_print_migration_[a-f0-9]{32}$/);
-        await parent.$executeRawUnsafe('DROP DATABASE IF EXISTS "' + name + '" WITH (FORCE)');
+        await parent.query('DROP DATABASE IF EXISTS "' + name + '" WITH (FORCE)');
       }
-      await parent.$disconnect();
+      await parent.end();
       assert.ok(resolve(temp).startsWith(resolve(cache) + sep));
       await rm(temp, { recursive: true, force: true });
     }

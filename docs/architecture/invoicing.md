@@ -1,5 +1,11 @@
 # Facturación V1 — modelo interno
 
+Actualización V3 (28/10/2026): [WSFEv1 de homologación](invoicing-v3-wsfev1.md)
+agrega autorización CAE, rechazos, consulta y reconciliación con intentos persistidos y
+reserva durable de secuencia. DRAFT/READY siguen siendo estados comerciales; el estado
+fiscal es independiente. El resto de este documento describe la base histórica V1;
+las reglas vigentes de emisión y sus límites están en el documento V3.
+
 Actualización V2 (27/10/2026): se implementaron [perfil fiscal, credenciales y WSAA de homologación](arca.md) en un módulo separado. [Configuración y pasos humanos WSASS](arca-homologation-setup.md). No cambia el dominio V1 descrito debajo ni sus reglas DRAFT/READY; completar ARCA no es requisito para crear/editar/marcar READY. V2 no emite comprobantes, no obtiene CAE y no implementa WSFEv1, punto de venta, numeración fiscal, PDF ni producción. La verificación real WSAA queda pendiente de certificado y autorización.
 
 Fecha: 27 de octubre de 2026. Base: HEAD `b992acb509a757ec8acb12b31b7bae78b72260a0` (`main`, Trazabilidad), árbol limpio. Migración nueva `20261027120000_invoicing_v1`. Sin dependencias nuevas. Sin commit ni push.
@@ -118,6 +124,8 @@ Facturación no lee ni escribe InventoryBalance, InventoryMovement, allocations 
 ## Versiones fiscales
 
 - **V2 implementada:** perfil fiscal del emisor, credenciales y autenticación WSAA de homologación; smoke real pendiente de certificado/autorización WSASS.
-- **V3:** WSFEv1, punto de venta, numeración y CAE (estados fiscales y campos ARCA).
+- **V3 implementada:** WSFEv1 de homologación, POS desde ARCA, numeración consultada,
+  CAE/rechazos, incertidumbre y reconciliación. Ver diseño, QA y pruebas reales en
+  [Facturación V3](invoicing-v3-wsfev1.md).
 - **V4:** PDF/comprobante fiscal.
 - **V5:** producción y hardening.

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { cuitSchema, validCuit } from './customers.js';
+import { wsfeConfigurationSchema, wsfeSelectPointSchema } from './invoice-fiscal.js';
 
 // Internal semantics, deliberately independent from ARCA's numeric catalogs.
 export const fiscalVatConditionSchema = z.enum([
@@ -144,7 +145,7 @@ export const arcaReadinessSchema = z
       })
       .strict(),
     trust: z.enum(['PENDING_WSAA', 'VERIFIED_BY_WSAA']),
-    wsfeImplemented: z.literal(false),
+    wsfeImplemented: z.boolean(),
     productionEnabled: z.literal(false),
   })
   .strict();
@@ -201,6 +202,12 @@ export type ArcaActivate = z.infer<typeof arcaActivateSchema>;
 export type ArcaDiscard = z.infer<typeof arcaDiscardSchema>;
 export function fiscalRouteContract(path: string, method: string) {
   const id = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}';
+  if (path === 'fiscal/arca/invoicing' && method === 'GET')
+    return { body: null, response: wsfeConfigurationSchema };
+  if (path === 'fiscal/arca/invoicing/refresh' && method === 'POST')
+    return { body: arcaTestSchema, response: wsfeConfigurationSchema };
+  if (path === 'fiscal/arca/invoicing/point-of-sale' && method === 'POST')
+    return { body: wsfeSelectPointSchema, response: wsfeConfigurationSchema };
   if (path === 'fiscal/profile' && method === 'GET')
     return { body: null, response: fiscalProfileResponseSchema };
   if (path === 'fiscal/profile' && method === 'PUT')
