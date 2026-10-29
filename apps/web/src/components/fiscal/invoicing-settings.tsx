@@ -30,11 +30,33 @@ export function WsfeSettings() {
     selected = selection ?? String(config?.pointOfSale ?? (points.length === 1 ? points[0] : ''));
   return (
     <section className="catalog-panel" aria-labelledby="wsfe-title">
-      <h2 id="wsfe-title">Facturación electrónica</h2>
+      <h2 id="wsfe-title">Facturación electrónica WSFE</h2>
       <p>
         Homologación. La conexión WSAA y la preparación para emitir comprobantes se verifican por
         separado.
       </p>
+      <p>Consultar referencias y confirmar un punto de venta no emite comprobantes.</p>
+      <details>
+        <summary>Secuencia segura de prueba</summary>
+        <ol>
+          <li>Probar WSAA desde Acceso temporal WSAA. No emite comprobantes.</li>
+          <li>
+            Consultar referencias WSFE: puntos de venta, condiciones IVA y tipos. No emite
+            comprobantes.
+          </li>
+          <li>
+            Confirmar un punto de venta de homologación informado por ARCA. No emite comprobantes.
+          </li>
+          <li>
+            Al preparar la autorización, MaxBio consulta el último comprobante autorizado. Esa
+            consulta no emite.
+          </li>
+          <li>
+            Solo Confirmar autorización de prueba envía el comprobante por Web Service y puede crear
+            un comprobante en homologación.
+          </li>
+        </ol>
+      </details>
       {!config && !error && <p role="status">Cargando requisitos de facturación…</p>}
       {error && (
         <>

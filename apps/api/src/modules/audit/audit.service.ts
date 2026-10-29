@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { Prisma } from '@maxbio/database';
 import { DatabaseService } from '../../infrastructure/database/database.service.js';
 import type { RequestActorContext } from '../../common/auth/request-context.js';
+import { arcaMessages, type ArcaErrorCode } from '../fiscal/arca/arca-errors.js';
 
 interface AuditInput {
   organizationId?: string | null;
@@ -13,6 +14,8 @@ interface AuditInput {
   result: 'SUCCESS' | 'FAILURE';
   requestId: string;
   metadata?: {
+    code?: ArcaErrorCode | 'SUCCESS' | 'IN_PROGRESS' | 'UNEXPECTED_ERROR';
+    retryAfter?: string;
     reason?: 'INVALID_CREDENTIALS';
     count?: number;
     supplierId?: string;
@@ -39,6 +42,23 @@ export class AuditService {
   append(event: AuditInput, tx: Prisma.TransactionClient = this.database.client) {
     // Allowlist explícita y acotada: no copiar DTO, headers ni objetos arbitrarios.
     const metadata: Record<string, string | number> = {};
+    if (event.action.startsWith('ARCA_WSAA_')) {
+      const code = event.metadata?.code;
+      if (code) {
+        if (
+          !(code in arcaMessages) &&
+          !['SUCCESS', 'IN_PROGRESS', 'UNEXPECTED_ERROR'].includes(code)
+        )
+          throw new Error('Invalid WSAA audit code');
+        metadata.code = code;
+      }
+      const retryAfter = event.metadata?.retryAfter;
+      if (retryAfter) {
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(retryAfter))
+          throw new Error('Invalid WSAA audit date');
+        metadata.retryAfter = retryAfter;
+      }
+    }
     if (event.metadata?.reason === 'INVALID_CREDENTIALS') metadata.reason = event.metadata.reason;
     if (event.metadata?.count !== undefined) {
       if (!Number.isSafeInteger(event.metadata.count) || event.metadata.count < 0)

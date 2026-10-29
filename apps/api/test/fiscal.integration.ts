@@ -22,7 +22,11 @@ import {
   CREDENTIAL_STORAGE,
   LocalPrivateCredentialStorage,
 } from '../src/modules/fiscal/infrastructure/private-credential-storage.js';
-import { ARCA_CLOCK, ArcaError } from '../src/modules/fiscal/arca/arca-errors.js';
+import {
+  ARCA_CLOCK,
+  ArcaError,
+  type ArcaErrorCode,
+} from '../src/modules/fiscal/arca/arca-errors.js';
 import { ArcaWsaaClient } from '../src/modules/fiscal/arca/wsaa-client.js';
 import { ArcaTicketProvider } from '../src/modules/fiscal/arca/ticket-provider.js';
 import { CMS_SIGNER } from '../src/modules/fiscal/arca/openssl-crypto.js';
@@ -48,6 +52,7 @@ let at = new Date(Date.now() + 10000),
   failAudit = false,
   wsaaIdentity: { cuit: string; commonName: string } | undefined;
 let failRemoveKey: string | undefined;
+let wsaaError: ArcaErrorCode | undefined;
 let wsaaGate: { entered: () => void; wait: Promise<void> } | undefined;
 const signedFingerprints: string[] = [];
 const cookies: string[] = [];
@@ -192,6 +197,7 @@ before(
           gate?.entered();
           await gate?.wait;
           if (failWsaa) throw new ArcaError('SERVICE_UNAUTHORIZED');
+          if (wsaaError) throw new ArcaError(wsaaError);
           return {
             token: 'SECRET_TEST_TOKEN',
             sign: 'SECRET_TEST_SIGN',
@@ -426,7 +432,13 @@ test('WSAA HTTP: 20 calls single flight, server-only tickets, restart reservatio
       events.some((e) => e.action === name),
       name,
     );
-  for (const e of events) assert.deepEqual(e.metadata, {});
+  for (const e of events) {
+    if (!e.action.startsWith('ARCA_WSAA_')) assert.deepEqual(e.metadata, {});
+    else
+      assert.ok(
+        Object.keys(e.metadata as object).every((key) => ['code', 'retryAfter'].includes(key)),
+      );
+  }
   assert.doesNotMatch(
     JSON.stringify(events),
     /SECRET_TEST|BEGIN PRIVATE|certificateBase64|rawSoap/,
@@ -801,4 +813,60 @@ test('Corrupt multiple ACTIVE rows fail closed in readiness and WSAA; no CMS or 
       `CREATE UNIQUE INDEX arca_one_active ON "ArcaCredential" ("organizationId", "environment") WHERE status = 'ACTIVE'`,
     );
   }
+});
+
+test('WSAA retry persistence, original error visibility, restart reservation and safe audit', async () => {
+  const activeId = (await readiness()).activeCredentialId!;
+  app.get(ArcaTicketProvider).invalidate(org);
+  for (const [code, long] of [
+    ['CLOCK_ERROR', false],
+    ['SERVICE_UNAUTHORIZED', false],
+    ['WSAA_UNAVAILABLE', false],
+    ['NETWORK_ERROR', true],
+    ['INVALID_RESPONSE', true],
+    ['TICKET_TIME_INVALID', true],
+    ['ALREADY_AUTHENTICATED', true],
+  ] as const) {
+    await client.arcaIntegrationConfig.update({
+      where: { organizationId: org },
+      data: { authBlockedUntil: null },
+    });
+    wsaaError = code;
+    const beforeCalls = calls;
+    await checked(await request('arca/wsaa/test', 'POST', {}), 400);
+    assert.equal(calls, beforeCalls + 1);
+    const config = await client.arcaIntegrationConfig.findUniqueOrThrow({
+      where: { organizationId: org },
+    });
+    assert.equal(config.lastResultCode, code);
+    assert.equal(config.authBlockedUntil!.getTime() - at.getTime(), long ? 43500000 : 60000);
+    const view = await readiness();
+    assert.equal(view.canTest, false);
+    assert.equal(view.access.lastResultCode, code);
+    assert.ok(view.access.lastError);
+    assert.ok(view.access.testBlockedReason);
+    assert.ok(view.access.lastAttemptAt);
+    await checked(await request('arca/wsaa/test', 'POST', {}), 400);
+    assert.equal(calls, beforeCalls + 1);
+    assert.equal((await readiness()).access.lastResultCode, code);
+    const audit = await client.auditEvent.findFirstOrThrow({
+      where: { resourceId: activeId, action: 'ARCA_WSAA_LOGIN_FAILED' },
+      orderBy: { createdAt: 'desc' },
+    });
+    assert.deepEqual(audit.metadata, { code });
+  }
+  wsaaError = undefined;
+  await client.arcaIntegrationConfig.update({
+    where: { organizationId: org },
+    data: { authBlockedUntil: null },
+  });
+  await checked(await request('arca/wsaa/test', 'POST', {}));
+  assert.equal((await readiness()).access.status, 'AUTHENTICATED');
+  app.get(ArcaTicketProvider).invalidate(org);
+  const afterRestart = await readiness();
+  assert.equal(afterRestart.access.status, 'WAITING');
+  assert.ok(afterRestart.lastVerifiedAt);
+  assert.equal(afterRestart.canTest, false);
+  assert.match(afterRestart.access.testBlockedReason!, /no está disponible en este proceso/);
+  assert.equal(await client.invoiceFiscalAttempt.count(), 0);
 });

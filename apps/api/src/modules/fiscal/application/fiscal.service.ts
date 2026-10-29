@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -36,6 +37,7 @@ import {
   TICKET_MARGIN_MS,
   UNCERTAIN_WINDOW_MS,
   WSAA_RETRY_MS,
+  wsaaRetryCategory,
   type ArcaClock,
   type ArcaErrorCode,
 } from '../arca/arca-errors.js';
@@ -85,6 +87,7 @@ export function certificateState(
 }
 @Injectable()
 export class FiscalService {
+  private readonly logger = new Logger(FiscalService.name);
   private readonly tra = new TraFactory();
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
@@ -266,6 +269,17 @@ export class FiscalService {
             })
           : null;
         const ticket = active ? this.tickets.peek(c.organizationId, active.id) : undefined;
+        const lastAttempt = active
+          ? await tx.auditEvent.findFirst({
+              where: {
+                organizationId: c.organizationId,
+                resourceId: active.id,
+                action: { in: ['ARCA_WSAA_LOGIN_STARTED', 'ARCA_WSAA_TEST_FAILED'] },
+              },
+              orderBy: { createdAt: 'desc' },
+              select: { createdAt: true },
+            })
+          : null;
         const now = this.clock.now(),
           complete = fiscalCompleteness(p) === 'COMPLETE';
         let filesValid = false;
@@ -300,6 +314,29 @@ export class FiscalService {
           config?.authBlockedUntil && config.authBlockedUntil > now && !usable,
         );
         const code = config?.lastResultCode as ArcaErrorCode | undefined;
+        const lastError =
+          code && code in arcaMessages && !['WAITING', 'EXPIRING_TICKET'].includes(code)
+            ? arcaMessages[code]
+            : code === 'WAITING' || code === ('IN_PROGRESS' as string)
+              ? 'No quedó registrado el resultado original del último intento. El proceso pudo interrumpirse; no se puede descartar que ARCA haya emitido un acceso.'
+              : null;
+        const testBlockedReason = waiting
+          ? code === ('SUCCESS' as string)
+            ? 'El acceso anterior sigue vigente en ARCA, pero no está disponible en este proceso. Hay que esperar su vencimiento.'
+            : code === 'ALREADY_AUTHENTICATED'
+              ? arcaMessages.ALREADY_AUTHENTICATED
+              : code &&
+                  code in arcaMessages &&
+                  ['CORRECTABLE', 'TRANSIENT'].includes(wsaaRetryCategory(code))
+                ? 'Hay una pausa mínima de seguridad. Corregí la causa informada antes de volver a probar.'
+                : 'El último intento quedó sin un acceso utilizable y pudo haber creado un TA. Se conserva la espera por seguridad.'
+          : !complete
+            ? 'Completá los datos fiscales del emisor.'
+            : !filesValid
+              ? 'Se requiere una credencial activa vigente y un certificado que corresponda a su clave.'
+              : !openssl && !usable
+                ? 'OpenSSL no está disponible en el servidor.'
+                : null;
         return arcaReadinessSchema.parse({
           environment: 'HOMOLOGATION',
           service: 'wsfe',
@@ -315,7 +352,7 @@ export class FiscalService {
             active?.certificateStorageKey || pending?.certificateStorageKey,
           ),
           certificateMatchesKey: filesValid,
-          canTest: Boolean(complete && filesValid && (!waiting || usable)),
+          canTest: Boolean(complete && filesValid && (openssl || usable) && (!waiting || usable)),
           activeCredentialId: active?.id ?? null,
           pendingCredentialId: pending?.id ?? null,
           credentials: records.map((r) => ({
@@ -336,9 +373,18 @@ export class FiscalService {
             certificateState: certificateState(r, now),
           })),
           access: {
+            lastResultCode: config?.lastResultCode ?? null,
+            lastAttemptAt: lastAttempt?.createdAt.toISOString() ?? null,
+            lastError,
+            testBlockedReason,
             status: usable
               ? 'AUTHENTICATED'
-              : waiting
+              : waiting &&
+                  !(
+                    code &&
+                    code in arcaMessages &&
+                    ['CORRECTABLE', 'TRANSIENT'].includes(wsaaRetryCategory(code))
+                  )
                 ? 'WAITING'
                 : code && code !== ('SUCCESS' as string)
                   ? 'ERROR'
@@ -347,7 +393,7 @@ export class FiscalService {
             expiresAt: config?.lastTicketExpiresAt?.toISOString() ?? null,
             retryAfter: waiting ? config!.authBlockedUntil!.toISOString() : null,
             message: usable
-              ? 'Conexión correcta con ARCA'
+              ? 'Acceso activo'
               : waiting
                 ? arcaMessages.WAITING
                 : code && code in arcaMessages
@@ -664,6 +710,15 @@ export class FiscalService {
       const state = certificateState(active, this.clock.now());
       if (state === 'EXPIRED') throw new ArcaError('CERTIFICATE_EXPIRED');
       if (state === 'INVALID') throw new ArcaError('CERTIFICATE_INVALID');
+      if (recordTest)
+        await this.audit.append(
+          {
+            ...this.auditContext(c, active.id),
+            action: 'ARCA_WSAA_TEST_STARTED',
+            result: 'SUCCESS',
+          },
+          tx,
+        );
       return active;
     });
     try {
@@ -700,9 +755,23 @@ export class FiscalService {
               where: { organizationId: c.organizationId },
               data: {
                 authBlockedUntil: new Date(this.clock.now().getTime() + UNCERTAIN_WINDOW_MS),
-                lastResultCode: 'WAITING',
+                lastResultCode: 'IN_PROGRESS',
               },
             });
+            await this.audit.append(
+              {
+                ...this.auditContext(c, identity.id),
+                action: 'ARCA_WSAA_LOGIN_STARTED',
+                result: 'SUCCESS',
+                metadata: { code: 'IN_PROGRESS' },
+              },
+              tx,
+            );
+          });
+          this.logger.log({
+            event: 'arca_wsaa_login_started',
+            requestId: c.requestId,
+            code: 'IN_PROGRESS',
           });
           try {
             const ticket = await this.wsaa.login(
@@ -710,6 +779,8 @@ export class FiscalService {
               { cuit: identity.cuit, commonName },
               this.clock.now(),
             );
+            if (ticket.expiresAt.getTime() - this.clock.now().getTime() <= TICKET_MARGIN_MS)
+              throw new ArcaError('TICKET_TIME_INVALID');
             await this.write(c, async (tx) => {
               const row = await this.credential(tx, c, identity.id);
               if (row.status !== 'ACTIVE' || row.version !== identity.version)
@@ -723,6 +794,20 @@ export class FiscalService {
                   lastResultCode: 'SUCCESS',
                 },
               });
+              await this.audit.append(
+                {
+                  ...this.auditContext(c, identity.id),
+                  action: 'ARCA_WSAA_LOGIN_SUCCEEDED',
+                  result: 'SUCCESS',
+                  metadata: { code: 'SUCCESS', retryAfter: ticket.expiresAt.toISOString() },
+                },
+                tx,
+              );
+            });
+            this.logger.log({
+              event: 'arca_wsaa_login_succeeded',
+              requestId: c.requestId,
+              code: 'SUCCESS',
             });
             return ticket;
           } catch (e) {
@@ -734,12 +819,8 @@ export class FiscalService {
               const row = await this.credential(tx, c, identity.id);
               if (row.status !== 'ACTIVE' || row.version !== identity.version) return;
               // Unknown delivery/response outcome stays blocked for the maximum TA lifetime.
-              const uncertain = [
-                'NETWORK_ERROR',
-                'INVALID_RESPONSE',
-                'CLOCK_ERROR',
-                'ALREADY_AUTHENTICATED',
-              ].includes(error.code);
+              const category = wsaaRetryCategory(error.code);
+              const uncertain = ['UNCERTAIN', 'EXISTING_TICKET', 'WAITING'].includes(category);
               await tx.arcaIntegrationConfig.update({
                 where: { organizationId: c.organizationId },
                 data: {
@@ -749,6 +830,21 @@ export class FiscalService {
                     : { authBlockedUntil: new Date(this.clock.now().getTime() + WSAA_RETRY_MS) }),
                 },
               });
+              await this.audit.append(
+                {
+                  ...this.auditContext(c, identity.id),
+                  action: 'ARCA_WSAA_LOGIN_FAILED',
+                  result: 'FAILURE',
+                  metadata: { code: error.code },
+                },
+                tx,
+              );
+            });
+            this.logger.warn({
+              event: 'arca_wsaa_login_failed',
+              requestId: c.requestId,
+              code: error.code,
+              category: wsaaRetryCategory(error.code),
             });
             throw error;
           }
@@ -773,6 +869,13 @@ export class FiscalService {
     } catch (e) {
       if (recordTest)
         await this.write(c, async (tx) => {
+          const config = await tx.arcaIntegrationConfig.findUnique({
+            where: { organizationId: c.organizationId },
+          });
+          // write() converts ArcaError to a public HTTP exception. Preserve the internal code
+          // for locally blocked calls without replacing the original login result in config.
+          const waiting = e instanceof BadRequestException && e.message === arcaMessages.WAITING;
+          const code = e instanceof ArcaError ? e.code : waiting ? 'WAITING' : 'UNEXPECTED_ERROR';
           await this.audit.append(
             {
               organizationId: c.organizationId,
@@ -783,13 +886,30 @@ export class FiscalService {
               resourceType: 'ArcaCredential',
               resourceId: identity.id,
               result: 'FAILURE',
+              metadata: {
+                code,
+                ...(config?.authBlockedUntil
+                  ? { retryAfter: config.authBlockedUntil.toISOString() }
+                  : {}),
+              },
             },
             tx,
           );
+          this.logger.warn({ event: 'arca_wsaa_test_failed', requestId: c.requestId, code });
         });
       if (e instanceof ArcaError) throw new BadRequestException(e.message);
       throw e;
     }
+  }
+  private auditContext(c: RequestActorContext, id: string) {
+    return {
+      organizationId: c.organizationId,
+      actorUserId: c.userId,
+      sessionId: c.sessionId,
+      requestId: c.requestId,
+      resourceType: 'ArcaCredential',
+      resourceId: id,
+    };
   }
   async testConnection(c: RequestActorContext) {
     await this.authenticate(c, true);

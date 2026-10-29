@@ -41,7 +41,7 @@ export class WsfeConfigurationService {
     if (readiness.access.status !== 'AUTHENTICATED')
       reasons.push(
         readiness.access.retryAfter
-          ? `El acceso WSAA debe renovarse después de ${new Date(readiness.access.retryAfter).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}.`
+          ? `El acceso WSAA debe renovarse después de ${new Date(readiness.access.retryAfter).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour12: false })} (Buenos Aires).`
           : 'Consultá ARCA para obtener acceso WSAA y las referencias de facturación.',
       );
     if (

@@ -61,12 +61,15 @@ export class ArcaWsaaClient {
       } finally {
         reader.releaseLock();
       }
-      const ticket = parseSoapTicket(
-        new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)),
-        identity,
-        now,
-      );
-      if (!response.ok) throw new ArcaError('WSAA_ERROR');
+      let xml: string;
+      try {
+        xml = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+      } catch {
+        throw new ArcaError('INVALID_RESPONSE');
+      }
+      const ticket = parseSoapTicket(xml, identity, now);
+      // A TA inside an unsuccessful HTTP response is not proof of a definitive rejection.
+      if (!response.ok) throw new ArcaError('INVALID_RESPONSE');
       return ticket;
     } catch (e) {
       if (e instanceof ArcaError) throw e;

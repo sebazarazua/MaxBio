@@ -246,7 +246,10 @@ function FiscalProfileForm({
 }
 const date = (v: string | null) =>
   v
-    ? new Date(v).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
+    ? new Date(v).toLocaleString('es-AR', {
+        timeZone: 'America/Argentina/Buenos_Aires',
+        hour12: false,
+      })
     : 'Pendiente';
 const day = (v: string | null) =>
   v
@@ -333,20 +336,20 @@ export function ArcaConnection({
     );
   }
   const valid = Boolean(active && ['VALID', 'EXPIRING_SOON'].includes(active.certificateState)),
-    connected =
+    verified =
       valid &&
       arca.certificateMatchesKey &&
       arca.fiscalProfile === 'COMPLETE' &&
-      Boolean(arca.lastVerifiedAt || arca.access.status === 'AUTHENTICATED') &&
-      arca.access.status !== 'ERROR',
+      Boolean(arca.lastVerifiedAt || arca.access.status === 'AUTHENTICATED'),
     history = arca.credentials.filter((c) => ['REPLACED', 'DISCARDED'].includes(c.status));
   return (
     <section className="catalog-panel arca-settings" aria-labelledby="arca-title">
       <h2 id="arca-title">ARCA</h2>
-      <div className={connected ? 'arca-overview arca-connected' : 'arca-overview'}>
+      <div className={verified ? 'arca-overview arca-connected' : 'arca-overview'}>
+        <h3>Credencial ARCA</h3>
         <p className="arca-connection-state" role="status">
-          {connected
-            ? '✓ ARCA conectado'
+          {verified
+            ? '✓ Credencial ARCA verificada'
             : active
               ? 'Conexión pendiente de verificar'
               : 'ARCA sin conectar'}
@@ -375,6 +378,28 @@ export function ArcaConnection({
             <dd>{arca.lastVerifiedAt ? date(arca.lastVerifiedAt) : 'Todavía no registrada'}</dd>
           </div>
         </dl>
+        <h3>Acceso temporal WSAA</h3>
+        <p role="status">
+          {arca.access.status === 'AUTHENTICATED'
+            ? '✓ Acceso activo'
+            : arca.access.status === 'WAITING'
+              ? 'Esperando vencimiento de un acceso anterior o de una reserva incierta'
+              : arca.access.status === 'ERROR'
+                ? 'Error de conexión'
+                : arca.lastVerifiedAt
+                  ? 'Pendiente de renovación'
+                  : 'Nunca verificado'}
+        </p>
+        {arca.access.obtainedAt && (
+          <p>Último acceso obtenido: {date(arca.access.obtainedAt)} (Buenos Aires).</p>
+        )}
+        {arca.access.expiresAt && (
+          <p>Vencimiento del acceso conocido: {date(arca.access.expiresAt)} (Buenos Aires).</p>
+        )}
+        {arca.access.lastError && <p role="alert">Último intento: {arca.access.lastError}</p>}
+        {arca.access.lastAttemptAt && (
+          <p>Fecha del último intento: {date(arca.access.lastAttemptAt)} (Buenos Aires).</p>
+        )}
         {active?.certificateState === 'EXPIRING_SOON' && (
           <p role="status">
             El certificado está próximo a vencer. Prepará su renovación desde Acciones avanzadas.
@@ -383,6 +408,7 @@ export function ArcaConnection({
         <button
           className="primary-button"
           disabled={busy || !arca.canTest}
+          aria-describedby={!arca.canTest ? 'arca-test-blocked' : undefined}
           onClick={() =>
             void run(async () => {
               changed(await fiscalFetch('arca/wsaa/test', arcaReadinessSchema, 'POST', {}));
@@ -392,6 +418,15 @@ export function ArcaConnection({
         >
           Probar conexión con ARCA
         </button>
+        {!arca.canTest && (
+          <p id="arca-test-blocked">
+            No se puede volver a probar todavía porque{' '}
+            {arca.access.testBlockedReason ?? 'faltan requisitos de la conexión.'}
+            {arca.access.retryAfter && (
+              <> Disponible nuevamente: {date(arca.access.retryAfter)} (Buenos Aires).</>
+            )}
+          </p>
+        )}
         {arca.access.message && arca.access.status === 'ERROR' && (
           <p role="alert">{arca.access.message}</p>
         )}
@@ -401,7 +436,7 @@ export function ArcaConnection({
             exitosa se conserva; el acceso temporal debe renovarse después de su vencimiento.
           </p>
         )}
-        {!connected && !arca.lastVerifiedAt && (
+        {!verified && !arca.lastVerifiedAt && (
           <p>Probá la conexión para verificar la aceptación del certificado por ARCA.</p>
         )}
       </div>

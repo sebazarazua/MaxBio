@@ -32,6 +32,7 @@ import { WsfeConfigurationService } from '../../fiscal/application/wsfe-configur
 import { requireFiscalAdmin } from '../../fiscal/application/fiscal-access.js';
 import {
   mapFiscalInvoice,
+  localFiscalReasons,
   fiscalClass,
   validateFiscalDate,
   sameFiscalInvoice,
@@ -127,7 +128,17 @@ export class InvoiceFiscalService {
     const p = await this.db.client.organizationFiscalProfile.findUnique({
       where: { organizationId: c.organizationId },
     });
-    if (cfg.references && cfg.pointOfSale && p && i.status === 'READY') {
+    const localReasons = localFiscalReasons(i, p, this.clock.now());
+    reasons.push(...localReasons);
+    if (fiscalCompleteness(p) !== 'COMPLETE')
+      reasons.push('Falta completar los datos fiscales del emisor.');
+    if (cfg.references && cls) {
+      if (i.receiverVatConditionId && !conditions.some((r) => r.id === i.receiverVatConditionId))
+        reasons.push(
+          'Elegí una condición IVA del receptor admitida por ARCA para este tipo de factura.',
+        );
+    }
+    if (cfg.references && cfg.pointOfSale && p && i.status === 'READY' && !localReasons.length) {
       try {
         mapFiscalInvoice(i, p, cfg.pointOfSale, cfg.references, this.clock.now());
       } catch (e) {
@@ -138,7 +149,7 @@ export class InvoiceFiscalService {
     }
     return {
       ready: reasons.length === 0,
-      reasons,
+      reasons: [...new Set(reasons)],
       pointOfSale: cfg.pointOfSale,
       conditions,
       receiverVatConditionId: i.receiverVatConditionId,

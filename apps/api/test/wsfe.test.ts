@@ -13,6 +13,7 @@ import {
 import type { InvoiceRecord } from '../src/modules/invoicing/application/invoice-view.js';
 import {
   mapFiscalInvoice,
+  localFiscalReasons,
   sameFiscalInvoice,
   validateFiscalDate,
 } from '../src/modules/invoicing/domain/fiscal-mapper.js';
@@ -202,6 +203,27 @@ const auth: WsfeAuth = {
   cuit: issuer.cuit,
 };
 const payload: WsfeInvoice = { ...mapFiscalInvoice(invoice(), issuer, 23, refs, now), number: 1 };
+
+test('Local invoice requirements are complete even without ARCA references/POS', () => {
+  const i = invoice();
+  i.customerSnapshot = { ...(i.customerSnapshot as object), cuit: null };
+  i.receiverVatConditionId = null;
+  i.invoiceType = null;
+  i.lines[0]!.unitPrice = null;
+  const reasons = localFiscalReasons(i, { cuit: null, vatCondition: null }, now);
+  for (const text of [
+    'CUIT del cliente',
+    'condición IVA del receptor',
+    'tipo de comprobante',
+    'CUIT del emisor',
+    'importes',
+  ])
+    assert.ok(
+      reasons.some((r) => r.includes(text)),
+      text,
+    );
+  assert.deepEqual(localFiscalReasons(invoice(), issuer, now), []);
+});
 const soap = (method: string, result: string) =>
   `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><${method}Response xmlns="${WSFE_NS}"><${method}Result>${result}</${method}Result></${method}Response></soap:Body></soap:Envelope>`;
 const detail = (i = payload) =>

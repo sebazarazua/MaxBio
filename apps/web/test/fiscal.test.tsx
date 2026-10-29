@@ -61,6 +61,10 @@ function readiness(extra: Partial<ArcaReadiness> = {}): ArcaReadiness {
       expiresAt: null,
       retryAfter: null,
       message: null,
+      lastResultCode: null,
+      lastAttemptAt: null,
+      lastError: null,
+      testBlockedReason: null,
     },
     trust: 'PENDING_WSAA',
     wsfeImplemented: false,
@@ -137,7 +141,7 @@ test('ARCA overview shows active connection and 2028 expiry; pending/history and
   const ui = await mount(<ArcaConnection arca={a} changed={() => {}} />);
   try {
     const overview = ui.host.querySelector('.arca-overview')!;
-    assert.match(overview.textContent!, /ARCA conectado/);
+    assert.match(overview.textContent!, /Credencial ARCA verificada/);
     assert.match(overview.textContent!, /27-11024724-4/);
     assert.match(overview.textContent!, /27\/10\/2028/);
     assert.match(overview.textContent!, /Última verificación exitosa/);
@@ -653,6 +657,59 @@ test('V3 POS UI: no points gives a human ARCA setup message, no numeric input', 
     assert.match(ui.host.textContent!, /No hay un punto de venta habilitado/);
     assert.match(ui.host.textContent!, /Comprobantes en Línea/);
     assert.equal(ui.host.querySelectorAll('input,select').length, 0);
+  } finally {
+    await ui.close();
+  }
+});
+
+test('Historical verification + WAITING preserves credential trust and explains missing live access and original error', async () => {
+  const base = readiness();
+  const a = readiness({
+    activeCredentialId: id,
+    credentials: [credential()],
+    fiscalProfile: 'COMPLETE',
+    certificateMatchesKey: true,
+    lastVerifiedAt: '2026-10-28T18:29:47.130Z',
+    access: {
+      ...base.access,
+      status: 'WAITING',
+      retryAfter: '2026-10-30T01:58:37.421Z',
+      lastResultCode: 'ALREADY_AUTHENTICATED',
+      lastError: 'ARCA informó que ya existe un acceso vigente.',
+      testBlockedReason: 'ARCA informó que ya existe un acceso vigente.',
+    },
+  });
+  const ui = await mount(<ArcaConnection arca={a} changed={() => {}} />);
+  try {
+    assert.match(ui.host.textContent!, /Credencial ARCA verificada/);
+    assert.match(ui.host.textContent!, /Esperando vencimiento/);
+    assert.match(ui.host.textContent!, /Último intento: ARCA informó/);
+    assert.doesNotMatch(ui.host.textContent!, /ARCA conectado|✓ Acceso activo/);
+    const testButton = button(ui.host, 'Probar conexión con ARCA');
+    assert.equal(testButton.disabled, true);
+    const reason = document.getElementById(testButton.getAttribute('aria-describedby')!)!;
+    assert.match(reason.textContent!, /acceso vigente.*29\/10\/2026.*22:58:37.*Buenos Aires/);
+  } finally {
+    await ui.close();
+  }
+});
+
+test('Valid active credential with an available TA shows active temporal access separately', async () => {
+  const base = readiness();
+  const a = readiness({
+    activeCredentialId: id,
+    credentials: [credential()],
+    fiscalProfile: 'COMPLETE',
+    certificateMatchesKey: true,
+    canTest: true,
+    access: { ...base.access, status: 'AUTHENTICATED', expiresAt: '2026-10-30T01:58:37.421Z' },
+  });
+  const ui = await mount(<ArcaConnection arca={a} changed={() => {}} />);
+  try {
+    assert.match(ui.host.textContent!, /Credencial ARCA verificada/);
+    assert.match(ui.host.textContent!, /✓ Acceso activo/);
+    assert.match(ui.host.textContent!, /Vencimiento del acceso conocido/);
+    assert.equal(button(ui.host, 'Probar conexión con ARCA').disabled, false);
   } finally {
     await ui.close();
   }

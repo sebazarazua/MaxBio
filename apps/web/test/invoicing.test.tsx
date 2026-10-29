@@ -598,6 +598,9 @@ test('V3 UI: explicit homologation confirmation, stable operation and no double 
   await click(button('Autorizar en ARCA'));
   assert.match(text(), /HOMOLOGACIÓN/);
   assert.match(text(), /no tiene efecto fiscal real/);
+  assert.match(text(), /directamente a ARCA mediante Web Service/);
+  assert.match(text(), /No se abrirá una página de ARCA/);
+  assert.match(text(), /Receptor:.*CUIT:.*Condición IVA:.*Neto:.*IVA:/);
   assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
   await act(async () => {
     button('Confirmar autorización de prueba')!.click();
@@ -613,6 +616,32 @@ test('V3 UI: explicit homologation confirmation, stable operation and no double 
   ]);
   assert.equal(changed?.fiscal?.status, 'AUTHORIZED');
 });
+test('V3 UI: recipient, references and POS blockers are visible together and prevent submission', async () => {
+  const reasons = [
+    'Falta completar el CUIT del cliente para autorizar esta factura en esta versión.',
+    'Falta indicar la condición IVA del receptor.',
+    'Consultá nuevamente las referencias de ARCA.',
+    'Elegí y confirmá un punto de venta habilitado por ARCA para CAE.',
+  ];
+  serve(() => ({
+    body: {
+      ready: false,
+      reasons,
+      pointOfSale: null,
+      conditions: [],
+      receiverVatConditionId: null,
+    },
+  }));
+  await mount(
+    <InvoiceFiscalPanel invoice={fiscalInvoice()} isAdmin changed={() => {}} reload={() => {}} />,
+  );
+  for (const reason of reasons) assert.ok(text().includes(reason));
+  assert.equal(button('Autorizar en ARCA')!.disabled, true);
+  assert.equal(button('Confirmar autorización de prueba'), undefined);
+  assert.ok(document.querySelector(`a[href="/clientes/${customer.id}"]`));
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+});
+
 test('V3 UI: authorized shows CAE and verify; uncertain has no emission retry or edit controls; operator is read only', async () => {
   serve(() => ({ body: fiscalInvoice('AUTHORIZED') }));
   await mount(<InvoiceDetailView id={u(50)} isAdmin discarded={() => {}} />);

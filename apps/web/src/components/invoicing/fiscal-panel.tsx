@@ -183,6 +183,10 @@ export function InvoiceFiscalPanel({
                     ))}
                   </ul>
                   <Link href="/configuracion">Revisar configuración ARCA</Link>
+                  <p>
+                    <Link href={`/clientes/${i.customer.id}`}>Revisar datos del cliente</Link>. Si
+                    cambiás sus datos, volvé a preparar la factura para actualizar su copia fiscal.
+                  </p>
                 </>
               )}
               {requirements.conditions.length > 0 && (
@@ -233,16 +237,32 @@ export function InvoiceFiscalPanel({
               ) : (
                 <div role="group" aria-label="Confirmar autorización en homologación">
                   <p>
-                    Esta acción enviará el comprobante a ARCA en HOMOLOGACIÓN. El comprobante es de
-                    prueba y no tiene efecto fiscal real.
+                    Esto enviará el comprobante directamente a ARCA mediante Web Service. No se
+                    abrirá una página de ARCA.
                   </p>
+                  <p>Ambiente: HOMOLOGACIÓN</p>
+                  <p>Este comprobante es de prueba y no tiene efecto fiscal real.</p>
                   <p>
                     {i.invoiceType ? invoiceTypeLabels[i.invoiceType] : ''} · Punto de venta{' '}
                     {requirements.pointOfSale} · Total {formatMoney(i.totalAmount)}
                   </p>
+                  <p>
+                    Receptor: {i.customer.name} · CUIT: {i.customer.cuit ?? 'Sin CUIT'}
+                  </p>
+                  <p>
+                    Condición IVA:{' '}
+                    {fiscal.receiverVatConditionLabel ??
+                      requirements.conditions.find((c) => c.id === fiscal.receiverVatConditionId)
+                        ?.label ??
+                      'Pendiente'}
+                  </p>
+                  <p>
+                    Neto: {formatMoney(i.netAmount)} · IVA: {formatMoney(i.vatAmount)} · Total:{' '}
+                    {formatMoney(i.totalAmount)}
+                  </p>
                   <button
                     className="primary-button"
-                    disabled={mutation.busy}
+                    disabled={mutation.busy || !requirements.ready}
                     onClick={() => void authorize()}
                   >
                     Confirmar autorización de prueba

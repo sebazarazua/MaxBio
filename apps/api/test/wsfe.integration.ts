@@ -9,6 +9,7 @@ import type { INestApplication } from '@nestjs/common';
 import { createDatabaseClient } from '@maxbio/database';
 import {
   invoiceSchema,
+  invoiceFiscalReadinessSchema,
   wsfeConfigurationSchema,
   type InvoiceView,
   type WsfeReferences,
@@ -50,6 +51,7 @@ let at = new Date('2026-10-28T20:00:00Z'),
   failAuditAction = '',
   failLast = false;
 let gate: { entered: () => void; wait: Promise<void> } | undefined;
+let wsaaAvailable = true;
 const cookies: string[] = [],
   emitted = new Map<string, WsfeRegistered>(),
   lastNumbers = new Map<string, number>();
@@ -305,7 +307,7 @@ before(
           certificateMatchesKey: true,
           cuit: '27110247244',
           activeCredentialId: active,
-          access: { status: 'AUTHENTICATED', retryAfter: null },
+          access: { status: wsaaAvailable ? 'AUTHENTICATED' : 'WAITING', retryAfter: null },
         }),
       })
       .overrideProvider(AuditService)
@@ -401,6 +403,77 @@ test('Reference discovery and POS: server-validated values, confirmation, stale 
   assert.equal(cfg.ready, true);
   await checked(await request('fiscal/arca/invoicing/refresh', 'POST', {}, 1), 403);
   await checked(await request('fiscal/arca/invoicing/refresh', 'POST', {}, 0, false), 403);
+});
+
+test('Readiness lists local recipient blockers alongside WSAA, missing references and missing POS without sending', async () => {
+  const config = await db.arcaIntegrationConfig.findUniqueOrThrow({
+    where: { organizationId: org },
+  });
+  const customer = await db.customer.findUniqueOrThrow({ where: { id: customerB } });
+  const before = sends;
+  try {
+    await db.customer.update({
+      where: { id: customerB },
+      data: { cuit: null, arcaVatConditionId: null, arcaVatConditionLabel: null },
+    });
+    const i = await ready('INVOICE_B');
+    const { DbNull } = await import('@maxbio/database');
+    await db.arcaIntegrationConfig.update({
+      where: { organizationId: org },
+      data: {
+        pointOfSale: null,
+        pointOfSaleCuit: null,
+        pointOfSaleValidatedAt: null,
+        wsfeCheckedAt: null,
+        wsfeReferences: DbNull,
+      },
+    });
+    wsaaAvailable = false;
+    const r = invoiceFiscalReadinessSchema.parse(
+      await checked(await request(`invoices/${i.id}/fiscal/readiness`)),
+    );
+    assert.equal(r.ready, false);
+    assert.deepEqual(r.conditions, []);
+    for (const text of [
+      'CUIT del cliente',
+      'condición IVA del receptor',
+      'referencias de ARCA',
+      'punto de venta',
+      'WSAA',
+    ])
+      assert.ok(
+        r.reasons.some((reason) => reason.includes(text)),
+        text,
+      );
+    assert.equal(sends, before);
+    assert.equal(await db.invoiceFiscalAttempt.count({ where: { invoiceId: i.id } }), 0);
+  } finally {
+    wsaaAvailable = true;
+    await db.customer.update({
+      where: { id: customerB },
+      data: {
+        cuit: customer.cuit,
+        arcaVatConditionId: customer.arcaVatConditionId,
+        arcaVatConditionLabel: customer.arcaVatConditionLabel,
+      },
+    });
+    await db.arcaIntegrationConfig.update({
+      where: { organizationId: org },
+      data: {
+        pointOfSale: config.pointOfSale,
+        pointOfSaleCuit: config.pointOfSaleCuit,
+        pointOfSaleValidatedAt: config.pointOfSaleValidatedAt,
+        wsfeCheckedAt: config.wsfeCheckedAt,
+        wsfeReferences: config.wsfeReferences as never,
+      },
+    });
+  }
+  const good = await ready();
+  const r = invoiceFiscalReadinessSchema.parse(
+    await checked(await request(`invoices/${good.id}/fiscal/readiness`)),
+  );
+  assert.equal(r.ready, true, JSON.stringify(r.reasons));
+  assert.equal(sends, before);
 });
 
 test('READY → CAE, replay, verification and commercial/fiscal immutability', async () => {

@@ -28,6 +28,85 @@ const rates = {
 function fail(message: string): never {
   throw new BadRequestException(message);
 }
+// These checks require no WSAA ticket, references or point of sale. Report all of them together.
+export function localFiscalReasons(
+  i: InvoiceRecord,
+  issuer: { cuit: string | null; vatCondition: string | null } | null,
+  now: Date,
+) {
+  const reasons: string[] = [];
+  const customer = deliveryNoteCustomerSchema.safeParse(i.customerSnapshot);
+  if (!customer.success || !customer.data.cuit || !validCuit(customer.data.cuit))
+    reasons.push(
+      'Falta completar el CUIT del cliente para autorizar esta factura en esta versión.',
+    );
+  if (!i.receiverVatConditionId) reasons.push('Falta indicar la condición IVA del receptor.');
+  if (!i.invoiceType) reasons.push('Falta elegir el tipo de comprobante.');
+  const cls = i.invoiceType ? fiscalClass(i.invoiceType) : undefined;
+  if (!issuer?.cuit || !validCuit(issuer.cuit)) reasons.push('Revisá el CUIT del emisor.');
+  if (
+    issuer &&
+    cls &&
+    ((issuer.vatCondition === 'RESPONSABLE_INSCRIPTO' && cls === 'C') ||
+      (['MONOTRIBUTO', 'EXENTO'].includes(issuer.vatCondition ?? '') && cls !== 'C') ||
+      !['RESPONSABLE_INSCRIPTO', 'MONOTRIBUTO', 'EXENTO'].includes(issuer.vatCondition ?? ''))
+  )
+    reasons.push(
+      'El tipo de factura no corresponde a la condición IVA del emisor admitida en esta versión.',
+    );
+  try {
+    validateFiscalDate(i.issueDate.toISOString().slice(0, 10), now);
+  } catch (e) {
+    reasons.push(e instanceof BadRequestException ? e.message : 'Revisá la fecha de la factura.');
+  }
+  try {
+    if (!i.lines.length) fail('Faltan los importes de las líneas de la factura.');
+    let net = 0n,
+      vat = 0n,
+      total = 0n;
+    for (const line of i.lines) {
+      if (
+        !line.vatRate ||
+        !line.unitPrice ||
+        !line.netAmount ||
+        !line.vatAmount ||
+        !line.totalAmount
+      )
+        fail('Revisá los importes de todas las líneas.');
+      const calculated = invoiceLineAmounts(
+        line.quantity.toFixed(),
+        line.unitPrice.toFixed(2),
+        line.vatRate,
+      );
+      if (
+        calculated.netAmount !== line.netAmount.toFixed(2) ||
+        calculated.vatAmount !== line.vatAmount.toFixed(2) ||
+        calculated.totalAmount !== line.totalAmount.toFixed(2)
+      )
+        fail('Los importes comerciales no coinciden con sus líneas.');
+      if (cls === 'C' && !['VAT_0', 'EXEMPT', 'NOT_TAXED'].includes(line.vatRate))
+        fail('La factura C no discrimina IVA. Revisá sus líneas.');
+      net += moneyCents(calculated.netAmount);
+      vat += moneyCents(calculated.vatAmount);
+      total += moneyCents(calculated.totalAmount);
+    }
+    if (
+      formatCents(net) !== i.netAmount.toFixed(2) ||
+      formatCents(vat) !== i.vatAmount.toFixed(2) ||
+      formatCents(total) !== i.totalAmount.toFixed(2)
+    )
+      fail('Los totales comerciales cambiaron. Volvé a preparar la factura.');
+    if (total <= 0n || total > 999999999999999n)
+      fail(
+        'El total debe ser mayor a cero y respetar el límite de importes de ARCA (13 enteros y 2 decimales).',
+      );
+  } catch (e) {
+    reasons.push(
+      e instanceof BadRequestException ? e.message : 'Revisá los importes de todas las líneas.',
+    );
+  }
+  return reasons;
+}
 export function validateFiscalDate(issueDate: string, now: Date, previousDate?: string) {
   const today = businessDate(now),
     date = issueDate.replaceAll('-', '');

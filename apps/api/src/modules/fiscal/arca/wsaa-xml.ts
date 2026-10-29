@@ -111,6 +111,9 @@ const value = (node: XmlNode, name: string) => {
   return n.text.trim();
 };
 function fault(code: string): ArcaError {
+  code = code.trim().split(':').at(-1)!;
+  if (/^(?:wsaa\.(?:unavailable|internalError)|wsn\.unavailable)$/.test(code))
+    return new ArcaError('WSAA_UNAVAILABLE');
   if (/coe\.notAuthorized/.test(code)) return new ArcaError('SERVICE_UNAUTHORIZED');
   if (/coe\.alreadyAuthenticated/.test(code)) return new ArcaError('ALREADY_AUTHENTICATED');
   if (/xml\.(generationTime|expirationTime)/.test(code)) return new ArcaError('CLOCK_ERROR');
@@ -199,7 +202,7 @@ export function parseSoapTicket(
     expiration <= generation ||
     expiration.getTime() - generation.getTime() > MAX_TICKET_MS + 120000
   )
-    throw new ArcaError('CLOCK_ERROR');
+    throw new ArcaError('TICKET_TIME_INVALID');
   return {
     token: value(credentials, 'token'),
     sign: value(credentials, 'sign'),

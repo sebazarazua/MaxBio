@@ -142,6 +142,10 @@ export const arcaReadinessSchema = z
         expiresAt: z.iso.datetime().nullable(),
         retryAfter: z.iso.datetime().nullable(),
         message: z.string().nullable(),
+        lastResultCode: z.string().max(40).nullable(),
+        lastAttemptAt: z.iso.datetime().nullable(),
+        lastError: z.string().nullable(),
+        testBlockedReason: z.string().nullable(),
       })
       .strict(),
     trust: z.enum(['PENDING_WSAA', 'VERIFIED_BY_WSAA']),

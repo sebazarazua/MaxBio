@@ -20,7 +20,15 @@ import {
   arcaReadinessSchema,
 } from '@maxbio/contracts';
 import { LocalPrivateCredentialStorage } from '../src/modules/fiscal/infrastructure/private-credential-storage.js';
-import { ArcaError, TICKET_MARGIN_MS } from '../src/modules/fiscal/arca/arca-errors.js';
+import {
+  ArcaError,
+  TICKET_MARGIN_MS,
+  wsaaRetryCategory,
+} from '../src/modules/fiscal/arca/arca-errors.js';
+import { FiscalModule } from '../src/modules/fiscal/fiscal.module.js';
+import { ArcaWsfeClient } from '../src/modules/fiscal/arca/wsfe-client.js';
+import { ArcaWsfeProvider } from '../src/modules/fiscal/arca/wsfe-provider.js';
+import { FISCAL_PROVIDER } from '../src/modules/fiscal/arca/wsfe-types.js';
 import {
   TraFactory,
   parseSoapTicket,
@@ -407,7 +415,7 @@ test('SOAP/XML: identities, dates, namespace, duplicates, XXE, malformed, fault 
     ['cms.cert.expired', 'CERTIFICATE_EXPIRED'],
     ['xml.generationTime.invalid', 'CLOCK_ERROR'],
     ['coe.alreadyAuthenticated', 'ALREADY_AUTHENTICATED'],
-    ['wsaa.internalError', 'WSAA_ERROR'],
+    ['wsaa.internalError', 'WSAA_UNAVAILABLE'],
   ]) {
     assert.throws(
       () => parseSoapTicket(soapFault(code!), id, now),
@@ -425,7 +433,11 @@ test('WSAA bounded HTTP transport against mock server: success, fault, timeout, 
     if (mode === 'fault') {
       res.statusCode = 500;
       res.end(soapFault('coe.notAuthorized'));
-    } else if (mode === 'oversize') res.end('x'.repeat(262145));
+    } else if (mode === 'http-error-with-ticket') {
+      res.statusCode = 500;
+      res.end(soap(ticketXml()));
+    } else if (mode === 'invalid-utf8') res.end(Buffer.from([0xff]));
+    else if (mode === 'oversize') res.end('x'.repeat(262145));
     else if (mode === 'malformed') res.end('<bad>');
     else res.end(soap(ticketXml()));
   });
@@ -441,6 +453,13 @@ test('WSAA bounded HTTP transport against mock server: success, fault, timeout, 
     id = { cuit: '27110247244', commonName: 'MaxBio Homologacion' };
   try {
     assert.equal((await client.login('YWJj', id, now)).sign, 'SECRET_TEST_SIGN');
+    for (const next of ['http-error-with-ticket', 'invalid-utf8']) {
+      mode = next;
+      await assert.rejects(
+        client.login('YWJj', id, now),
+        (e) => e instanceof ArcaError && e.code === 'INVALID_RESPONSE',
+      );
+    }
     for (const next of ['fault', 'malformed', 'oversize', 'timeout']) {
       mode = next;
       await assert.rejects(client.login('YWJj', id, now), ArcaError);
@@ -510,4 +529,51 @@ test('Secret leakage: logger and HTTP errors never include exception bodies, key
     JSON.stringify({ logs, responses }),
     /PRIVATE KEY|SECRET_TEST_TOKEN|SECRET_TEST_SIGN/,
   );
+});
+
+test('WSAA retry categories distinguish SOAP rejection, transient rejection and uncertain delivery', () => {
+  for (const code of ['NETWORK_ERROR', 'INVALID_RESPONSE', 'TICKET_TIME_INVALID'] as const)
+    assert.equal(wsaaRetryCategory(code), 'UNCERTAIN');
+  assert.equal(wsaaRetryCategory('ALREADY_AUTHENTICATED'), 'EXISTING_TICKET');
+  assert.equal(wsaaRetryCategory('WSAA_UNAVAILABLE'), 'TRANSIENT');
+  for (const code of [
+    'CLOCK_ERROR',
+    'SERVICE_UNAUTHORIZED',
+    'CERTIFICATE_EXPIRED',
+    'WSAA_ERROR',
+  ] as const)
+    assert.equal(wsaaRetryCategory(code), 'CORRECTABLE');
+  for (const [fault, code] of [
+    ['wsaa.unavailable', 'WSAA_UNAVAILABLE'],
+    ['wsaa.internalError', 'WSAA_UNAVAILABLE'],
+    ['wsn.unavailable', 'WSAA_UNAVAILABLE'],
+    ['xml.expirationTime.expired', 'CLOCK_ERROR'],
+  ])
+    assert.throws(
+      () => parseSoapTicket(soapFault(fault!), { cuit: '27110247244', commonName: 'Test' }, now),
+      (e) => e instanceof ArcaError && e.code === code,
+    );
+  assert.throws(
+    () =>
+      parseSoapTicket(
+        soap(ticketXml(new Date(now.getTime() + 300000))),
+        { cuit: '27110247244', commonName: 'MaxBio Homologacion' },
+        now,
+      ),
+    (e) => e instanceof ArcaError && e.code === 'TICKET_TIME_INVALID',
+  );
+});
+
+test('FiscalModule wires real WSAA/WSFE clients and the real fiscal provider without network calls', () => {
+  const providers = Reflect.getMetadata('providers', FiscalModule) as (
+    { provide?: unknown; useFactory?: () => unknown; useExisting?: unknown } | unknown
+  )[];
+  const binding = (token: unknown) =>
+    providers.find(
+      (p) => typeof p === 'object' && p !== null && 'provide' in p && p.provide === token,
+    ) as { useFactory?: () => unknown; useExisting?: unknown };
+  assert.ok(binding(ArcaWsaaClient).useFactory!() instanceof ArcaWsaaClient);
+  assert.ok(binding(ArcaWsfeClient).useFactory!() instanceof ArcaWsfeClient);
+  assert.equal(binding(FISCAL_PROVIDER).useExisting, ArcaWsfeProvider);
+  assert.ok(providers.includes(ArcaWsfeProvider));
 });

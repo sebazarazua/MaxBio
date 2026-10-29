@@ -10,6 +10,10 @@ export const arcaMessages = {
   SERVICE_UNAUTHORIZED:
     'El certificado existe, pero todavía no está autorizado para el servicio de facturación electrónica en homologación.',
   CLOCK_ERROR: 'ARCA rechazó el horario de la solicitud. Verificá la hora del servidor.',
+  TICKET_TIME_INVALID:
+    'Se recibió un acceso de ARCA cuyas fechas no pudimos validar. El resultado requiere esperar por seguridad.',
+  WSAA_UNAVAILABLE:
+    'El servicio de ARCA está temporalmente fuera de servicio. Esperá al menos un minuto antes de volver a probar.',
   NETWORK_ERROR: 'No pudimos comunicarnos con ARCA.',
   INVALID_RESPONSE: 'ARCA devolvió una respuesta que no pudimos validar.',
   ALREADY_AUTHENTICATED:
@@ -38,3 +42,14 @@ export const TICKET_MARGIN_MS = 2 * 60 * 1000;
 export const MAX_TICKET_MS = 12 * 60 * 60 * 1000;
 export const UNCERTAIN_WINDOW_MS = MAX_TICKET_MS + 5 * 60 * 1000;
 export const WSAA_RETRY_MS = 60 * 1000;
+
+// WSAA specification 1.2.2, pp. 8/10. A SOAP rejection differs from an unvalidated TA.
+// Network failures do not prove that loginCms was never delivered; never retry them automatically.
+export function wsaaRetryCategory(code: ArcaErrorCode) {
+  if (code === 'ALREADY_AUTHENTICATED') return 'EXISTING_TICKET' as const;
+  if (['NETWORK_ERROR', 'INVALID_RESPONSE', 'TICKET_TIME_INVALID'].includes(code))
+    return 'UNCERTAIN' as const;
+  if (code === 'WSAA_UNAVAILABLE') return 'TRANSIENT' as const;
+  if (['WAITING', 'EXPIRING_TICKET'].includes(code)) return 'WAITING' as const;
+  return 'CORRECTABLE' as const;
+}

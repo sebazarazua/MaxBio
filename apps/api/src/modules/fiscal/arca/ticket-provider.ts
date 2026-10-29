@@ -36,7 +36,7 @@ export class ArcaTicketProvider {
       .then(acquire)
       .then((result) => {
         if (result.expiresAt.getTime() - this.clock.now().getTime() <= TICKET_MARGIN_MS)
-          throw new ArcaError('CLOCK_ERROR');
+          throw new ArcaError('TICKET_TIME_INVALID');
         // Bound retained secrets. Expired entries are also dropped on every acquisition.
         for (const [k, v] of this.tickets)
           if (v.expiresAt <= this.clock.now()) this.tickets.delete(k);
