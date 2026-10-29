@@ -1,5 +1,7 @@
 # Facturación V2: perfil fiscal y WSAA de homologación
 
+Actualización 29/10/2026: [TA persistente y diagnóstico V4](arca-v4-persistent-ta.md) reemplaza la limitación histórica de caché solo en memoria con almacenamiento privado cifrado y recuperación tras reinicios.
+
 Actualización V3 (28/10/2026): [Facturación WSFEv1](invoicing-v3-wsfev1.md) consume
 el nuevo puerto server-side `FiscalService.authenticate`, reutilizando ACTIVE y el TA
 existentes sin exponerlos a HTTP. Este documento conserva la descripción histórica V2;

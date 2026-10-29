@@ -11,6 +11,7 @@ import {
 import { catalogFetch, humanError } from '../../lib/catalog-api.ts';
 import { useMutation } from '../catalog/common.tsx';
 import { formatMoney } from '../../lib/invoicing.ts';
+import { useDeadlineRefresh } from '../../hooks/use-deadline-refresh.ts';
 
 export function InvoiceFiscalPanel({
   invoice: i,
@@ -24,9 +25,13 @@ export function InvoiceFiscalPanel({
   reload: () => void;
 }) {
   const fiscal = i.fiscal;
-  const [requirements, setRequirements] = useState<ReturnType<
-    typeof invoiceFiscalReadinessSchema.parse
-  > | null>(null);
+  const fiscalStatus = fiscal?.status;
+  const [loaded, setLoaded] = useState<{
+    id: string;
+    version: number;
+    value: ReturnType<typeof invoiceFiscalReadinessSchema.parse>;
+  } | null>(null);
+  const requirements = loaded?.id === i.id && loaded.version === i.version ? loaded.value : null;
   const [loadError, setLoadError] = useState(''),
     [revision, setRevision] = useState(0),
     [condition, setCondition] = useState(''),
@@ -35,8 +40,11 @@ export function InvoiceFiscalPanel({
   const operation = useRef<string | null>(null),
     guard = useRef(false),
     mutation = useMutation();
+  useDeadlineRefresh(requirements?.retryAfter ?? requirements?.sequence?.validUntil, () =>
+    setRevision((v) => v + 1),
+  );
   useEffect(() => {
-    if (!isAdmin || !fiscal || i.status !== 'READY' || fiscal.status !== 'NOT_SUBMITTED') return;
+    if (!isAdmin || i.status !== 'READY' || fiscalStatus !== 'NOT_SUBMITTED') return;
     const abort = new AbortController();
     void catalogFetch(`${i.id}/fiscal/readiness`, invoiceFiscalReadinessSchema, {
       scope: 'invoices',
@@ -44,7 +52,7 @@ export function InvoiceFiscalPanel({
     })
       .then((r) => {
         if (!abort.signal.aborted) {
-          setRequirements(r);
+          setLoaded({ id: i.id, version: i.version, value: r });
           setLoadError('');
         }
       })
@@ -52,7 +60,7 @@ export function InvoiceFiscalPanel({
         if (!abort.signal.aborted) setLoadError(humanError(e));
       });
     return () => abort.abort();
-  }, [i.id, i.status, fiscal, isAdmin, revision]);
+  }, [i.id, i.version, i.status, fiscalStatus, isAdmin, revision]);
   if (!fiscal) return null;
   const latest = fiscal.attempts[0];
   async function authorize() {
@@ -189,6 +197,46 @@ export function InvoiceFiscalPanel({
                   </p>
                 </>
               )}
+              <ul aria-label="Diagnóstico para autorizar">
+                {requirements.checks.map((check) => (
+                  <li key={check.id}>
+                    {check.ready ? '✓' : 'Pendiente:'} {check.label}
+                  </li>
+                ))}
+              </ul>
+              <button disabled={mutation.busy} onClick={() => setRevision((v) => v + 1)}>
+                Actualizar requisitos
+              </button>
+              <button
+                className="secondary-button"
+                aria-busy={mutation.busy}
+                disabled={mutation.busy || !requirements.canCheckSequence}
+                aria-describedby="invoice-sequence-help"
+                onClick={() =>
+                  void (async () => {
+                    const next = await mutation.run(() =>
+                      catalogFetch(`${i.id}/fiscal/sequence`, invoiceFiscalReadinessSchema, {
+                        scope: 'invoices',
+                        method: 'POST',
+                        body: {},
+                      }),
+                    );
+                    if (next) setLoaded({ id: i.id, version: i.version, value: next });
+                  })()
+                }
+              >
+                {mutation.busy ? 'Consultando ARCA…' : 'Consultar numeración en ARCA'}
+              </button>
+              <p id="invoice-sequence-help">
+                Esta consulta no emite ni reserva números.{' '}
+                {!requirements.canCheckSequence && 'Primero completá los requisitos indicados.'}
+              </p>
+              {requirements.sequence?.status === 'VERIFIED' && (
+                <p>
+                  ✓ Secuencia consultada. Último número autorizado:{' '}
+                  {requirements.sequence.lastNumber}. Se verificará nuevamente al enviar.
+                </p>
+              )}
               {requirements.conditions.length > 0 && (
                 <div>
                   <label className="field" htmlFor="invoice-receiver-vat">
@@ -230,6 +278,8 @@ export function InvoiceFiscalPanel({
                 <button
                   className="primary-button"
                   disabled={mutation.busy || !requirements.ready}
+                  aria-busy={mutation.busy}
+                  aria-describedby={!requirements.ready ? 'invoice-authorization-help' : undefined}
                   onClick={() => setConfirm(true)}
                 >
                   Autorizar en ARCA
@@ -263,14 +313,20 @@ export function InvoiceFiscalPanel({
                   <button
                     className="primary-button"
                     disabled={mutation.busy || !requirements.ready}
+                    aria-busy={mutation.busy}
                     onClick={() => void authorize()}
                   >
-                    Confirmar autorización de prueba
+                    {mutation.busy ? 'Autorizando…' : 'Confirmar autorización de prueba'}
                   </button>
                   <button disabled={mutation.busy} onClick={() => setConfirm(false)}>
                     Cancelar
                   </button>
                 </div>
+              )}
+              {!requirements.ready && (
+                <p id="invoice-authorization-help">
+                  La autorización no está disponible hasta completar todos los requisitos indicados.
+                </p>
               )}
             </>
           )}

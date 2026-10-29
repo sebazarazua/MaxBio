@@ -82,9 +82,17 @@ export function WsfeSettings() {
               ))}
             </ul>
           )}
+          <ul aria-label="Estado de configuración WSFE">
+            {config.checks.map((check) => (
+              <li key={check.id}>
+                {check.ready ? '✓' : 'Pendiente:'} {check.label}
+              </li>
+            ))}
+          </ul>
           <button
             className="secondary-button"
             disabled={mutation.busy}
+            aria-busy={mutation.busy}
             onClick={() =>
               void (async () => {
                 const next = await mutation.run(() =>
@@ -97,7 +105,9 @@ export function WsfeSettings() {
               })()
             }
           >
-            Consultar puntos de venta y condiciones en ARCA
+            {mutation.busy
+              ? 'Consultando ARCA…'
+              : 'Consultar puntos de venta y condiciones en ARCA'}
           </button>
           {config.references &&
             (points.length ? (
@@ -121,6 +131,7 @@ export function WsfeSettings() {
                 <button
                   className="primary-button"
                   disabled={mutation.busy || !points.includes(Number(selected))}
+                  aria-busy={mutation.busy}
                   onClick={() =>
                     void (async () => {
                       const next = await mutation.run(() =>

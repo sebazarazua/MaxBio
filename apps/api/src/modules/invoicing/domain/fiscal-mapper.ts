@@ -42,6 +42,8 @@ export function localFiscalReasons(
     );
   if (!i.receiverVatConditionId) reasons.push('Falta indicar la condición IVA del receptor.');
   if (!i.invoiceType) reasons.push('Falta elegir el tipo de comprobante.');
+  if (i.currency !== 'ARS')
+    reasons.push('Esta versión requiere importes en pesos argentinos (ARS).');
   const cls = i.invoiceType ? fiscalClass(i.invoiceType) : undefined;
   if (!issuer?.cuit || !validCuit(issuer.cuit)) reasons.push('Revisá el CUIT del emisor.');
   if (

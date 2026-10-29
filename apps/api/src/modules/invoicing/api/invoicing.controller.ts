@@ -67,6 +67,16 @@ export class InvoicingController {
     parse(runtimeZ.object({}).strict(), q);
     return this.fiscal.authorize(actor(r), id, parse(invoiceTransitionSchema, b));
   }
+  @Post(':id/fiscal/sequence') @HttpCode(200) @Roles('ADMIN') sequence(
+    @Req() r: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() b: unknown,
+    @Query() q: unknown,
+  ) {
+    parse(runtimeZ.object({}).strict(), q);
+    parse(runtimeZ.object({}).strict(), b);
+    return this.fiscal.checkSequence(actor(r), id);
+  }
   @Post(':id/fiscal/receiver') @HttpCode(200) @Roles('ADMIN') receiver(
     @Req() r: AuthenticatedRequest,
     @Param('id', uuid) id: string,

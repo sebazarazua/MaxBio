@@ -11,6 +11,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Prisma } from '@maxbio/database';
 import {
   fiscalCompleteness,
+  deliveryNoteCustomerSchema,
+  validCuit,
   type InvoiceTransition,
   type InvoiceView,
   type FiscalMessage,
@@ -57,6 +59,10 @@ const seqWhere = (a: { organizationId: string; pointOfSale: number; documentType
 });
 @Injectable()
 export class InvoiceFiscalService {
+  private readonly sequenceChecks = new Map<
+    string,
+    { number: number | null; checkedAt: Date; message: string | null }
+  >();
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(AuditService) private readonly audit: AuditService,
@@ -147,13 +153,119 @@ export class InvoiceFiscalService {
         );
       }
     }
+    const canCheckSequence = reasons.length === 0;
+    const key = hash([c.organizationId, id, i.version, p?.version, cfg.version, cfg.pointOfSale]);
+    const cached = this.sequenceChecks.get(key);
+    const validUntil = cached ? new Date(cached.checkedAt.getTime() + 5 * 60000) : null;
+    const sequence = validUntil && validUntil > this.clock.now() ? cached : undefined;
+    const sequenceReady = Boolean(
+      canCheckSequence && sequence && sequence.number !== null && !sequence.message,
+    );
+    if (!sequenceReady)
+      reasons.push(
+        sequence?.message ??
+          'Falta comprobar la numeración de este punto de venta y tipo en ARCA. Esta consulta no emite comprobantes.',
+      );
+    const customer = deliveryNoteCustomerSchema.safeParse(i.customerSnapshot);
     return {
       ready: reasons.length === 0,
       reasons: [...new Set(reasons)],
+      canCheckSequence,
+      retryAfter: cfg.retryAfter,
+      sequence: {
+        status: sequenceReady
+          ? ('VERIFIED' as const)
+          : sequence?.message
+            ? ('ERROR' as const)
+            : ('PENDING' as const),
+        checkedAt: sequence?.checkedAt.toISOString() ?? null,
+        validUntil: sequence ? validUntil!.toISOString() : null,
+        lastNumber: sequence?.number ?? null,
+        message: sequence?.message ?? null,
+      },
+      checks: [
+        ...(cfg.checks ?? []),
+        {
+          id: 'issuer',
+          label: 'Perfil fiscal del emisor',
+          ready: fiscalCompleteness(p) === 'COMPLETE',
+        },
+        {
+          id: 'receiver-cuit',
+          label: 'CUIT receptor',
+          ready: Boolean(customer.success && customer.data.cuit && validCuit(customer.data.cuit)),
+        },
+        {
+          id: 'receiver-vat',
+          label: 'Condición IVA receptor',
+          ready: Boolean(
+            i.receiverVatConditionId && conditions.some((v) => v.id === i.receiverVatConditionId),
+          ),
+        },
+        {
+          id: 'invoice',
+          label: 'Factura lista y datos locales completos',
+          ready: i.status === 'READY' && i.fiscalStatus === 'NOT_SUBMITTED' && !localReasons.length,
+        },
+        { id: 'sequence', label: 'Secuencia ARCA', ready: sequenceReady },
+      ],
       pointOfSale: cfg.pointOfSale,
       conditions,
       receiverVatConditionId: i.receiverVatConditionId,
     };
+  }
+  async checkSequence(c: RequestActorContext, id: string) {
+    const before = await this.readiness(c, id);
+    if (!before.canCheckSequence)
+      throw new BadRequestException(
+        'Completá los requisitos de la factura y la conexión antes de consultar la numeración.',
+      );
+    const i = await this.write(c, (tx) => this.record(tx, c, id));
+    const cfg = await this.configuration.get(c);
+    const p = await this.db.client.organizationFiscalProfile.findUnique({
+      where: { organizationId: c.organizationId },
+    });
+    if (!p || !cfg.ready || !cfg.references || !cfg.pointOfSale)
+      throw new BadRequestException('La configuración cambió. Volvé a cargar los requisitos.');
+    const base = mapFiscalInvoice(i, p, cfg.pointOfSale, cfg.references, this.clock.now());
+    const key = hash([c.organizationId, id, i.version, p.version, cfg.version, cfg.pointOfSale]);
+    // Explicit read-only action: no number reservation and no authorization call.
+    try {
+      const number = await this.provider.last(c, base);
+      if (!Number.isSafeInteger(number) || number < 0 || number >= 99999999)
+        throw new BadRequestException(
+          'La secuencia de ARCA no tiene un número siguiente disponible.',
+        );
+      if (number > 0) {
+        const previous = await this.provider.consult(c, base, number);
+        if (!previous)
+          throw new BadRequestException('ARCA no pudo confirmar los datos del último comprobante.');
+        validateFiscalDate(
+          i.issueDate.toISOString().slice(0, 10),
+          this.clock.now(),
+          previous.invoice.issueDate,
+        );
+      }
+      this.sequenceChecks.set(key, { number, checkedAt: this.clock.now(), message: null });
+      await this.write(c, (tx) =>
+        this.audit.success(c, 'INVOICE_ARCA_SEQUENCE_CHECKED', 'Invoice', id, tx),
+      );
+    } catch (e) {
+      this.sequenceChecks.set(key, {
+        number: null,
+        checkedAt: this.clock.now(),
+        message:
+          e instanceof WsfeError || e instanceof BadRequestException
+            ? e.message
+            : 'No pudimos comprobar la numeración con ARCA. Volvé a consultar antes de autorizar.',
+      });
+    }
+    for (const [k, entry] of this.sequenceChecks)
+      if (entry.checkedAt.getTime() + 5 * 60000 <= this.clock.now().getTime())
+        this.sequenceChecks.delete(k);
+    if (this.sequenceChecks.size > 1000)
+      this.sequenceChecks.delete(this.sequenceChecks.keys().next().value!);
+    return this.readiness(c, id);
   }
   async setReceiver(
     c: RequestActorContext,

@@ -15,6 +15,7 @@ import {
 import { fiscalFetch } from '../../lib/fiscal-api.ts';
 import { useWorkspace } from '../workspace.tsx';
 import { WsfeSettings } from './invoicing-settings.tsx';
+import { useDeadlineRefresh } from '../../hooks/use-deadline-refresh.ts';
 
 export function FiscalSettings() {
   const { isAdmin } = useWorkspace();
@@ -272,6 +273,15 @@ export function ArcaConnection({
     [confirmDiscard, setConfirmDiscard] = useState(false);
   const pending = arca.credentials.find((c) => c.id === arca.pendingCredentialId),
     active = arca.credentials.find((c) => c.id === arca.activeCredentialId);
+  useDeadlineRefresh(arca.access.retryAfter, () => {
+    void fiscalFetch('arca/readiness', arcaReadinessSchema)
+      .then(changed)
+      .catch(() =>
+        setError(
+          'No pudimos actualizar el estado al vencer la espera. Usá Cargar información actual.',
+        ),
+      );
+  });
   async function run(task: () => Promise<void>) {
     if (guard.current) return;
     guard.current = true;
@@ -380,16 +390,28 @@ export function ArcaConnection({
         </dl>
         <h3>Acceso temporal WSAA</h3>
         <p role="status">
-          {arca.access.status === 'AUTHENTICATED'
-            ? '✓ Acceso activo'
-            : arca.access.status === 'WAITING'
-              ? 'Esperando vencimiento de un acceso anterior o de una reserva incierta'
-              : arca.access.status === 'ERROR'
-                ? 'Error de conexión'
-                : arca.lastVerifiedAt
-                  ? 'Pendiente de renovación'
-                  : 'Nunca verificado'}
+          {arca.access.state === 'LOST_TICKET'
+            ? 'TA conocido pero no recuperable'
+            : arca.access.state === 'UNCERTAIN'
+              ? 'Resultado de autenticación incierto'
+              : arca.access.state === 'EXPIRING'
+                ? 'Acceso próximo a vencer; pendiente de renovación'
+                : arca.access.status === 'AUTHENTICATED'
+                  ? '✓ Acceso activo'
+                  : arca.access.status === 'WAITING'
+                    ? 'Esperando vencimiento de un acceso anterior o de una reserva incierta'
+                    : arca.access.status === 'ERROR'
+                      ? 'Error de conexión'
+                      : arca.lastVerifiedAt
+                        ? 'Pendiente de renovación'
+                        : 'Nunca verificado'}
         </p>
+        {arca.access.state === 'LOST_TICKET' && (
+          <p>
+            Existe evidencia de un acceso todavía vigente, pero MaxBio no puede recuperarlo. Se
+            podrá renovar después de su vencimiento.
+          </p>
+        )}
         {arca.access.obtainedAt && (
           <p>Último acceso obtenido: {date(arca.access.obtainedAt)} (Buenos Aires).</p>
         )}
@@ -408,6 +430,7 @@ export function ArcaConnection({
         <button
           className="primary-button"
           disabled={busy || !arca.canTest}
+          aria-busy={busy}
           aria-describedby={!arca.canTest ? 'arca-test-blocked' : undefined}
           onClick={() =>
             void run(async () => {
@@ -416,7 +439,7 @@ export function ArcaConnection({
             })
           }
         >
-          Probar conexión con ARCA
+          {busy ? 'Consultando ARCA…' : 'Probar conexión con ARCA'}
         </button>
         {!arca.canTest && (
           <p id="arca-test-blocked">

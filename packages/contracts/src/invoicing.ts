@@ -340,6 +340,8 @@ export function invoiceRouteContract(path: string, method: string) {
     return { body: invoiceTransitionSchema, query: null, response: invoiceSchema };
   if (new RegExp(`^invoices/${id}/fiscal/readiness$`).test(path) && method === 'GET')
     return { body: null, query: null, response: invoiceFiscalReadinessSchema };
+  if (new RegExp(`^invoices/${id}/fiscal/sequence$`).test(path) && method === 'POST')
+    return { body: z.object({}).strict(), query: null, response: invoiceFiscalReadinessSchema };
   if (new RegExp(`^invoices/${id}/fiscal/authorize$`).test(path) && method === 'POST')
     return { body: invoiceTransitionSchema, query: null, response: invoiceSchema };
   if (new RegExp(`^invoices/${id}/fiscal/receiver$`).test(path) && method === 'POST')

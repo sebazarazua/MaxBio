@@ -85,6 +85,10 @@ export const wsfeConfigurationSchema = z
     ready: z.boolean(),
     reasons: z.array(z.string()),
     references: wsfeReferencesSchema.nullable(),
+    retryAfter: date.optional(),
+    checks: z
+      .array(z.object({ id: z.string(), label: z.string(), ready: z.boolean() }).strict())
+      .default([]),
   })
   .strict();
 export const wsfeSelectPointSchema = z
@@ -106,6 +110,21 @@ export const invoiceFiscalReadinessSchema = z
     pointOfSale: z.number().int().positive().nullable(),
     conditions: z.array(arcaVatConditionSchema),
     receiverVatConditionId: z.number().int().positive().nullable(),
+    checks: z
+      .array(z.object({ id: z.string(), label: z.string(), ready: z.boolean() }).strict())
+      .default([]),
+    canCheckSequence: z.boolean().default(false),
+    retryAfter: date.optional(),
+    sequence: z
+      .object({
+        status: z.enum(['PENDING', 'VERIFIED', 'ERROR']),
+        checkedAt: date,
+        validUntil: date,
+        lastNumber: z.number().int().nonnegative().nullable(),
+        message: z.string().nullable(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type WsfeReferences = z.infer<typeof wsfeReferencesSchema>;

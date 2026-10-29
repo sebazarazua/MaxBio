@@ -70,6 +70,7 @@ function invoice(
   );
   return {
     status: 'READY',
+    currency: 'ARS',
     invoiceType: type,
     receiverVatConditionId: type === 'INVOICE_B' ? 5 : 1,
     issueDate: new Date('2026-10-28T00:00:00Z'),

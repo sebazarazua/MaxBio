@@ -138,6 +138,17 @@ export const arcaReadinessSchema = z
     access: z
       .object({
         status: z.enum(['PENDING', 'AUTHENTICATED', 'ERROR', 'WAITING']),
+        state: z
+          .enum([
+            'ACTIVE',
+            'EXPIRING',
+            'LOST_TICKET',
+            'UNCERTAIN',
+            'ERROR',
+            'RENEWAL_PENDING',
+            'NEVER_AUTHENTICATED',
+          ])
+          .optional(),
         obtainedAt: z.iso.datetime().nullable(),
         expiresAt: z.iso.datetime().nullable(),
         retryAfter: z.iso.datetime().nullable(),

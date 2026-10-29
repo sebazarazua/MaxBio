@@ -196,7 +196,8 @@ export class FiscalService {
     };
   }
   async updateProfile(c: RequestActorContext, input: FiscalProfileUpdate) {
-    return this.write(c, async (tx) => {
+    let retiredTicket: { id: string; cuit: string } | undefined;
+    const result = await this.write(c, async (tx) => {
       const prior = await tx.organizationFiscalProfile.findUnique({
         where: { organizationId: c.organizationId },
       });
@@ -209,6 +210,10 @@ export class FiscalService {
           ]),
         ),
       );
+      if (prior?.cuit !== fields.cuit) {
+        const active = await this.active(tx, c.organizationId);
+        if (active) retiredTicket = { id: active.id, cuit: active.cuit };
+      }
       const row = prior
         ? await tx.organizationFiscalProfile.update({
             where: { organizationId: c.organizationId, version: input.expectedVersion },
@@ -226,6 +231,16 @@ export class FiscalService {
       );
       return { profile: profileView(row) };
     });
+    if (retiredTicket) {
+      const retired = retiredTicket;
+      await this.write(c, async (tx) => {
+        const profile = await tx.organizationFiscalProfile.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        if (profile?.cuit !== retired.cuit) await this.tickets.remove(c.organizationId, retired.id);
+      });
+    }
+    return result;
   }
   async readiness(c: RequestActorContext): Promise<ArcaReadiness> {
     this.admin(c);
@@ -234,6 +249,8 @@ export class FiscalService {
     return this.db.client.$transaction(
       async (tx) => {
         await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+        // Share the lifecycle lock with TA persistence/rotation; cleanup cannot delete a newer TA.
+        await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`fiscal:${c.organizationId}`},0))`;
         const p = await tx.organizationFiscalProfile.findUnique({
           where: { organizationId: c.organizationId },
         });
@@ -255,6 +272,8 @@ export class FiscalService {
         const records = [...current, ...history];
         const active = uniqueActive(current),
           pending = current.find((r) => ['CSR_READY', 'CERTIFICATE_INSTALLED'].includes(r.status));
+        if (active && active.cuit !== p?.cuit)
+          await this.tickets.remove(c.organizationId, active.id);
         const verified = active
           ? await tx.auditEvent.findFirst({
               where: {
@@ -268,7 +287,6 @@ export class FiscalService {
               select: { createdAt: true },
             })
           : null;
-        const ticket = active ? this.tickets.peek(c.organizationId, active.id) : undefined;
         const lastAttempt = active
           ? await tx.auditEvent.findFirst({
               where: {
@@ -304,6 +322,15 @@ export class FiscalService {
             filesValid = false;
           }
         }
+        let ticket;
+        let storageError = false;
+        if (active && filesValid && complete) {
+          try {
+            ticket = await this.tickets.restore(this.ticketScope(c.organizationId, active));
+          } catch {
+            storageError = true;
+          }
+        }
         const usable = Boolean(
           ticket &&
           ticket.expiresAt.getTime() - now.getTime() > TICKET_MARGIN_MS &&
@@ -313,30 +340,58 @@ export class FiscalService {
         const waiting = Boolean(
           config?.authBlockedUntil && config.authBlockedUntil > now && !usable,
         );
-        const code = config?.lastResultCode as ArcaErrorCode | undefined;
+        const code = (storageError ? 'TICKET_STORAGE_UNAVAILABLE' : config?.lastResultCode) as
+          ArcaErrorCode | undefined;
+        const accessState = usable
+          ? 'ACTIVE'
+          : ticket
+            ? 'EXPIRING'
+            : waiting && code === ('SUCCESS' as string)
+              ? 'LOST_TICKET'
+              : waiting &&
+                  [
+                    'WAITING',
+                    'IN_PROGRESS',
+                    'NETWORK_ERROR',
+                    'INVALID_RESPONSE',
+                    'TICKET_TIME_INVALID',
+                    'TICKET_STORAGE_UNAVAILABLE',
+                  ].includes(code ?? '')
+                ? 'UNCERTAIN'
+                : waiting && code === 'ALREADY_AUTHENTICATED'
+                  ? 'LOST_TICKET'
+                  : code && !['SUCCESS', 'WAITING', 'IN_PROGRESS'].includes(code)
+                    ? 'ERROR'
+                    : config?.lastObtainedAt
+                      ? 'RENEWAL_PENDING'
+                      : 'NEVER_AUTHENTICATED';
         const lastError =
           code && code in arcaMessages && !['WAITING', 'EXPIRING_TICKET'].includes(code)
             ? arcaMessages[code]
             : code === 'WAITING' || code === ('IN_PROGRESS' as string)
               ? 'No quedó registrado el resultado original del último intento. El proceso pudo interrumpirse; no se puede descartar que ARCA haya emitido un acceso.'
               : null;
-        const testBlockedReason = waiting
-          ? code === ('SUCCESS' as string)
-            ? 'El acceso anterior sigue vigente en ARCA, pero no está disponible en este proceso. Hay que esperar su vencimiento.'
-            : code === 'ALREADY_AUTHENTICATED'
-              ? arcaMessages.ALREADY_AUTHENTICATED
-              : code &&
-                  code in arcaMessages &&
-                  ['CORRECTABLE', 'TRANSIENT'].includes(wsaaRetryCategory(code))
-                ? 'Hay una pausa mínima de seguridad. Corregí la causa informada antes de volver a probar.'
-                : 'El último intento quedó sin un acceso utilizable y pudo haber creado un TA. Se conserva la espera por seguridad.'
-          : !complete
-            ? 'Completá los datos fiscales del emisor.'
-            : !filesValid
-              ? 'Se requiere una credencial activa vigente y un certificado que corresponda a su clave.'
-              : !openssl && !usable
-                ? 'OpenSSL no está disponible en el servidor.'
-                : null;
+        const testBlockedReason = storageError
+          ? arcaMessages.TICKET_STORAGE_UNAVAILABLE
+          : ticket && !usable
+            ? arcaMessages.EXPIRING_TICKET
+            : waiting
+              ? code === ('SUCCESS' as string)
+                ? 'El acceso anterior sigue vigente en ARCA, pero no está disponible en este proceso. Hay que esperar su vencimiento.'
+                : code === 'ALREADY_AUTHENTICATED'
+                  ? arcaMessages.ALREADY_AUTHENTICATED
+                  : code &&
+                      code in arcaMessages &&
+                      ['CORRECTABLE', 'TRANSIENT'].includes(wsaaRetryCategory(code))
+                    ? 'Hay una pausa mínima de seguridad. Corregí la causa informada antes de volver a probar.'
+                    : 'El último intento quedó sin un acceso utilizable y pudo haber creado un TA. Se conserva la espera por seguridad.'
+              : !complete
+                ? 'Completá los datos fiscales del emisor.'
+                : !filesValid
+                  ? 'Se requiere una credencial activa vigente y un certificado que corresponda a su clave.'
+                  : !openssl && !usable
+                    ? 'OpenSSL no está disponible en el servidor.'
+                    : null;
         return arcaReadinessSchema.parse({
           environment: 'HOMOLOGATION',
           service: 'wsfe',
@@ -352,7 +407,9 @@ export class FiscalService {
             active?.certificateStorageKey || pending?.certificateStorageKey,
           ),
           certificateMatchesKey: filesValid,
-          canTest: Boolean(complete && filesValid && (openssl || usable) && (!waiting || usable)),
+          canTest: Boolean(
+            !storageError && complete && filesValid && (openssl || usable) && (!waiting || usable),
+          ),
           activeCredentialId: active?.id ?? null,
           pendingCredentialId: pending?.id ?? null,
           credentials: records.map((r) => ({
@@ -373,6 +430,7 @@ export class FiscalService {
             certificateState: certificateState(r, now),
           })),
           access: {
+            state: accessState,
             lastResultCode: config?.lastResultCode ?? null,
             lastAttemptAt: lastAttempt?.createdAt.toISOString() ?? null,
             lastError,
@@ -386,11 +444,13 @@ export class FiscalService {
                     ['CORRECTABLE', 'TRANSIENT'].includes(wsaaRetryCategory(code))
                   )
                 ? 'WAITING'
-                : code && code !== ('SUCCESS' as string)
+                : code && !['SUCCESS', 'WAITING', 'IN_PROGRESS'].includes(code)
                   ? 'ERROR'
                   : 'PENDING',
-            obtainedAt: config?.lastObtainedAt?.toISOString() ?? null,
-            expiresAt: config?.lastTicketExpiresAt?.toISOString() ?? null,
+            obtainedAt:
+              ticket?.obtainedAt.toISOString() ?? config?.lastObtainedAt?.toISOString() ?? null,
+            expiresAt:
+              ticket?.expiresAt.toISOString() ?? config?.lastTicketExpiresAt?.toISOString() ?? null,
             retryAfter: waiting ? config!.authBlockedUntil!.toISOString() : null,
             message: usable
               ? 'Acceso activo'
@@ -656,6 +716,7 @@ export class FiscalService {
       const row = await this.credential(tx, c, id);
       if (!['DISCARDED', 'REPLACED'].includes(row.status))
         throw new ConflictException('La limpieza solo admite solicitudes descartadas o historial.');
+      await this.tickets.remove(c.organizationId, id);
       if (row.secretsDeletedAt) return;
       const keys = [row.privateKeyStorageKey, row.csrStorageKey, row.certificateStorageKey].filter(
         (key): key is string => key !== null,
@@ -710,6 +771,7 @@ export class FiscalService {
       const state = certificateState(active, this.clock.now());
       if (state === 'EXPIRED') throw new ArcaError('CERTIFICATE_EXPIRED');
       if (state === 'INVALID') throw new ArcaError('CERTIFICATE_INVALID');
+      await this.tickets.restore(this.ticketScope(c.organizationId, active));
       if (recordTest)
         await this.audit.append(
           {
@@ -722,140 +784,166 @@ export class FiscalService {
       return active;
     });
     try {
-      const ticket = await this.tickets.get(c.organizationId, identity.id, async () => {
-        const key = await this.storage.read(c.organizationId, identity.privateKeyStorageKey);
-        try {
-          const certificate = await this.storage.read(
-            c.organizationId,
-            identity.certificateStorageKey!,
-          );
-          // WSAA echoes the certificate DN as destination: its CN is the WSASS alias, not the CSR CN.
-          const { commonName } = await this.crypto.certificate(
-            certificate,
-            key,
-            identity.cuit,
-            this.clock.now(),
-          );
-          const tra = this.tra.create(this.clock.now()),
-            cms = await this.signer.sign(tra.xml, key, certificate);
-          // Commit reservation BEFORE network I/O. A lost response or restart cannot provoke duplicate loginCms.
-          await this.write(c, async (tx) => {
-            const row = await this.credential(tx, c, identity.id),
-              config = await this.config(tx, c.organizationId);
-            await this.active(tx, c.organizationId);
-            const p = await tx.organizationFiscalProfile.findUnique({
-              where: { organizationId: c.organizationId },
-            });
-            this.complete(p);
-            if (row.status !== 'ACTIVE' || row.version !== identity.version || row.cuit !== p.cuit)
-              throw new ConflictException('La credencial cambió. Volvé a cargarla.');
-            if (config.authBlockedUntil && config.authBlockedUntil > this.clock.now())
-              throw new ArcaError('WAITING');
-            await tx.arcaIntegrationConfig.update({
-              where: { organizationId: c.organizationId },
-              data: {
-                authBlockedUntil: new Date(this.clock.now().getTime() + UNCERTAIN_WINDOW_MS),
-                lastResultCode: 'IN_PROGRESS',
-              },
-            });
-            await this.audit.append(
-              {
-                ...this.auditContext(c, identity.id),
-                action: 'ARCA_WSAA_LOGIN_STARTED',
-                result: 'SUCCESS',
-                metadata: { code: 'IN_PROGRESS' },
-              },
-              tx,
-            );
-          });
-          this.logger.log({
-            event: 'arca_wsaa_login_started',
-            requestId: c.requestId,
-            code: 'IN_PROGRESS',
-          });
+      const ticket = await this.tickets.get(
+        c.organizationId,
+        identity.id,
+        async () => {
+          const key = await this.storage.read(c.organizationId, identity.privateKeyStorageKey);
           try {
-            const ticket = await this.wsaa.login(
-              cms,
-              { cuit: identity.cuit, commonName },
+            const certificate = await this.storage.read(
+              c.organizationId,
+              identity.certificateStorageKey!,
+            );
+            // WSAA echoes the certificate DN as destination: its CN is the WSASS alias, not the CSR CN.
+            const { commonName } = await this.crypto.certificate(
+              certificate,
+              key,
+              identity.cuit,
               this.clock.now(),
             );
-            if (ticket.expiresAt.getTime() - this.clock.now().getTime() <= TICKET_MARGIN_MS)
-              throw new ArcaError('TICKET_TIME_INVALID');
+            const tra = this.tra.create(this.clock.now()),
+              cms = await this.signer.sign(tra.xml, key, certificate);
+            // Commit reservation BEFORE network I/O. A lost response or restart cannot provoke duplicate loginCms.
             await this.write(c, async (tx) => {
-              const row = await this.credential(tx, c, identity.id);
-              if (row.status !== 'ACTIVE' || row.version !== identity.version)
+              const row = await this.credential(tx, c, identity.id),
+                config = await this.config(tx, c.organizationId);
+              await this.active(tx, c.organizationId);
+              const p = await tx.organizationFiscalProfile.findUnique({
+                where: { organizationId: c.organizationId },
+              });
+              this.complete(p);
+              if (
+                row.status !== 'ACTIVE' ||
+                row.version !== identity.version ||
+                row.cuit !== p.cuit
+              )
                 throw new ConflictException('La credencial cambió. Volvé a cargarla.');
+              if (config.authBlockedUntil && config.authBlockedUntil > this.clock.now())
+                throw new ArcaError('WAITING');
               await tx.arcaIntegrationConfig.update({
                 where: { organizationId: c.organizationId },
                 data: {
-                  authBlockedUntil: ticket.expiresAt,
-                  lastTicketExpiresAt: ticket.expiresAt,
-                  lastObtainedAt: ticket.obtainedAt,
-                  lastResultCode: 'SUCCESS',
+                  authBlockedUntil: new Date(this.clock.now().getTime() + UNCERTAIN_WINDOW_MS),
+                  lastResultCode: 'IN_PROGRESS',
                 },
               });
               await this.audit.append(
                 {
                   ...this.auditContext(c, identity.id),
-                  action: 'ARCA_WSAA_LOGIN_SUCCEEDED',
+                  action: 'ARCA_WSAA_LOGIN_STARTED',
                   result: 'SUCCESS',
-                  metadata: { code: 'SUCCESS', retryAfter: ticket.expiresAt.toISOString() },
+                  metadata: { code: 'IN_PROGRESS' },
                 },
                 tx,
               );
             });
             this.logger.log({
-              event: 'arca_wsaa_login_succeeded',
+              event: 'arca_wsaa_login_started',
               requestId: c.requestId,
-              code: 'SUCCESS',
+              code: 'IN_PROGRESS',
             });
-            return ticket;
-          } catch (e) {
-            // A late response from a retired credential must not overwrite the new ACTIVE's
-            // readiness or shorten its durable reservation during rotation.
-            if (e instanceof ConflictException) throw e;
-            const error = e instanceof ArcaError ? e : new ArcaError('NETWORK_ERROR');
-            await this.write(c, async (tx) => {
-              const row = await this.credential(tx, c, identity.id);
-              if (row.status !== 'ACTIVE' || row.version !== identity.version) return;
-              // Unknown delivery/response outcome stays blocked for the maximum TA lifetime.
-              const category = wsaaRetryCategory(error.code);
-              const uncertain = ['UNCERTAIN', 'EXISTING_TICKET', 'WAITING'].includes(category);
-              await tx.arcaIntegrationConfig.update({
-                where: { organizationId: c.organizationId },
-                data: {
-                  lastResultCode: error.code,
-                  ...(uncertain
-                    ? {}
-                    : { authBlockedUntil: new Date(this.clock.now().getTime() + WSAA_RETRY_MS) }),
-                },
-              });
-              await this.audit.append(
-                {
-                  ...this.auditContext(c, identity.id),
-                  action: 'ARCA_WSAA_LOGIN_FAILED',
-                  result: 'FAILURE',
-                  metadata: { code: error.code },
-                },
-                tx,
+            try {
+              const ticket = await this.wsaa.login(
+                cms,
+                { cuit: identity.cuit, commonName },
+                this.clock.now(),
               );
-            });
-            this.logger.warn({
-              event: 'arca_wsaa_login_failed',
-              requestId: c.requestId,
-              code: error.code,
-              category: wsaaRetryCategory(error.code),
-            });
-            throw error;
+              if (ticket.expiresAt.getTime() - this.clock.now().getTime() <= TICKET_MARGIN_MS)
+                throw new ArcaError('TICKET_TIME_INVALID');
+              await this.write(c, async (tx) => {
+                const row = await this.credential(tx, c, identity.id);
+                if (row.status !== 'ACTIVE' || row.version !== identity.version)
+                  throw new ConflictException('La credencial cambió. Volvé a cargarla.');
+                const profile = await tx.organizationFiscalProfile.findUnique({
+                  where: { organizationId: c.organizationId },
+                });
+                if (profile?.cuit !== identity.cuit)
+                  throw new ConflictException('El CUIT cambió. Cargá la información actual.');
+                await this.tickets.persist(this.ticketScope(c.organizationId, identity), ticket);
+                await tx.arcaIntegrationConfig.update({
+                  where: { organizationId: c.organizationId },
+                  data: {
+                    authBlockedUntil: ticket.expiresAt,
+                    lastTicketExpiresAt: ticket.expiresAt,
+                    lastObtainedAt: ticket.obtainedAt,
+                    lastResultCode: 'SUCCESS',
+                  },
+                });
+                await this.audit.append(
+                  {
+                    ...this.auditContext(c, identity.id),
+                    action: 'ARCA_WSAA_LOGIN_SUCCEEDED',
+                    result: 'SUCCESS',
+                    metadata: { code: 'SUCCESS', retryAfter: ticket.expiresAt.toISOString() },
+                  },
+                  tx,
+                );
+              });
+              this.logger.log({
+                event: 'arca_wsaa_login_succeeded',
+                requestId: c.requestId,
+                code: 'SUCCESS',
+              });
+              return ticket;
+            } catch (e) {
+              // A late response from a retired credential must not overwrite the new ACTIVE's
+              // readiness or shorten its durable reservation during rotation.
+              if (e instanceof ConflictException) throw e;
+              const known =
+                e instanceof BadRequestException
+                  ? (Object.keys(arcaMessages) as ArcaErrorCode[]).find(
+                      (k) => arcaMessages[k] === e.message,
+                    )
+                  : undefined;
+              const error = e instanceof ArcaError ? e : new ArcaError(known ?? 'NETWORK_ERROR');
+              await this.write(c, async (tx) => {
+                const row = await this.credential(tx, c, identity.id);
+                if (row.status !== 'ACTIVE' || row.version !== identity.version) return;
+                // Unknown delivery/response outcome stays blocked for the maximum TA lifetime.
+                const category = wsaaRetryCategory(error.code);
+                const uncertain = ['UNCERTAIN', 'EXISTING_TICKET', 'WAITING'].includes(category);
+                await tx.arcaIntegrationConfig.update({
+                  where: { organizationId: c.organizationId },
+                  data: {
+                    lastResultCode: error.code,
+                    ...(uncertain
+                      ? {}
+                      : { authBlockedUntil: new Date(this.clock.now().getTime() + WSAA_RETRY_MS) }),
+                  },
+                });
+                await this.audit.append(
+                  {
+                    ...this.auditContext(c, identity.id),
+                    action: 'ARCA_WSAA_LOGIN_FAILED',
+                    result: 'FAILURE',
+                    metadata: { code: error.code },
+                  },
+                  tx,
+                );
+              });
+              this.logger.warn({
+                event: 'arca_wsaa_login_failed',
+                requestId: c.requestId,
+                code: error.code,
+                category: wsaaRetryCategory(error.code),
+              });
+              throw error;
+            }
+          } finally {
+            key.fill(0);
           }
-        } finally {
-          key.fill(0);
-        }
-      });
+        },
+        this.ticketScope(c.organizationId, identity),
+      );
       await this.write(c, async (tx) => {
         const active = await this.active(tx, c.organizationId);
         if (active?.id !== identity.id || active.version !== identity.version)
           throw new ConflictException('La credencial cambió. Volvé a cargarla.');
+        const profile = await tx.organizationFiscalProfile.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        if (profile?.cuit !== identity.cuit)
+          throw new ConflictException('El CUIT cambió. Cargá la información actual.');
         if (recordTest)
           await this.audit.success(
             c,
@@ -909,6 +997,14 @@ export class FiscalService {
       requestId: c.requestId,
       resourceType: 'ArcaCredential',
       resourceId: id,
+    };
+  }
+  private ticketScope(org: string, credential: Credential) {
+    return {
+      organizationId: org,
+      credentialId: credential.id,
+      cuit: credential.cuit,
+      privateKeyStorageKey: credential.privateKeyStorageKey,
     };
   }
   async testConnection(c: RequestActorContext) {

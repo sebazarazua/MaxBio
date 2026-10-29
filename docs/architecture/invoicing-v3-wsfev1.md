@@ -1,5 +1,7 @@
 # Facturación V3 — WSFEv1 de homologación
 
+Actualización 29/10/2026: [TA persistente, preflight de numeración y QA V4](arca-v4-persistent-ta.md). El resto de este documento conserva el diseño y la evidencia histórica V3.
+
 Diseño previo a implementación, 28/10/2026, HEAD inicial `8a69aa0`, árbol limpio.
 Se preservan la factura comercial V1, sus Remitos/líneas y la credencial ACTIVE existente.
 Sin commits, push, PDF, producción, CAEA, notas de crédito/débito, moneda extranjera ni

@@ -15,6 +15,8 @@ export const arcaMessages = {
   WSAA_UNAVAILABLE:
     'El servicio de ARCA está temporalmente fuera de servicio. Esperá al menos un minuto antes de volver a probar.',
   NETWORK_ERROR: 'No pudimos comunicarnos con ARCA.',
+  TICKET_STORAGE_UNAVAILABLE:
+    'No pudimos recuperar o guardar el acceso de ARCA en el almacenamiento privado. Revisá el almacenamiento del servidor antes de volver a probar.',
   INVALID_RESPONSE: 'ARCA devolvió una respuesta que no pudimos validar.',
   ALREADY_AUTHENTICATED:
     'ARCA informa un acceso todavía vigente. Esperá su vencimiento antes de probar nuevamente.',
@@ -47,7 +49,14 @@ export const WSAA_RETRY_MS = 60 * 1000;
 // Network failures do not prove that loginCms was never delivered; never retry them automatically.
 export function wsaaRetryCategory(code: ArcaErrorCode) {
   if (code === 'ALREADY_AUTHENTICATED') return 'EXISTING_TICKET' as const;
-  if (['NETWORK_ERROR', 'INVALID_RESPONSE', 'TICKET_TIME_INVALID'].includes(code))
+  if (
+    [
+      'NETWORK_ERROR',
+      'INVALID_RESPONSE',
+      'TICKET_TIME_INVALID',
+      'TICKET_STORAGE_UNAVAILABLE',
+    ].includes(code)
+  )
     return 'UNCERTAIN' as const;
   if (code === 'WSAA_UNAVAILABLE') return 'TRANSIENT' as const;
   if (['WAITING', 'EXPIRING_TICKET'].includes(code)) return 'WAITING' as const;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { randomBytes, randomUUID, X509Certificate } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readdir, rmdir } from 'node:fs/promises';
+import { mkdtemp, readdir, rmdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Test } from '@nestjs/testing';
@@ -29,6 +29,10 @@ import {
 } from '../src/modules/fiscal/arca/arca-errors.js';
 import { ArcaWsaaClient } from '../src/modules/fiscal/arca/wsaa-client.js';
 import { ArcaTicketProvider } from '../src/modules/fiscal/arca/ticket-provider.js';
+import {
+  TICKET_STORAGE,
+  EncryptedPrivateTicketStorage,
+} from '../src/modules/fiscal/infrastructure/private-ticket-storage.js';
 import { CMS_SIGNER } from '../src/modules/fiscal/arca/openssl-crypto.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
 import { crypto, ephemeralFiles, testCertificate, wsassCertificate } from './arca-fixtures.js';
@@ -171,6 +175,13 @@ before(
           await storage.remove(org, key);
         },
       })
+      .overrideProvider(TICKET_STORAGE)
+      .useValue(
+        new EncryptedPrivateTicketStorage(
+          storage,
+          new LocalPrivateCredentialStorage(join(root, 'tickets')),
+        ),
+      )
       .overrideProvider(CMS_SIGNER)
       .useValue({
         sign: async (xml: string, key: Buffer, cert: Buffer) => {
@@ -225,7 +236,13 @@ after(async () => {
         await storage.remove(organizationId, organizationId + '/' + name);
       await rmdir(dir).catch(() => {});
     }
-  if (root) await rmdir(root);
+  if (root) {
+    assert.ok(
+      resolve(root).startsWith(resolve(tmpdir())) && root.includes('maxbio-fiscal-integration-'),
+    );
+    await rm(join(root, 'tickets'), { recursive: true, force: true });
+    await rmdir(root);
+  }
   await client.$disconnect();
   await parent.$executeRawUnsafe('DROP DATABASE IF EXISTS "' + databaseName + '" WITH (FORCE)');
   await parent.$disconnect();
@@ -404,6 +421,15 @@ test('WSAA HTTP: 20 calls single flight, server-only tickets, restart reservatio
   await checked(await request('arca/wsaa/test', 'POST', {}));
   assert.equal(calls, 1);
   app.get(ArcaTicketProvider).invalidate(org);
+  assert.equal((await readiness()).access.status, 'AUTHENTICATED');
+  const beforeNearExpiry = at;
+  at = new Date(at.getTime() + 43140000);
+  const nearExpiry = await readiness();
+  assert.equal(nearExpiry.access.state, 'EXPIRING');
+  assert.match(nearExpiry.access.testBlockedReason!, /próximo a vencer/);
+  assert.equal(nearExpiry.canTest, false);
+  at = beforeNearExpiry;
+  await app.get(ArcaTicketProvider).remove(org, (await readiness()).activeCredentialId!);
   const blocked = await readiness();
   assert.equal(blocked.access.status, 'WAITING');
   assert.equal(blocked.canTest, false);
@@ -460,7 +486,7 @@ test('ACTIVE + pending: WSAA signs with ACTIVE; discard is authorized, audited, 
   assert.equal(row.certificateStorageKey, null);
   assert.equal(a.certificateMatchesKey, true);
   // Fresh CMS, not only cache reuse. Isolated test DB and mock WSAA.
-  app.get(ArcaTicketProvider).invalidate(org);
+  await app.get(ArcaTicketProvider).remove(org, activeId);
   await client.arcaIntegrationConfig.update({
     where: { organizationId: org },
     data: { authBlockedUntil: null },
@@ -733,7 +759,7 @@ test('Late WSAA response for replaced A cannot overwrite readiness for new ACTIV
   } finally {
     key.fill(0);
   }
-  app.get(ArcaTicketProvider).invalidate(org);
+  await app.get(ArcaTicketProvider).remove(org, old);
   await client.arcaIntegrationConfig.update({
     where: { organizationId: org },
     data: { authBlockedUntil: null },
@@ -817,7 +843,7 @@ test('Corrupt multiple ACTIVE rows fail closed in readiness and WSAA; no CMS or 
 
 test('WSAA retry persistence, original error visibility, restart reservation and safe audit', async () => {
   const activeId = (await readiness()).activeCredentialId!;
-  app.get(ArcaTicketProvider).invalidate(org);
+  await app.get(ArcaTicketProvider).remove(org, activeId);
   for (const [code, long] of [
     ['CLOCK_ERROR', false],
     ['SERVICE_UNAUTHORIZED', false],
@@ -864,9 +890,13 @@ test('WSAA retry persistence, original error visibility, restart reservation and
   assert.equal((await readiness()).access.status, 'AUTHENTICATED');
   app.get(ArcaTicketProvider).invalidate(org);
   const afterRestart = await readiness();
-  assert.equal(afterRestart.access.status, 'WAITING');
+  assert.equal(afterRestart.access.status, 'AUTHENTICATED');
   assert.ok(afterRestart.lastVerifiedAt);
-  assert.equal(afterRestart.canTest, false);
-  assert.match(afterRestart.access.testBlockedReason!, /no está disponible en este proceso/);
+  assert.equal(afterRestart.canTest, true);
+  await app.get(ArcaTicketProvider).remove(org, activeId);
+  const legacy = await readiness();
+  assert.equal(legacy.access.state, 'LOST_TICKET');
+  assert.equal(legacy.canTest, false);
+  assert.match(legacy.access.testBlockedReason!, /no está disponible en este proceso/);
   assert.equal(await client.invoiceFiscalAttempt.count(), 0);
 });

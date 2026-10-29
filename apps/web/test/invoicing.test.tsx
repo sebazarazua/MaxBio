@@ -616,6 +616,47 @@ test('V3 UI: explicit homologation confirmation, stable operation and no double 
   ]);
   assert.equal(changed?.fiscal?.status, 'AUTHORIZED');
 });
+test('V4 UI: read-only sequence check enables preflight; first authorization click still sends nothing', async () => {
+  const response = {
+    ready: false,
+    reasons: ['Falta comprobar la numeración en ARCA.'],
+    pointOfSale: 23,
+    conditions: [{ id: 1, label: 'Responsable Inscripto' }],
+    receiverVatConditionId: 1,
+    canCheckSequence: true,
+    checks: [{ id: 'sequence', label: 'Secuencia ARCA', ready: false }],
+  };
+  serve((c) => ({
+    body: c.url.endsWith('/sequence')
+      ? {
+          ...response,
+          ready: true,
+          reasons: [],
+          checks: [{ id: 'sequence', label: 'Secuencia ARCA', ready: true }],
+          sequence: {
+            status: 'VERIFIED',
+            checkedAt: '2026-10-29T15:00:00Z',
+            validUntil: null,
+            lastNumber: 0,
+            message: null,
+          },
+        }
+      : response,
+  }));
+  await mount(
+    <InvoiceFiscalPanel invoice={fiscalInvoice()} isAdmin changed={() => {}} reload={() => {}} />,
+  );
+  assert.equal(button('Autorizar en ARCA')!.disabled, true);
+  assert.equal(button('Autorizar en ARCA')!.getAttribute('aria-busy'), 'false');
+  assert.equal(button('Consultar numeración en ARCA')!.disabled, false);
+  await click(button('Consultar numeración en ARCA'));
+  assert.equal(button('Autorizar en ARCA')!.disabled, false);
+  await click(button('Autorizar en ARCA'));
+  assert.ok(button('Confirmar autorización de prueba'));
+  assert.equal(calls.filter((c) => c.url.endsWith('/sequence') && c.method === 'POST').length, 1);
+  assert.equal(calls.filter((c) => c.url.endsWith('/authorize')).length, 0);
+});
+
 test('V3 UI: recipient, references and POS blockers are visible together and prevent submission', async () => {
   const reasons = [
     'Falta completar el CUIT del cliente para autorizar esta factura en esta versión.',

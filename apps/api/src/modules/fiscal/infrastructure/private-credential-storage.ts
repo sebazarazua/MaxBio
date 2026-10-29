@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -75,6 +75,19 @@ export class LocalPrivateCredentialStorage implements PrivateCredentialStorage {
       return await file.readFile();
     } finally {
       await file.close();
+    }
+  }
+  // Atomic replacement for encrypted TA files only. Temp files remain private and bounded.
+  async replace(org: string, key: string, bytes: Uint8Array) {
+    const target = this.path(org, key);
+    if (bytes.length > 102400) throw new Error('Private file too large');
+    const temporary = await this.put(org, bytes);
+    try {
+      await rename(this.path(org, temporary), target);
+    } catch {
+      throw new Error('Private storage unavailable');
+    } finally {
+      await this.remove(org, temporary);
     }
   }
   async remove(org: string, key: string) {

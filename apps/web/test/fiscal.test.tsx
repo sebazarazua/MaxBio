@@ -3,6 +3,7 @@ import { registerHooks } from 'node:module';
 import { afterEach, mock, test } from 'node:test';
 import { act, createElement, type ReactNode } from 'react';
 import { JSDOM } from 'jsdom';
+import { readFile } from 'node:fs/promises';
 import { arcaReadinessSchema, type ArcaReadiness } from '@maxbio/contracts';
 registerHooks({
   resolve: (specifier, context, next) =>
@@ -36,7 +37,17 @@ const { createRoot } = await import('react-dom/client');
 const { FiscalSettingsView, ArcaConnection } = await import('../src/components/fiscal/settings.js');
 const { proxyFiscal } = await import('../src/lib/server/fiscal-proxy.js');
 const { WsfeSettings } = await import('../src/components/fiscal/invoicing-settings.js');
+const { deadlineDelay } = await import('../src/hooks/use-deadline-refresh.js');
 const id = '00000000-0000-4000-8000-000000000001';
+test('Disabled CSS never implies loading; only explicit aria-busy enables progress cursor', async () => {
+  const css = await readFile(new URL('../../src/app/globals.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(
+    css,
+    /(?:primary|secondary)-button:disabled\s*\{[^}]*cursor:\s*(?:wait|progress)/,
+  );
+  assert.match(css, /button:disabled\s*\{[^}]*cursor:\s*not-allowed/);
+  assert.match(css, /button\[aria-busy='true'\]:disabled\s*\{[^}]*cursor:\s*progress/);
+});
 function readiness(extra: Partial<ArcaReadiness> = {}): ArcaReadiness {
   return arcaReadinessSchema.parse({
     environment: 'HOMOLOGATION',
@@ -74,8 +85,77 @@ function readiness(extra: Partial<ArcaReadiness> = {}): ArcaReadiness {
 }
 const originalFetch = globalThis.fetch;
 afterEach(() => {
+  mock.timers.reset();
   globalThis.fetch = originalFetch;
   document.body.replaceChildren();
+});
+
+test('retryAfter schedules one readiness refresh after expiry, never a login or interval', async () => {
+  const now = new Date('2026-10-29T18:00:00.000Z');
+  mock.timers.enable({ apis: ['Date', 'setTimeout'], now });
+  const base = readiness();
+  const waiting = readiness({
+    ...base,
+    access: {
+      ...base.access,
+      status: 'WAITING',
+      state: 'LOST_TICKET',
+      retryAfter: '2026-10-29T18:00:01.000Z',
+    },
+  });
+  const urls: string[] = [];
+  let changed: ArcaReadiness | undefined;
+  globalThis.fetch = async (url, init) => {
+    assert.ok(!init?.method || init.method === 'GET');
+    urls.push(String(url));
+    return Response.json(readiness({ canTest: true }));
+  };
+  const ui = await mount(
+    <ArcaConnection
+      arca={waiting}
+      changed={(a) => {
+        changed = a;
+      }}
+    />,
+  );
+  try {
+    assert.match(ui.host.textContent!, /TA conocido pero no recuperable/);
+    assert.match(ui.host.textContent!, /Existe evidencia de un acceso todavía vigente/);
+    assert.equal(urls.length, 0);
+    await act(async () => mock.timers.tick(2001));
+    assert.deepEqual(urls, ['/api/fiscal/arca/readiness']);
+    assert.equal(changed?.canTest, true);
+    await act(async () => ui.root.render(<ArcaConnection arca={waiting} changed={() => {}} />));
+    await act(async () => mock.timers.tick(60000));
+    assert.equal(urls.length, 1);
+    assert.equal(deadlineDelay('invalid'), null);
+    assert.equal(deadlineDelay('2099-01-01T00:00:00Z', now.getTime()), 2147483647);
+  } finally {
+    await ui.close();
+  }
+});
+
+test('Connection busy is explicit and distinct from a disabled prerequisite', async () => {
+  const base = readiness({ canTest: true });
+  let release!: (r: Response) => void;
+  globalThis.fetch = async () =>
+    new Promise<Response>((r) => {
+      release = r;
+    });
+  const ui = await mount(<ArcaConnection arca={base} changed={() => {}} />);
+  try {
+    const b = button(ui.host, 'Probar conexión con ARCA');
+    assert.equal(b.getAttribute('aria-busy'), 'false');
+    await act(async () => b.click());
+    assert.equal(b.disabled, true);
+    assert.equal(b.getAttribute('aria-busy'), 'true');
+    assert.equal(b.textContent, 'Consultando ARCA…');
+    await act(async () => release(Response.json(base)));
+    assert.equal(b.disabled, false);
+    assert.equal(b.getAttribute('aria-busy'), 'false');
+  } finally {
+    await ui.close();
+  }
 });
 async function mount(element: ReactNode) {
   const host = document.createElement('div');

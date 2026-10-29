@@ -4,6 +4,7 @@ import { before, after, test } from 'node:test';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { readFile, writeFile, unlink } from 'node:fs/promises';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { createDatabaseClient } from '@maxbio/database';
@@ -31,7 +32,8 @@ import {
 } from '../src/modules/fiscal/arca/wsfe-types.js';
 
 process.env.NODE_ENV = 'test';
-process.env.WEB_ORIGIN = 'http://localhost:3000';
+process.env.WEB_ORIGIN =
+  process.env.MAXBIO_WSFE_BROWSER === '1' ? 'http://localhost:18030' : 'http://localhost:3000';
 const parent = testDatabaseManagement(process.env.DATABASE_URL!),
   name = 'maxbio_wsfe_test_' + randomUUID().replaceAll('-', '');
 const url = new URL(process.env.DATABASE_URL!);
@@ -98,7 +100,7 @@ async function request(path: string, method = 'GET', body?: unknown, actor = 0, 
     method,
     headers: {
       Cookie: cookies[actor]!,
-      Origin: 'http://localhost:3000',
+      Origin: process.env.WEB_ORIGIN!,
       'Content-Type': 'application/json',
       ...(csrf ? { 'X-Maxbio-Csrf': '1' } : {}),
     },
@@ -303,12 +305,63 @@ before(
       .overrideProvider(FiscalService)
       .useValue({
         readiness: async () => ({
+          environment: 'HOMOLOGATION',
+          service: 'wsfe',
+          version: 1,
+          cuitValid: true,
+          lastVerifiedAt: at.toISOString(),
+          openssl: 'AVAILABLE',
+          privateKey: true,
+          csr: true,
+          certificateInstalled: true,
+          canTest: wsaaAvailable,
+          pendingCredentialId: null,
+          credentials: [
+            {
+              id: active,
+              commonName: 'Synthetic browser fixture',
+              status: 'ACTIVE',
+              version: 1,
+              createdAt: at.toISOString(),
+              replacedAt: null,
+              discardedAt: null,
+              secretsDeletedAt: null,
+              fingerprint: 'TEST',
+              serial: '1',
+              subject: 'Test',
+              issuer: 'Test',
+              validFrom: '2026-01-01T00:00:00.000Z',
+              validTo: '2028-01-01T00:00:00.000Z',
+              certificateState: 'VALID',
+            },
+          ],
+          trust: 'VERIFIED_BY_WSAA',
+          wsfeImplemented: true,
+          productionEnabled: false,
           fiscalProfile: 'COMPLETE',
           certificateMatchesKey: true,
           cuit: '27110247244',
           activeCredentialId: active,
-          access: { status: wsaaAvailable ? 'AUTHENTICATED' : 'WAITING', retryAfter: null },
+          access: {
+            status: wsaaAvailable ? 'AUTHENTICATED' : 'WAITING',
+            state: wsaaAvailable ? 'ACTIVE' : 'UNCERTAIN',
+            retryAfter: null,
+            obtainedAt: at.toISOString(),
+            expiresAt: new Date(at.getTime() + 43200000).toISOString(),
+            message: null,
+            lastResultCode: 'SUCCESS',
+            lastAttemptAt: at.toISOString(),
+            lastError: null,
+            testBlockedReason: null,
+          },
         }),
+        testConnection: async () => {
+          // The browser fixture authenticates only against this disposable test double.
+          const r = await fetch(base + '/api/v1/fiscal/arca/readiness', {
+            headers: { Cookie: cookies[0]! },
+          });
+          return r.json();
+        },
       })
       .overrideProvider(AuditService)
       .useValue({
@@ -369,6 +422,83 @@ after(async () => {
   await parent.query('DROP DATABASE IF EXISTS "' + name + '" WITH (FORCE)');
   await parent.end();
 });
+
+test(
+  'Browser fixture: full UI preflight, disposable data, no authorization',
+  { timeout: 660000 },
+  async (t) => {
+    if (process.env.MAXBIO_WSFE_BROWSER !== '1') {
+      t.skip('Opt-in Playwright fixture');
+      return;
+    }
+    const before = sends;
+    let cfg = wsfeConfigurationSchema.parse(
+      await checked(await request('fiscal/arca/invoicing/refresh', 'POST', {})),
+    );
+    cfg = wsfeConfigurationSchema.parse(
+      await checked(
+        await request('fiscal/arca/invoicing/point-of-sale', 'POST', {
+          expectedVersion: cfg.version,
+          pointOfSale: 23,
+        }),
+      ),
+    );
+    assert.equal(cfg.pointOfSale, 23);
+    const invoice = await ready();
+    const state = resolve('../../artifacts/ta-browser-state-private.json');
+    const done = resolve('../../artifacts/ta-browser-done.json');
+    await unlink(done).catch(() => {});
+    await writeFile(
+      state,
+      JSON.stringify({
+        cookies: [
+          {
+            name: 'maxbio-session',
+            value: cookies[0]!.split('=')[1],
+            domain: 'localhost',
+            path: '/',
+            expires: -1,
+            httpOnly: true,
+            secure: false,
+            sameSite: 'Lax',
+          },
+        ],
+        origins: [],
+      }),
+      { mode: 0o600 },
+    );
+    await writeFile(
+      resolve('../../artifacts/ta-browser-fixture.json'),
+      JSON.stringify({
+        apiBase: base,
+        invoiceId: invoice.id,
+        productId: product,
+        customerId: customerA,
+        deliveryNoteId: invoice.deliveryNotes[0]!.id,
+      }),
+    );
+    console.log(
+      'Disposable browser fixture ready; waiting for Playwright preflight without authorization.',
+    );
+    try {
+      let complete = false;
+      for (let n = 0; n < 600; n++) {
+        const result = await readFile(done, 'utf8').catch(() => '');
+        if (result) {
+          assert.equal(JSON.parse(result).success, true);
+          complete = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      assert.ok(complete, 'Browser did not complete the preflight');
+      assert.equal(sends, before, 'Browser must stop before authorization');
+      assert.equal(await db.invoiceFiscalAttempt.count({ where: { invoiceId: invoice.id } }), 0);
+    } finally {
+      await unlink(state).catch(() => {});
+    }
+  },
+);
 
 test('Reference discovery and POS: server-validated values, confirmation, stale version, ADMIN and CSRF', async () => {
   let cfg = wsfeConfigurationSchema.parse(await checked(await request('fiscal/arca/invoicing')));
@@ -472,8 +602,46 @@ test('Readiness lists local recipient blockers alongside WSAA, missing reference
   const r = invoiceFiscalReadinessSchema.parse(
     await checked(await request(`invoices/${good.id}/fiscal/readiness`)),
   );
-  assert.equal(r.ready, true, JSON.stringify(r.reasons));
+  assert.equal(r.ready, false);
+  assert.equal(r.canCheckSequence, true, JSON.stringify(r.reasons));
+  const sequence = invoiceFiscalReadinessSchema.parse(
+    await checked(await request(`invoices/${good.id}/fiscal/sequence`, 'POST', {})),
+  );
+  assert.equal(sequence.ready, true, JSON.stringify(sequence.reasons));
+  assert.equal(sequence.sequence?.status, 'VERIFIED');
   assert.equal(sends, before);
+});
+
+test('Sequence diagnostic reports remote errors, expires, respects access control and never authorizes', async () => {
+  const i = await ready(),
+    before = sends;
+  await checked(await request(`invoices/${i.id}/fiscal/sequence`, 'POST', {}, 1), 403);
+  await checked(await request(`invoices/${i.id}/fiscal/sequence`, 'POST', {}, 0, false), 403);
+  await checked(
+    await request(`invoices/${i.id}/fiscal/sequence`, 'POST', { authorize: true }),
+    400,
+  );
+  failLast = true;
+  const failure = invoiceFiscalReadinessSchema.parse(
+    await checked(await request(`invoices/${i.id}/fiscal/sequence`, 'POST', {})),
+  );
+  failLast = false;
+  assert.equal(failure.ready, false);
+  assert.equal(failure.sequence?.status, 'ERROR');
+  const ok = invoiceFiscalReadinessSchema.parse(
+    await checked(await request(`invoices/${i.id}/fiscal/sequence`, 'POST', {})),
+  );
+  assert.equal(ok.ready, true);
+  const savedTime = at;
+  at = new Date(at.getTime() + 300001);
+  const expired = invoiceFiscalReadinessSchema.parse(
+    await checked(await request(`invoices/${i.id}/fiscal/readiness`)),
+  );
+  assert.equal(expired.ready, false);
+  assert.equal(expired.sequence?.status, 'PENDING');
+  at = savedTime;
+  assert.equal(sends, before);
+  assert.equal(await db.invoiceFiscalAttempt.count({ where: { invoiceId: i.id } }), 0);
 });
 
 test('READY → CAE, replay, verification and commercial/fiscal immutability', async () => {

@@ -15,6 +15,12 @@ import { ArcaWsfeClient } from './arca/wsfe-client.js';
 import { ArcaWsfeProvider } from './arca/wsfe-provider.js';
 import { FISCAL_PROVIDER } from './arca/wsfe-types.js';
 import { WsfeConfigurationService } from './application/wsfe-configuration.service.js';
+import {
+  TICKET_STORAGE,
+  EncryptedPrivateTicketStorage,
+  type PrivateTicketStorage,
+} from './infrastructure/private-ticket-storage.js';
+import type { PrivateCredentialStorage } from './infrastructure/private-credential-storage.js';
 @Module({
   imports: [DatabaseModule, IdentityModule],
   controllers: [FiscalController],
@@ -26,13 +32,19 @@ import { WsfeConfigurationService } from './application/wsfe-configuration.servi
     { provide: FISCAL_PROVIDER, useExisting: ArcaWsfeProvider },
     OpenSslArcaCrypto,
     { provide: CREDENTIAL_STORAGE, useFactory: () => new LocalPrivateCredentialStorage() },
+    {
+      provide: TICKET_STORAGE,
+      inject: [CREDENTIAL_STORAGE],
+      useFactory: (storage: PrivateCredentialStorage) => new EncryptedPrivateTicketStorage(storage),
+    },
     { provide: CMS_SIGNER, useExisting: OpenSslArcaCrypto },
     { provide: ARCA_CLOCK, useValue: systemArcaClock },
     { provide: ArcaWsaaClient, useFactory: () => new ArcaWsaaClient() },
     {
       provide: ArcaTicketProvider,
-      inject: [ARCA_CLOCK],
-      useFactory: (clock: ArcaClock) => new ArcaTicketProvider(clock),
+      inject: [ARCA_CLOCK, TICKET_STORAGE],
+      useFactory: (clock: ArcaClock, storage: PrivateTicketStorage) =>
+        new ArcaTicketProvider(clock, storage),
     },
   ],
   exports: [ArcaTicketProvider, FISCAL_PROVIDER, WsfeConfigurationService, ARCA_CLOCK],

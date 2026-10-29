@@ -36,6 +36,20 @@ export class WsfeConfigurationService {
     const parsed = wsfeReferencesSchema.safeParse(config?.wsfeReferences);
     const refs = parsed.success ? parsed.data : null,
       reasons: string[] = [];
+    const credentialReady =
+      readiness.fiscalProfile === 'COMPLETE' && readiness.certificateMatchesKey;
+    const referencesReady = Boolean(
+      refs &&
+      config?.wsfeCheckedAt &&
+      this.clock.now().getTime() - config.wsfeCheckedAt.getTime() <= REFERENCES_TTL_MS &&
+      config.wsfeCuit === readiness.cuit &&
+      config.wsfeCredentialId === readiness.activeCredentialId,
+    );
+    const pointReady = Boolean(
+      config?.pointOfSale &&
+      config.pointOfSaleCuit === readiness.cuit &&
+      refs?.points.includes(config.pointOfSale),
+    );
     if (readiness.fiscalProfile !== 'COMPLETE' || !readiness.certificateMatchesKey)
       reasons.push('Completá el perfil fiscal y verificá la credencial activa de homologación.');
     if (readiness.access.status !== 'AUTHENTICATED')
@@ -59,6 +73,17 @@ export class WsfeConfigurationService {
     )
       reasons.push('Elegí y confirmá un punto de venta habilitado por ARCA para CAE.');
     return {
+      retryAfter: readiness.access.retryAfter,
+      checks: [
+        { id: 'credential', label: 'Credencial ARCA', ready: credentialReady },
+        { id: 'wsaa', label: 'Acceso WSAA', ready: readiness.access.status === 'AUTHENTICATED' },
+        { id: 'references', label: 'Referencias WSFE', ready: referencesReady },
+        {
+          id: 'point',
+          label: `Punto de venta${config?.pointOfSale ? ' ' + String(config.pointOfSale).padStart(5, '0') : ''}`,
+          ready: pointReady,
+        },
+      ],
       environment: 'HOMOLOGATION',
       version: config?.version ?? 0,
       pointOfSale: config?.pointOfSale ?? null,

@@ -662,7 +662,7 @@
 }
 .primary-button:disabled {
   opacity: 0.7;
-  cursor: wait;
+  cursor: not-allowed;
 }
 .auth-help {
   margin-top: 24px;
@@ -1002,7 +1002,14 @@ h2 {
 }
 .secondary-button:disabled {
   color: var(--muted);
-  cursor: wait;
+  cursor: not-allowed;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+button[aria-busy='true'],
+button[aria-busy='true']:disabled {
+  cursor: progress;
 }
 .home-note {
   margin: 22px 0 0;
