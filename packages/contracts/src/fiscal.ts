@@ -219,6 +219,8 @@ export function fiscalRouteContract(path: string, method: string) {
   const id = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}';
   if (path === 'fiscal/arca/invoicing' && method === 'GET')
     return { body: null, response: wsfeConfigurationSchema };
+  if (path === 'fiscal/arca/invoicing/prepare' && method === 'POST')
+    return { body: arcaTestSchema, response: wsfeConfigurationSchema };
   if (path === 'fiscal/arca/invoicing/refresh' && method === 'POST')
     return { body: arcaTestSchema, response: wsfeConfigurationSchema };
   if (path === 'fiscal/arca/invoicing/point-of-sale' && method === 'POST')

@@ -13,6 +13,7 @@ import {
   fiscalCompleteness,
   deliveryNoteCustomerSchema,
   validCuit,
+  type WsfeConfiguration,
   type InvoiceTransition,
   type InvoiceView,
   type FiscalMessage,
@@ -34,8 +35,10 @@ import { WsfeConfigurationService } from '../../fiscal/application/wsfe-configur
 import { requireFiscalAdmin } from '../../fiscal/application/fiscal-access.js';
 import {
   mapFiscalInvoice,
+  availableInvoiceTypes,
   localFiscalReasons,
   fiscalClass,
+  fiscalDocumentTypes,
   validateFiscalDate,
   sameFiscalInvoice,
 } from '../domain/fiscal-mapper.js';
@@ -59,6 +62,30 @@ const seqWhere = (a: { organizationId: string; pointOfSale: number; documentType
 });
 @Injectable()
 export class InvoiceFiscalService {
+  private readonly preparations = new Map<
+    string,
+    Promise<Awaited<ReturnType<InvoiceFiscalService['readiness']>>>
+  >();
+  // Authorization is deliberately absent from preparation. Every caller is authorized before joining.
+  async prepareFiscalAuthorization(c: RequestActorContext, id: string) {
+    const invoice = await this.write(c, (tx) => this.record(tx, c, id));
+    if (invoice.fiscalStatus !== 'NOT_SUBMITTED') return this.readiness(c, id);
+    const key = `${c.organizationId}:${id}:${invoice.version}`;
+    const pending = this.preparations.get(key);
+    if (pending) return pending;
+    const run = (async () => {
+      const cfg = await this.configuration.prepare(c);
+      const state = await this.readiness(c, id, cfg);
+      if (!cfg.ready) return state;
+      if (state.retryAfter && new Date(state.retryAfter) > this.clock.now()) return state;
+      if (state.canCheckSequence && state.sequence.status !== 'VERIFIED')
+        return this.checkSequence(c, id);
+      return state;
+    })().finally(() => this.preparations.delete(key));
+    this.preparations.set(key, run);
+    return run;
+  }
+
   private readonly sequenceChecks = new Map<
     string,
     { number: number | null; checkedAt: Date; message: string | null }
@@ -120,9 +147,9 @@ export class InvoiceFiscalService {
         'La factura cambió. Cargá la información actual antes de continuar.',
       );
   }
-  async readiness(c: RequestActorContext, id: string) {
+  async readiness(c: RequestActorContext, id: string, preparedConfiguration?: WsfeConfiguration) {
     const i = await this.write(c, (tx) => this.record(tx, c, id));
-    const cfg = await this.configuration.get(c),
+    const cfg = preparedConfiguration ?? (await this.configuration.get(c)),
       reasons = [...cfg.reasons],
       cls = i.invoiceType ? fiscalClass(i.invoiceType) : undefined;
     const conditions = cls ? (cfg.references?.conditions[cls] ?? []) : [];
@@ -153,6 +180,19 @@ export class InvoiceFiscalService {
         );
       }
     }
+    if (cfg.pointOfSale && i.invoiceType) {
+      const sequenceState = await this.db.client.fiscalSequence.findUnique({
+        where: seqWhere({
+          organizationId: c.organizationId,
+          pointOfSale: cfg.pointOfSale,
+          documentType: fiscalDocumentTypes[i.invoiceType],
+        }),
+      });
+      if (sequenceState?.blockedAttemptId)
+        reasons.push(
+          'Hay un comprobante de este punto de venta y tipo pendiente de verificar. Resolvelo antes de autorizar otro.',
+        );
+    }
     const canCheckSequence = reasons.length === 0;
     const key = hash([c.organizationId, id, i.version, p?.version, cfg.version, cfg.pointOfSale]);
     const cached = this.sequenceChecks.get(key);
@@ -161,7 +201,7 @@ export class InvoiceFiscalService {
     const sequenceReady = Boolean(
       canCheckSequence && sequence && sequence.number !== null && !sequence.message,
     );
-    if (!sequenceReady)
+    if (!sequenceReady && canCheckSequence)
       reasons.push(
         sequence?.message ??
           'Falta comprobar la numeración de este punto de venta y tipo en ARCA. Esta consulta no emite comprobantes.',
@@ -171,7 +211,30 @@ export class InvoiceFiscalService {
       ready: reasons.length === 0,
       reasons: [...new Set(reasons)],
       canCheckSequence,
-      retryAfter: cfg.retryAfter,
+      typeAssistanceAvailable: Boolean(
+        cfg.references &&
+        p &&
+        (i.status === 'DRAFT' ? i.customer.arcaVatConditionId : i.receiverVatConditionId),
+      ),
+      invoiceTypes: availableInvoiceTypes(
+        p,
+        i.status === 'DRAFT' ? i.customer.arcaVatConditionId : i.receiverVatConditionId,
+        cfg.references,
+      ),
+      canEditReceiver:
+        i.status === 'READY' &&
+        i.fiscalStatus === 'NOT_SUBMITTED' &&
+        i.fiscalAttempts.length === 0 &&
+        !i.customer.archivedAt,
+      customerVersion: i.customer.version,
+      configurationRequired:
+        cfg.checks.some((v) => ['credential', 'point'].includes(v.id) && !v.ready) ||
+        fiscalCompleteness(p) !== 'COMPLETE',
+      retryAfter:
+        cfg.retryAfter ??
+        (sequence?.message && sequence.checkedAt.getTime() + 60000 > this.clock.now().getTime()
+          ? new Date(sequence.checkedAt.getTime() + 60000).toISOString()
+          : null),
       sequence: {
         status: sequenceReady
           ? ('VERIFIED' as const)
@@ -270,28 +333,65 @@ export class InvoiceFiscalService {
   async setReceiver(
     c: RequestActorContext,
     id: string,
-    input: { expectedVersion: number; conditionId: number },
+    input: {
+      expectedVersion: number;
+      conditionId: number;
+      cuit?: string;
+      expectedCustomerVersion?: number;
+    },
   ) {
-    await this.write(c, (tx) => this.record(tx, c, id));
-    const source = await this.configuration.fetchReferences(c);
+    const initial = await this.write(c, (tx) => this.record(tx, c, id));
+    if (
+      initial.status !== 'READY' ||
+      initial.fiscalStatus !== 'NOT_SUBMITTED' ||
+      initial.fiscalAttempts.length
+    )
+      throw new ConflictException(
+        'Los datos fiscales sólo se pueden completar antes del primer intento de autorización.',
+      );
+    const cfg = await this.configuration.prepare(c);
+    if (!cfg.references || !cfg.checks.find((v) => v.id === 'references')?.ready)
+      throw new BadRequestException(
+        'No pudimos actualizar las condiciones frente al IVA desde ARCA. Reintentá.',
+      );
     await this.write(c, async (tx) => {
       const initial = await this.record(tx, c, id);
       await tx.$queryRaw`SELECT id FROM "Customer" WHERE "organizationId"=${c.organizationId}::uuid AND id=${initial.customerId}::uuid FOR UPDATE`;
       const i = await this.lockInvoice(tx, c, id);
       this.version(i.version, input.expectedVersion);
-      if (i.fiscalStatus !== 'NOT_SUBMITTED' || !i.invoiceType)
+      if (
+        i.status !== 'READY' ||
+        i.fiscalStatus !== 'NOT_SUBMITTED' ||
+        i.fiscalAttempts.length ||
+        !i.invoiceType ||
+        i.customer.archivedAt
+      )
         throw new ConflictException(
           'Elegí el tipo y corregí la factura antes de cambiar sus datos fiscales.',
         );
       const cls = fiscalClass(i.invoiceType)!;
-      const condition = source.references.conditions[cls].find((r) => r.id === input.conditionId);
+      if (input.expectedCustomerVersion !== undefined)
+        this.version(i.customer.version, input.expectedCustomerVersion);
+      const condition = cfg.references!.conditions[cls].find((r) => r.id === input.conditionId);
       if (!condition)
         throw new BadRequestException(
           'Elegí una condición IVA que ARCA admita para este tipo de factura.',
         );
-      await tx.customer.update({
-        where: { id: i.customerId },
+      const snapshot = deliveryNoteCustomerSchema.parse(i.customerSnapshot);
+      if (
+        input.expectedCustomerVersion === undefined &&
+        (input.cuit !== undefined || i.customer.cuit !== snapshot.cuit)
+      )
+        throw new ConflictException(
+          'El cliente cambió. Cargá la información actual antes de continuar.',
+        );
+      const cuit = input.cuit ?? snapshot.cuit;
+      if (!cuit || !validCuit(cuit))
+        throw new BadRequestException('Completá un CUIT válido para el cliente.');
+      const customer = await tx.customer.update({
+        where: { organizationId_id: { organizationId: c.organizationId, id: i.customerId } },
         data: {
+          cuit,
           arcaVatConditionId: condition.id,
           arcaVatConditionLabel: condition.label,
           version: { increment: 1 },
@@ -300,11 +400,13 @@ export class InvoiceFiscalService {
       await tx.invoice.update({
         where: { id },
         data: {
+          customerSnapshot: { ...snapshot, cuit },
           receiverVatConditionId: condition.id,
           receiverVatConditionLabel: condition.label,
           version: { increment: 1 },
         },
       });
+      await this.audit.success(c, 'CUSTOMER_UPDATED', 'Customer', customer.id, tx);
       await this.audit.success(c, 'INVOICE_ARCA_RECEIVER_CONFIGURED', 'Invoice', id, tx);
     });
     return this.view(c, id);

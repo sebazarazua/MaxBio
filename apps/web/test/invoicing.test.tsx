@@ -221,6 +221,7 @@ async function type(element: HTMLInputElement | HTMLSelectElement, value: string
   await settle();
 }
 afterEach(async () => {
+  mock.timers.reset();
   await act(async () => root?.unmount());
   root = undefined;
   document.body.innerHTML = '';
@@ -372,7 +373,7 @@ test('editor: precio con coma, IVA por línea y para todas, totales y validació
   // Missing price/VAT/type: a human message and no request.
   await click(button('Marcar lista para autorizar'));
   assert.match(container.querySelector('[role=alert]')!.textContent!, /Elegí el tipo de factura/);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter((c) => !c.url.endsWith('/prepare')).length, 1);
   const [typeSelect, allVat] = [...container.querySelectorAll('select')];
   await type(typeSelect!, 'INVOICE_A');
   await click(button('Guardar y marcar lista para autorizar'));
@@ -573,7 +574,7 @@ const fiscalInvoice = (
 test('V3 UI: explicit homologation confirmation, stable operation and no double submission', async () => {
   let changed: InvoiceView | undefined;
   serve((c) =>
-    c.url.endsWith('/readiness')
+    c.url.endsWith('/prepare')
       ? {
           body: {
             ready: true,
@@ -599,9 +600,8 @@ test('V3 UI: explicit homologation confirmation, stable operation and no double 
   assert.match(text(), /HOMOLOGACIÓN/);
   assert.match(text(), /no tiene efecto fiscal real/);
   assert.match(text(), /directamente a ARCA mediante Web Service/);
-  assert.match(text(), /No se abrirá una página de ARCA/);
   assert.match(text(), /Receptor:.*CUIT:.*Condición IVA:.*Neto:.*IVA:/);
-  assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+  assert.equal(calls.filter((c) => c.method === 'POST' && !c.url.endsWith('/prepare')).length, 0);
   await act(async () => {
     button('Confirmar autorización de prueba')!.click();
     button('Confirmar autorización de prueba')!.click();
@@ -616,44 +616,78 @@ test('V3 UI: explicit homologation confirmation, stable operation and no double 
   ]);
   assert.equal(changed?.fiscal?.status, 'AUTHORIZED');
 });
-test('V4 UI: read-only sequence check enables preflight; first authorization click still sends nothing', async () => {
-  const response = {
-    ready: false,
-    reasons: ['Falta comprobar la numeración en ARCA.'],
-    pointOfSale: 23,
-    conditions: [{ id: 1, label: 'Responsable Inscripto' }],
-    receiverVatConditionId: 1,
-    canCheckSequence: true,
-    checks: [{ id: 'sequence', label: 'Secuencia ARCA', ready: false }],
-  };
-  serve((c) => ({
-    body: c.url.endsWith('/sequence')
-      ? {
-          ...response,
-          ready: true,
-          reasons: [],
-          checks: [{ id: 'sequence', label: 'Secuencia ARCA', ready: true }],
-          sequence: {
-            status: 'VERIFIED',
-            checkedAt: '2026-10-29T15:00:00Z',
-            validUntil: null,
-            lastNumber: 0,
-            message: null,
-          },
-        }
-      : response,
+test('V6 UI: automatic preparation, collapsed diagnostics, no request loop or authorization before final confirmation', async () => {
+  serve(() => ({
+    body: {
+      ready: true,
+      reasons: [],
+      pointOfSale: 23,
+      conditions: [{ id: 1, label: 'Responsable Inscripto' }],
+      receiverVatConditionId: 1,
+      canCheckSequence: true,
+      checks: [{ id: 'sequence', label: 'Secuencia ARCA', ready: true }],
+    },
   }));
   await mount(
     <InvoiceFiscalPanel invoice={fiscalInvoice()} isAdmin changed={() => {}} reload={() => {}} />,
   );
-  assert.equal(button('Autorizar en ARCA')!.disabled, true);
-  assert.equal(button('Autorizar en ARCA')!.getAttribute('aria-busy'), 'false');
-  assert.equal(button('Consultar numeración en ARCA')!.disabled, false);
-  await click(button('Consultar numeración en ARCA'));
   assert.equal(button('Autorizar en ARCA')!.disabled, false);
+  const diagnostic = [...container.querySelectorAll('details')].find(
+    (d) => d.querySelector('summary')?.textContent === 'Diagnóstico fiscal',
+  );
+  assert.ok(diagnostic);
+  assert.equal(diagnostic.open, false);
+  assert.match(text(), /Lista para enviar a ARCA/);
+  await settle();
+  await settle();
+  assert.equal(calls.filter((c) => c.url.endsWith('/prepare')).length, 1);
   await click(button('Autorizar en ARCA'));
   assert.ok(button('Confirmar autorización de prueba'));
-  assert.equal(calls.filter((c) => c.url.endsWith('/sequence') && c.method === 'POST').length, 1);
+  assert.equal(calls.filter((c) => c.url.endsWith('/authorize')).length, 0);
+});
+
+test('V6 UI: missing CUIT and IVA can be saved inline with both expected versions', async () => {
+  const i = fiscalInvoice();
+  i.customer.cuit = null;
+  i.fiscal!.receiverVatConditionId = null;
+  i.fiscal!.receiverVatConditionLabel = null;
+  let updated: InvoiceView | undefined;
+  serve((c) => ({
+    body: c.url.endsWith('/prepare')
+      ? {
+          ready: false,
+          reasons: ['Falta completar el CUIT del cliente.'],
+          pointOfSale: 23,
+          conditions: [{ id: 1, label: 'Responsable Inscripto' }],
+          receiverVatConditionId: null,
+          canEditReceiver: true,
+          customerVersion: 7,
+          checks: [{ id: 'receiver-vat', label: 'IVA', ready: false }],
+        }
+      : fiscalInvoice(),
+  }));
+  await mount(
+    <InvoiceFiscalPanel
+      invoice={i}
+      isAdmin
+      changed={(v) => {
+        updated = v;
+      }}
+      reload={() => {}}
+    />,
+  );
+  assert.ok(container.querySelector('form[aria-label="Completar datos fiscales del receptor"]'));
+  await type(container.querySelector('#invoice-receiver-cuit')!, '20-12345678-6');
+  await type(container.querySelector('#invoice-receiver-vat')!, '1');
+  await click(button('Guardar y continuar'));
+  const saved = calls.find((c) => c.url.endsWith('/receiver'));
+  assert.deepEqual(saved?.body, {
+    expectedVersion: i.version,
+    expectedCustomerVersion: 7,
+    cuit: '20123456786',
+    conditionId: 1,
+  });
+  assert.ok(updated);
   assert.equal(calls.filter((c) => c.url.endsWith('/authorize')).length, 0);
 });
 
@@ -679,8 +713,8 @@ test('V3 UI: recipient, references and POS blockers are visible together and pre
   for (const reason of reasons) assert.ok(text().includes(reason));
   assert.equal(button('Autorizar en ARCA')!.disabled, true);
   assert.equal(button('Confirmar autorización de prueba'), undefined);
-  assert.ok(document.querySelector(`a[href="/clientes/${customer.id}"]`));
-  assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+  assert.equal(calls.filter((c) => c.url.endsWith('/authorize')).length, 0);
+  assert.equal(calls.filter((c) => c.method === 'POST' && !c.url.endsWith('/prepare')).length, 0);
 });
 
 test('V3 UI: authorized shows CAE and verify; uncertain has no emission retry or edit controls; operator is read only', async () => {
@@ -703,7 +737,7 @@ test('V3 UI: authorized shows CAE and verify; uncertain has no emission retry or
   serve(() => ({ body: fiscalInvoice('AUTHORIZED') }));
   await mount(<InvoiceDetailView id={u(50)} isAdmin={false} discarded={() => {}} />);
   assert.equal(button('Verificar en ARCA'), undefined);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter((c) => !c.url.endsWith('/prepare')).length, 1);
   assert.match(text(), /74123456789012/);
 });
 test('V3 UI: rejection explains ARCA code and offers explicit correction', async () => {
@@ -750,4 +784,91 @@ test('V3 BFF: fiscal routes strict, no browser CAE/numbers/tenant and safe respo
   const rejected = await post(body);
   assert.equal(rejected.status, 503);
   assert.doesNotMatch(await rejected.text(), /TEST_SECRET/);
+});
+
+test('V6 draft: the single compatible invoice type is proposed automatically', async () => {
+  const source = { ...priced('DRAFT'), invoiceType: 'INVOICE_C' as const };
+  serve((c) => ({
+    body: c.url.endsWith('/prepare')
+      ? {
+          ready: false,
+          reasons: [],
+          pointOfSale: 23,
+          conditions: [],
+          receiverVatConditionId: 1,
+          typeAssistanceAvailable: true,
+          invoiceTypes: ['INVOICE_A'],
+        }
+      : source,
+  }));
+  await mount(<InvoiceDetailView id={source.id} isAdmin discarded={() => {}} />);
+  assert.equal(container.querySelector('select')?.value, 'INVOICE_A');
+  assert.match(text(), /Tipo propuesto según los datos fiscales/);
+  assert.equal(
+    calls.filter((c) => c.url.endsWith('/ready') || c.url.endsWith('/authorize')).length,
+    0,
+  );
+});
+
+test('V6: repeated expired sequence timestamps cannot create a request loop during refresh', async () => {
+  mock.timers.enable({ apis: ['Date', 'setTimeout'], now: new Date('2026-10-31T18:00:00Z') });
+  serve(() => ({
+    body: {
+      ready: true,
+      reasons: [],
+      pointOfSale: 23,
+      conditions: [],
+      receiverVatConditionId: 1,
+      sequence: {
+        status: 'VERIFIED',
+        checkedAt: '2026-10-28T18:00:00Z',
+        validUntil: '2026-10-28T18:05:00Z',
+        lastNumber: 1,
+        message: null,
+      },
+    },
+  }));
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      <InvoiceFiscalPanel invoice={fiscalInvoice()} isAdmin changed={() => {}} reload={() => {}} />,
+    ),
+  );
+  assert.equal(calls.length, 1);
+  await act(async () => mock.timers.tick(1001));
+  assert.equal(calls.length, 2);
+  await act(async () => mock.timers.tick(60000));
+  assert.equal(calls.length, 2);
+});
+
+test('V6: a waiting access deadline triggers only one automatic retry per opening, then leaves manual Retry', async () => {
+  const now = new Date('2026-10-31T18:00:00Z');
+  mock.timers.enable({ apis: ['Date', 'setTimeout'], now });
+  let n = 0;
+  serve(() => ({
+    body: {
+      ready: false,
+      reasons: ['ARCA todavía no permite renovar el acceso.'],
+      pointOfSale: 23,
+      conditions: [],
+      receiverVatConditionId: 1,
+      retryAfter: new Date(now.getTime() + 1000 * ++n).toISOString(),
+    },
+  }));
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      <InvoiceFiscalPanel invoice={fiscalInvoice()} isAdmin changed={() => {}} reload={() => {}} />,
+    ),
+  );
+  assert.equal(calls.length, 1);
+  await act(async () => mock.timers.tick(2001));
+  assert.equal(calls.length, 2);
+  await act(async () => mock.timers.tick(60000));
+  assert.equal(calls.length, 2);
+  assert.ok(button('Reintentar'));
 });

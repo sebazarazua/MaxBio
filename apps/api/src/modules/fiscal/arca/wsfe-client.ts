@@ -223,7 +223,15 @@ export class ArcaWsfeClient {
         this.call('FEParamGetCondicionIvaReceptor', auth, tag('ClaseCmp', cls)),
       ),
     ]);
-    for (const n of [points!, types!, iva!, ...conditions]) this.errors(n, auth);
+    // ARCA manual v4, error 602: no registered data. Only the POS query may
+    // legitimately be empty; mixed errors or a contradictory result still fail closed.
+    const pointErrors = messages(points!, 'Errors', 'Err', auth);
+    const emptyPoints =
+      pointErrors.length > 0 &&
+      pointErrors.every((m) => m.code === '602') &&
+      items(points!, 'ResultGet', 'PtoVenta').length === 0;
+    if (!emptyPoints) this.errors(points!, auth);
+    for (const n of [types!, iva!, ...conditions]) this.errors(n, auth);
     const publicRefs = (n: Node, item: string) =>
       items(n, 'ResultGet', item)
         .filter((row) => {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cuitSchema } from './customers.js';
 
 export const invoiceFiscalStatusSchema = z.enum([
   'NOT_SUBMITTED',
@@ -101,6 +102,8 @@ export const invoiceFiscalReceiverSchema = z
   .object({
     expectedVersion: z.number().int().positive(),
     conditionId: z.number().int().positive(),
+    cuit: cuitSchema.optional(),
+    expectedCustomerVersion: z.number().int().positive().optional(),
   })
   .strict();
 export const invoiceFiscalReadinessSchema = z
@@ -114,6 +117,11 @@ export const invoiceFiscalReadinessSchema = z
       .array(z.object({ id: z.string(), label: z.string(), ready: z.boolean() }).strict())
       .default([]),
     canCheckSequence: z.boolean().default(false),
+    canEditReceiver: z.boolean().default(false),
+    typeAssistanceAvailable: z.boolean().default(false),
+    invoiceTypes: z.array(z.enum(['INVOICE_A', 'INVOICE_B', 'INVOICE_C'])).default([]),
+    customerVersion: z.number().int().positive().optional(),
+    configurationRequired: z.boolean().default(false),
     retryAfter: date.optional(),
     sequence: z
       .object({

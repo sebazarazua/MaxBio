@@ -559,8 +559,6 @@ export class InvoicingService {
         throw new ConflictException('Revisá los Remitos de esta factura.');
       if (i.customer.archivedAt)
         throw new ConflictException('El cliente está archivado. Revisalo antes de continuar.');
-      if (i.invoiceType === 'INVOICE_A' && !i.customer.cuit)
-        throw new BadRequestException('La factura A requiere el CUIT del cliente.');
       if (i.invoiceType === 'INVOICE_C' && totals.vatAmount !== '0.00')
         throw new BadRequestException(
           'Las facturas C no discriminan IVA. Revisá el IVA de las líneas.',
@@ -572,9 +570,8 @@ export class InvoicingService {
           version: { increment: 1 },
           // Frozen commercial snapshot: later Customer edits never rewrite this invoice.
           customerSnapshot: customerView(i.customer),
-          receiverVatConditionId: i.receiverVatConditionId ?? i.customer.arcaVatConditionId,
-          receiverVatConditionLabel:
-            i.receiverVatConditionLabel ?? i.customer.arcaVatConditionLabel,
+          receiverVatConditionId: i.customer.arcaVatConditionId,
+          receiverVatConditionLabel: i.customer.arcaVatConditionLabel,
           readyAt: new Date(),
           readyByUserId: c.userId,
           readyByMembershipId: c.membershipId,

@@ -568,10 +568,9 @@ test('lista para autorizar: validaciones, recálculo, snapshot congelado y reint
     swissA,
     edit(swissA, { invoiceType: 'INVOICE_A' }, () => ({ unitPrice: '5', vatRate: 'VAT_21' })),
   )) as InvoiceView;
-  assert.match(
-    ((await transition(swissPriced, 'ready', 400)) as { message: string }).message,
-    /requiere el CUIT/,
-  );
+  const missingCuit = (await transition(swissPriced, 'ready')) as InvoiceView;
+  assert.equal(missingCuit.status, 'READY');
+  assert.equal(missingCuit.customer.cuit, null); // Completed explicitly inline before fiscal submission.
 
   const operationId = randomUUID();
   const ready = (await transition(multi, 'ready', 200, operationId)) as InvoiceView;

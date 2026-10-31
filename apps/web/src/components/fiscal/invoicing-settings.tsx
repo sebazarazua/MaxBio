@@ -11,7 +11,7 @@ export function WsfeSettings() {
   const mutation = useMutation();
   useEffect(() => {
     const abort = new AbortController();
-    void fiscalFetch('arca/invoicing', wsfeConfigurationSchema, 'GET', undefined, abort.signal)
+    void fiscalFetch('arca/invoicing/prepare', wsfeConfigurationSchema, 'POST', {}, abort.signal)
       .then((c) => {
         if (!abort.signal.aborted) {
           setConfig(c);
@@ -30,33 +30,12 @@ export function WsfeSettings() {
     selected = selection ?? String(config?.pointOfSale ?? (points.length === 1 ? points[0] : ''));
   return (
     <section className="catalog-panel" aria-labelledby="wsfe-title">
-      <h2 id="wsfe-title">Facturación electrónica WSFE</h2>
+      <h2 id="wsfe-title">Facturación electrónica con ARCA</h2>
       <p>
-        Homologación. La conexión WSAA y la preparación para emitir comprobantes se verifican por
-        separado.
+        Elegí una vez el punto de venta que querés usar con MaxBio. El acceso y la información de
+        ARCA se preparan automáticamente al facturar.
       </p>
-      <p>Consultar referencias y confirmar un punto de venta no emite comprobantes.</p>
-      <details>
-        <summary>Secuencia segura de prueba</summary>
-        <ol>
-          <li>Probar WSAA desde Acceso temporal WSAA. No emite comprobantes.</li>
-          <li>
-            Consultar referencias WSFE: puntos de venta, condiciones IVA y tipos. No emite
-            comprobantes.
-          </li>
-          <li>
-            Confirmar un punto de venta de homologación informado por ARCA. No emite comprobantes.
-          </li>
-          <li>
-            Al preparar la autorización, MaxBio consulta el último comprobante autorizado. Esa
-            consulta no emite.
-          </li>
-          <li>
-            Solo Confirmar autorización de prueba envía el comprobante por Web Service y puede crear
-            un comprobante en homologación.
-          </li>
-        </ol>
-      </details>
+      <p>Ambiente: homologación. Estas consultas no emiten comprobantes.</p>
       {!config && !error && <p role="status">Cargando requisitos de facturación…</p>}
       {error && (
         <>
@@ -105,17 +84,29 @@ export function WsfeSettings() {
               })()
             }
           >
-            {mutation.busy
-              ? 'Consultando ARCA…'
-              : 'Consultar puntos de venta y condiciones en ARCA'}
+            {mutation.busy ? 'Consultando ARCA…' : 'Actualizar datos desde ARCA'}
           </button>
+          {config.pointOfSale && config.checks.find((v) => v.id === 'point')?.ready && (
+            <p>
+              Punto de venta configurado: {String(config.pointOfSale).padStart(5, '0')}. Se usará
+              automáticamente en las próximas facturas.
+            </p>
+          )}
           {config.references &&
             (points.length ? (
-              <>
+              <details open={!config.checks.find((v) => v.id === 'point')?.ready}>
+                <summary>
+                  {config.checks.find((v) => v.id === 'point')?.ready
+                    ? 'Cambiar punto de venta'
+                    : points.length === 1
+                      ? `Punto de venta encontrado: ${String(points[0]).padStart(5, '0')}`
+                      : '¿Qué punto de venta querés usar con MaxBio?'}
+                </summary>
                 <label className="field" htmlFor="wsfe-point-of-sale">
                   Punto de venta para facturación
                   <select
                     id="wsfe-point-of-sale"
+                    aria-label="Punto de venta para facturación"
                     value={selected}
                     disabled={mutation.busy}
                     onChange={(e) => setSelection(e.target.value)}
@@ -149,9 +140,9 @@ export function WsfeSettings() {
                     })()
                   }
                 >
-                  Confirmar punto de venta de homologación
+                  {points.length === 1 ? 'Usar este punto de venta' : 'Confirmar punto de venta'}
                 </button>
-              </>
+              </details>
             ) : (
               <p>
                 No hay un punto de venta habilitado para este Web Service y emisión CAE. Configuralo

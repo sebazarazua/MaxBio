@@ -52,6 +52,15 @@ export class FiscalController {
     emptyQuery(q);
     return this.invoicing.get(actor(r));
   }
+  @Post('arca/invoicing/prepare') @HttpCode(200) prepare(
+    @Req() r: AuthenticatedRequest,
+    @Query() q: unknown,
+    @Body() b: unknown,
+  ) {
+    emptyQuery(q);
+    parse(arcaTestSchema, b);
+    return this.invoicing.prepare(actor(r));
+  }
   @Post('arca/invoicing/refresh') @HttpCode(200) refreshReferences(
     @Req() r: AuthenticatedRequest,
     @Query() q: unknown,

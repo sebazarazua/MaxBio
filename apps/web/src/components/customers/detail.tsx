@@ -25,7 +25,8 @@ export function CustomerDetail({ id }: { id: string }) {
   const fields = [
     ['Razón social', customer.legalName],
     ['CUIT', customer.cuit ? formatCuit(customer.cuit) : null],
-    ['Condición fiscal', customer.taxConditionText],
+    ['Condición frente al IVA', customer.arcaVatConditionLabel],
+    ['Condición fiscal / observación', customer.taxConditionText],
     ['Dirección', customer.addressLine],
     ['Localidad', customer.locality],
     ['Provincia', customer.province],

@@ -39,6 +39,10 @@ const parent = testDatabaseManagement(process.env.DATABASE_URL!),
 const url = new URL(process.env.DATABASE_URL!);
 url.pathname = '/' + name;
 const db = createDatabaseClient(url.toString());
+let referenceCalls = 0,
+  lastCalls = 0,
+  authCalls = 0;
+let retryUntil: string | null = null;
 let app: INestApplication,
   base: string,
   org: string,
@@ -345,7 +349,7 @@ before(
           access: {
             status: wsaaAvailable ? 'AUTHENTICATED' : 'WAITING',
             state: wsaaAvailable ? 'ACTIVE' : 'UNCERTAIN',
-            retryAfter: null,
+            retryAfter: retryUntil,
             obtainedAt: at.toISOString(),
             expiresAt: new Date(at.getTime() + 43200000).toISOString(),
             message: null,
@@ -355,6 +359,10 @@ before(
             testBlockedReason: null,
           },
         }),
+        authenticate: async () => {
+          authCalls++;
+          wsaaAvailable = true;
+        },
         testConnection: async () => {
           // The browser fixture authenticates only against this disposable test double.
           const r = await fetch(base + '/api/v1/fiscal/arca/readiness', {
@@ -373,12 +381,16 @@ before(
       })
       .overrideProvider(FISCAL_PROVIDER)
       .useValue({
-        references: async () => ({
-          references: structuredClone(refs),
-          cuit: '27110247244',
-          credentialId: active,
-        }),
+        references: async () => {
+          referenceCalls++;
+          return {
+            references: structuredClone(refs),
+            cuit: '27110247244',
+            credentialId: active,
+          };
+        },
         last: async (_c: unknown, i: WsfeIdentity) => {
+          lastCalls++;
           if (failLast) throw new WsfeError('NETWORK');
           return lastNumbers.get(key(i)) ?? 0;
         },
@@ -445,6 +457,29 @@ test(
     );
     assert.equal(cfg.pointOfSale, 23);
     const invoice = await ready();
+    const customer = await db.customer.findUniqueOrThrow({ where: { id: customerB } });
+    await db.customer.update({
+      where: { id: customerB },
+      data: { arcaVatConditionId: null, arcaVatConditionLabel: null },
+    });
+    const missingVat = await ready('INVOICE_B');
+    await db.customer.update({
+      where: { id: customerB },
+      data: {
+        cuit: null,
+        arcaVatConditionId: customer.arcaVatConditionId,
+        arcaVatConditionLabel: customer.arcaVatConditionLabel,
+      },
+    });
+    const missingCuit = await ready('INVOICE_B');
+    await db.customer.update({ where: { id: customerB }, data: { cuit: customer.cuit } });
+    // Browser opening must restore/acquire access and refresh stale references automatically.
+    await db.arcaIntegrationConfig.update({
+      where: { organizationId: org },
+      data: { wsfeCheckedAt: new Date(at.getTime() - 16 * 60000) },
+    });
+    wsaaAvailable = false;
+    const preparationCounts = [authCalls, referenceCalls];
     const state = resolve('../../artifacts/ta-browser-state-private.json');
     const done = resolve('../../artifacts/ta-browser-done.json');
     await unlink(done).catch(() => {});
@@ -472,6 +507,10 @@ test(
       JSON.stringify({
         apiBase: base,
         invoiceId: invoice.id,
+        missingVatId: missingVat.id,
+        missingCuitId: missingCuit.id,
+        customerB,
+        customerBCuit: customer.cuit,
         productId: product,
         customerId: customerA,
         deliveryNoteId: invoice.deliveryNotes[0]!.id,
@@ -493,6 +532,11 @@ test(
       }
       assert.ok(complete, 'Browser did not complete the preflight');
       assert.equal(sends, before, 'Browser must stop before authorization');
+      assert.deepEqual(
+        [authCalls, referenceCalls],
+        preparationCounts.map((n) => n + 1),
+        'Browser must acquire access and refresh stale references once',
+      );
       assert.equal(await db.invoiceFiscalAttempt.count({ where: { invoiceId: invoice.id } }), 0);
     } finally {
       await unlink(state).catch(() => {});
@@ -567,9 +611,9 @@ test('Readiness lists local recipient blockers alongside WSAA, missing reference
     for (const text of [
       'CUIT del cliente',
       'condición IVA del receptor',
-      'referencias de ARCA',
+      'información de ARCA',
       'punto de venta',
-      'WSAA',
+      'acceso a ARCA',
     ])
       assert.ok(
         r.reasons.some((reason) => reason.includes(text)),
@@ -776,6 +820,256 @@ test('Concurrent same operation sends once; another invoice obtains the next num
   );
 });
 
+test('V6: one or several POS require a single explicit choice, refresh preserves the confirmed choice; customer UI data is ARCA-validated', async () => {
+  const original = await db.arcaIntegrationConfig.findUniqueOrThrow({
+    where: { organizationId: org },
+  });
+  const points = [...refs.points];
+  try {
+    for (const available of [[42], [23, 42]]) {
+      refs.points = available;
+      await db.arcaIntegrationConfig.update({
+        where: { organizationId: org },
+        data: {
+          pointOfSale: null,
+          pointOfSaleCuit: null,
+          pointOfSaleValidatedAt: null,
+          wsfeCheckedAt: null,
+        },
+      });
+      const cfg = wsfeConfigurationSchema.parse(
+        await checked(await request('fiscal/arca/invoicing/prepare', 'POST', {})),
+      );
+      assert.deepEqual(cfg.references?.points, available);
+      assert.equal(cfg.pointOfSale, null, 'Never choose silently');
+      const selected = wsfeConfigurationSchema.parse(
+        await checked(
+          await request('fiscal/arca/invoicing/point-of-sale', 'POST', {
+            expectedVersion: cfg.version,
+            pointOfSale: available[0],
+          }),
+        ),
+      );
+      assert.equal(selected.pointOfSale, available[0]);
+      const repeated = wsfeConfigurationSchema.parse(
+        await checked(await request('fiscal/arca/invoicing/prepare', 'POST', {})),
+      );
+      assert.equal(repeated.pointOfSale, available[0]);
+    }
+    const id = randomUUID();
+    await checked(
+      await request('customers', 'POST', {
+        id,
+        name: 'V6 fiscal data',
+        kind: 'COMPANY',
+        arcaVatConditionId: 5,
+        taxConditionText: 'Texto comercial sin interpretar',
+      }),
+    );
+    const saved = await db.customer.findUniqueOrThrow({ where: { id } });
+    assert.equal(saved.arcaVatConditionId, 5);
+    assert.equal(saved.arcaVatConditionLabel, refs.conditions.C.find((v) => v.id === 5)!.label);
+    assert.equal(saved.taxConditionText, 'Texto comercial sin interpretar');
+    await checked(
+      await request(`customers/${id}`, 'PATCH', {
+        expectedVersion: saved.version,
+        arcaVatConditionId: 999,
+      }),
+      400,
+    );
+    await checked(
+      await request(`customers/${id}`, 'PATCH', {
+        expectedVersion: saved.version,
+        arcaVatConditionLabel: 'Inventado',
+      }),
+      400,
+    );
+  } finally {
+    refs.points = points;
+    await db.arcaIntegrationConfig.update({
+      where: { organizationId: org },
+      data: {
+        pointOfSale: original.pointOfSale,
+        pointOfSaleCuit: original.pointOfSaleCuit,
+        pointOfSaleValidatedAt: original.pointOfSaleValidatedAt,
+        wsfeCheckedAt: null,
+      },
+    });
+    await checked(await request('fiscal/arca/invoicing/prepare', 'POST', {}));
+  }
+});
+
+test('V6: prepare automatically acquires access, refreshes stale references, reuses POS and sequence with single-flight, never sends', async () => {
+  const i = await ready('INVOICE_B'),
+    before = sends;
+  await db.arcaIntegrationConfig.update({
+    where: { organizationId: org },
+    data: { wsfeCheckedAt: new Date(at.getTime() - 16 * 60000) },
+  });
+  wsaaAvailable = false;
+  const counts = [referenceCalls, lastCalls, authCalls];
+  const responses = await Promise.all(
+    Array.from({ length: 5 }, async () =>
+      invoiceFiscalReadinessSchema.parse(
+        await checked(await request(`invoices/${i.id}/fiscal/prepare`, 'POST', {})),
+      ),
+    ),
+  );
+  for (const r of responses) {
+    assert.equal(r.ready, true, JSON.stringify(r.reasons));
+    assert.equal(r.pointOfSale, 23);
+  }
+  assert.deepEqual(
+    [referenceCalls, lastCalls, authCalls],
+    counts.map((v) => v + 1),
+  );
+  await checked(await request(`invoices/${i.id}/fiscal/prepare`, 'POST', {}));
+  assert.deepEqual(
+    [referenceCalls, lastCalls, authCalls],
+    counts.map((v) => v + 1),
+  );
+  assert.equal(sends, before);
+  assert.equal(await db.invoiceFiscalAttempt.count({ where: { invoiceId: i.id } }), 0);
+  const preparedLast = lastCalls;
+  await authorize(await get(i.id)); // Fake provider only; checks last again inside authorize.
+  assert.equal(lastCalls, preparedLast + 1);
+});
+
+test('V6: retryAfter is respected and recovers automatically after expiry; preparation permissions are tenant-scoped', async () => {
+  const i = await ready('INVOICE_B'),
+    before = sends;
+  wsaaAvailable = false;
+  retryUntil = new Date(at.getTime() + 60000).toISOString();
+  const beforeAuth = authCalls;
+  const blocked = invoiceFiscalReadinessSchema.parse(
+    await checked(await request(`invoices/${i.id}/fiscal/prepare`, 'POST', {})),
+  );
+  assert.equal(blocked.ready, false);
+  assert.match(blocked.reasons.join(' '), /ARCA todavía no permite renovar/);
+  assert.equal(authCalls, beforeAuth);
+  await checked(await request(`invoices/${i.id}/fiscal/prepare`, 'POST', {}, 1), 403);
+  await checked(await request(`invoices/${i.id}/fiscal/prepare`, 'POST', {}, 2), 404);
+  await checked(await request(`invoices/${i.id}/fiscal/prepare`, 'POST', { emit: true }), 400);
+  const time = at;
+  at = new Date(at.getTime() + 60001);
+  retryUntil = null;
+  const recovered = invoiceFiscalReadinessSchema.parse(
+    await checked(await request(`invoices/${i.id}/fiscal/prepare`, 'POST', {})),
+  );
+  assert.equal(recovered.ready, true, recovered.reasons.join(' '));
+  assert.equal(authCalls, beforeAuth + 1);
+  at = time;
+  assert.equal(sends, before);
+});
+
+test('V6: inline CUIT and structured IVA update customer and explicit invoice snapshot, future READY inherits; audits roll back atomically', async () => {
+  const original = await db.customer.findUniqueOrThrow({ where: { id: customerB } });
+  const before = sends;
+  try {
+    await db.customer.update({
+      where: { id: customerB },
+      data: { cuit: null, arcaVatConditionId: null, arcaVatConditionLabel: null },
+    });
+    const i = await ready('INVOICE_B');
+    assert.equal(i.customer.cuit, null);
+    assert.equal(i.fiscal?.receiverVatConditionId, null);
+    const customer = await db.customer.findUniqueOrThrow({ where: { id: customerB } });
+    const input = {
+      expectedVersion: i.version,
+      expectedCustomerVersion: customer.version,
+      cuit: original.cuit,
+      conditionId: 5,
+    };
+    failAuditAction = 'INVOICE_ARCA_RECEIVER_CONFIGURED';
+    await checked(await request(`invoices/${i.id}/fiscal/receiver`, 'POST', input), 500);
+    failAuditAction = '';
+    assert.equal((await get(i.id)).customer.cuit, null);
+    assert.equal((await db.customer.findUniqueOrThrow({ where: { id: customerB } })).cuit, null);
+    const filled = invoiceSchema.parse(
+      await checked(await request(`invoices/${i.id}/fiscal/receiver`, 'POST', input)),
+    );
+    assert.equal(filled.customer.cuit, original.cuit);
+    assert.equal(filled.fiscal?.receiverVatConditionId, 5);
+    assert.equal(filled.version, i.version + 1);
+    // SQL guard allows only the exact fiscal receiver completion; unrelated frozen data stays immutable.
+    const stored = await db.invoice.findUniqueOrThrow({ where: { id: i.id } });
+    await assert.rejects(
+      db.invoice.update({
+        where: { id: i.id },
+        data: {
+          customerSnapshot: { ...(stored.customerSnapshot as object), name: 'Changed' },
+          version: { increment: 1 },
+        },
+      }),
+    );
+    await assert.rejects(
+      db.invoice.update({
+        where: { id: i.id },
+        data: {
+          customerSnapshot: { ...(stored.customerSnapshot as object), cuit: '27110247244' },
+          version: { increment: 1 },
+        },
+      }),
+    );
+    const saved = await db.customer.findUniqueOrThrow({ where: { id: customerB } });
+    assert.equal(saved.version, customer.version + 1);
+    assert.equal(saved.cuit, original.cuit);
+    assert.equal(saved.arcaVatConditionLabel, refs.conditions.B[0]!.label);
+    const future = await ready('INVOICE_B');
+    assert.equal(future.customer.cuit, original.cuit);
+    assert.equal(future.fiscal?.receiverVatConditionId, 5);
+    // No silent synchronization after customer edits.
+    await db.customer.update({
+      where: { id: customerB },
+      data: { arcaVatConditionId: 4, arcaVatConditionLabel: 'Exento' },
+    });
+    assert.equal((await get(filled.id)).fiscal?.receiverVatConditionId, 5);
+    assert.equal((await ready('INVOICE_B')).fiscal?.receiverVatConditionId, 4);
+    assert.ok(
+      await db.auditEvent.count({
+        where: {
+          organizationId: org,
+          resourceId: i.id,
+          action: 'INVOICE_ARCA_RECEIVER_CONFIGURED',
+        },
+      }),
+    );
+    assert.equal(sends, before);
+    // Any past attempt (including ABORTED) permanently disables this shortcut.
+    failLast = true;
+    await authorize(filled, randomUUID(), 503);
+    failLast = false;
+    const attempted = await get(i.id);
+    await checked(
+      await request(`invoices/${i.id}/fiscal/receiver`, 'POST', {
+        ...input,
+        expectedVersion: attempted.version,
+      }),
+      409,
+    );
+    await checked(
+      await request(
+        `invoices/${future.id}/fiscal/receiver`,
+        'POST',
+        { ...input, expectedVersion: future.version },
+        1,
+      ),
+      403,
+    );
+  } finally {
+    failAuditAction = '';
+    failLast = false;
+    await db.customer.update({
+      where: { id: customerB },
+      data: {
+        cuit: original.cuit,
+        arcaVatConditionId: original.arcaVatConditionId,
+        arcaVatConditionLabel: original.arcaVatConditionLabel,
+      },
+    });
+  }
+});
+
 test('A registered voucher in a different fiscal mode becomes a conflict without resending', async () => {
   const i = await ready('INVOICE_B');
   mode = 'timeout_authorized';
@@ -916,12 +1210,12 @@ test('Pre-send failure releases preparation safely, and missing/invalid recipien
   failLast = false;
   assert.equal(sends, before);
   assert.equal((await get(i.id)).fiscal?.attempts[0]?.status, 'ABORTED');
+  await db.customer.update({
+    where: { id: customerA },
+    data: { arcaVatConditionId: null, arcaVatConditionLabel: null },
+  });
   const next = await ready();
   // A structured condition is never inferred from legacy free text.
-  await db.invoice.update({
-    where: { id: next.id },
-    data: { receiverVatConditionId: null, receiverVatConditionLabel: null },
-  });
   await authorize(next, randomUUID(), 400);
   assert.equal(sends, before);
   await checked(

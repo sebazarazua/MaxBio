@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Inject,
@@ -12,6 +13,7 @@ import type {
   CustomerListQuery,
   CustomerView,
 } from '@maxbio/contracts';
+import { WsfeConfigurationService } from '../../fiscal/application/wsfe-configuration.service.js';
 import { DatabaseService } from '../../../infrastructure/database/database.service.js';
 import { AuditService } from '../../audit/audit.service.js';
 import type { RequestActorContext } from '../../../common/auth/request-context.js';
@@ -24,6 +26,8 @@ const editable = [
   'legalName',
   'cuit',
   'taxConditionText',
+  'arcaVatConditionId',
+  'arcaVatConditionLabel',
   'addressLine',
   'locality',
   'province',
@@ -42,6 +46,8 @@ function view(row: Customer): CustomerView {
     legalName: row.legalName,
     cuit: row.cuit,
     taxConditionText: row.taxConditionText,
+    arcaVatConditionId: row.arcaVatConditionId,
+    arcaVatConditionLabel: row.arcaVatConditionLabel,
     addressLine: row.addressLine,
     locality: row.locality,
     province: row.province,
@@ -63,6 +69,8 @@ function creationFields(input: CustomerCreate) {
     legalName: input.legalName ?? null,
     cuit: input.cuit ?? null,
     taxConditionText: input.taxConditionText ?? null,
+    arcaVatConditionId: input.arcaVatConditionId ?? null,
+    arcaVatConditionLabel: null as string | null,
     addressLine: input.addressLine ?? null,
     locality: input.locality ?? null,
     province: input.province ?? null,
@@ -79,6 +87,7 @@ export class CustomersService {
   constructor(
     @Inject(DatabaseService) private readonly database: DatabaseService,
     @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(WsfeConfigurationService) private readonly configuration: WsfeConfigurationService,
   ) {}
 
   private async write<T>(
@@ -167,12 +176,23 @@ export class CustomersService {
     if (!row) throw new NotFoundException();
     return view(row);
   }
+  private async fiscalFields(c: RequestActorContext, id: number | null | undefined) {
+    if (id === undefined) return {};
+    if (c.role !== 'ADMIN') throw new ForbiddenException();
+    if (id === null) return { arcaVatConditionId: null, arcaVatConditionLabel: null };
+    const options = await this.configuration.receiverConditions(c);
+    const option = options.find((v) => v.id === id);
+    if (!option)
+      throw new BadRequestException('Elegí una condición frente al IVA informada por ARCA.');
+    return { arcaVatConditionId: option.id, arcaVatConditionLabel: option.label };
+  }
   async create(c: RequestActorContext, input: CustomerCreate) {
+    const fiscal = await this.fiscalFields(c, input.arcaVatConditionId);
     return this.write(c, async (tx) => {
       // Stable draft-style UUID, serialized even when no row exists yet.
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`customer-create:${input.id}`},0))`;
       const prior = await tx.customer.findUnique({ where: { id: input.id } });
-      const fields = creationFields(input);
+      const fields = { ...creationFields(input), ...fiscal };
       if (prior) {
         if (prior.organizationId !== c.organizationId) throw new NotFoundException();
         if (editable.some((key) => prior[key] !== fields[key]))
@@ -189,6 +209,9 @@ export class CustomersService {
     });
   }
   async update(c: RequestActorContext, id: string, input: CustomerUpdate) {
+    // Check tenant/record before any ARCA call.
+    await this.get(c, id);
+    const fiscal = await this.fiscalFields(c, input.arcaVatConditionId);
     return this.write(c, async (tx) => {
       const row = await this.lock(tx, c, id);
       this.version(row.version, input.expectedVersion);
@@ -196,7 +219,8 @@ export class CustomersService {
         throw new ConflictException(
           'Este cliente está archivado. Restauralo antes de modificarlo.',
         );
-      const { expectedVersion, ...fields } = input;
+      const { expectedVersion, ...requested } = input;
+      const fields = { ...requested, ...fiscal };
       if (!editable.some((key) => fields[key] !== undefined && fields[key] !== row[key]))
         return view(row);
       const changed = await tx.customer.update({

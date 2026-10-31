@@ -6,6 +6,7 @@ import {
   invoiceFiscalStatusLabels,
   invoiceSchema,
   invoiceTypeLabels,
+  invoiceFiscalReceiverSchema,
   type InvoiceView,
 } from '@maxbio/contracts';
 import { catalogFetch, humanError } from '../../lib/catalog-api.ts';
@@ -29,30 +30,49 @@ export function InvoiceFiscalPanel({
   const [loaded, setLoaded] = useState<{
     id: string;
     version: number;
+    revision: number;
     value: ReturnType<typeof invoiceFiscalReadinessSchema.parse>;
   } | null>(null);
-  const requirements = loaded?.id === i.id && loaded.version === i.version ? loaded.value : null;
   const [loadError, setLoadError] = useState(''),
     [revision, setRevision] = useState(0),
     [condition, setCondition] = useState(''),
+    [cuit, setCuit] = useState(i.customer.cuit ?? ''),
     [confirm, setConfirm] = useState(false),
     [notice, setNotice] = useState('');
+  const requirements =
+    loaded?.id === i.id && loaded.version === i.version && loaded.revision === revision
+      ? loaded.value
+      : null;
   const operation = useRef<string | null>(null),
     guard = useRef(false),
     mutation = useMutation();
-  useDeadlineRefresh(requirements?.retryAfter ?? requirements?.sequence?.validUntil, () =>
-    setRevision((v) => v + 1),
+  const [deadlineRetries, setDeadlineRetries] = useState(0);
+  // Keep the last deadline while refreshing. Temporarily clearing it would re-arm
+  // an already fired deadline if a server repeats a stale timestamp (e.g. clock skew).
+  const deadlineState = loaded?.id === i.id && loaded.version === i.version ? loaded.value : null;
+  useDeadlineRefresh(
+    deadlineState?.sequence?.status === 'VERIFIED'
+      ? deadlineState.sequence.validUntil
+      : deadlineRetries < 1
+        ? deadlineState?.retryAfter
+        : null,
+    () => {
+      if (deadlineState?.retryAfter) setDeadlineRetries((v) => v + 1);
+      setRevision((v) => v + 1);
+    },
   );
   useEffect(() => {
     if (!isAdmin || i.status !== 'READY' || fiscalStatus !== 'NOT_SUBMITTED') return;
     const abort = new AbortController();
-    void catalogFetch(`${i.id}/fiscal/readiness`, invoiceFiscalReadinessSchema, {
+    void catalogFetch(`${i.id}/fiscal/prepare`, invoiceFiscalReadinessSchema, {
       scope: 'invoices',
+      method: 'POST',
+      body: {},
       signal: abort.signal,
     })
       .then((r) => {
         if (!abort.signal.aborted) {
-          setLoaded({ id: i.id, version: i.version, value: r });
+          setLoaded({ id: i.id, version: i.version, revision, value: r });
           setLoadError('');
         }
       })
@@ -107,9 +127,10 @@ export function InvoiceFiscalPanel({
         <strong>{invoiceFiscalStatusLabels[fiscal.status]}</strong>
       </p>
       <p>Los comprobantes de homologación son de prueba y no tienen efecto fiscal real.</p>
-      {fiscal.receiverVatConditionLabel && (
-        <p>Condición IVA del receptor: {fiscal.receiverVatConditionLabel}</p>
-      )}
+      {fiscal.receiverVatConditionLabel &&
+        !(isAdmin && i.status === 'READY' && fiscal.status === 'NOT_SUBMITTED') && (
+          <p>Condición IVA del receptor: {fiscal.receiverVatConditionLabel}</p>
+        )}
       {latest?.cae && (
         <dl className="data-grid">
           <div>
@@ -173,106 +194,162 @@ export function InvoiceFiscalPanel({
       {isAdmin && i.status === 'READY' && fiscal.status === 'NOT_SUBMITTED' && (
         <>
           {!requirements && !loadError && (
-            <p role="status">Consultando requisitos de autorización…</p>
+            <p role="status">Preparando factura y comprobando información con ARCA…</p>
           )}
           {loadError && (
             <>
               <p role="alert">{loadError}</p>
-              <button onClick={() => setRevision((v) => v + 1)}>Cargar requisitos</button>
+              <button onClick={() => setRevision((v) => v + 1)}>Reintentar</button>
             </>
           )}
           {requirements && (
             <>
-              {requirements.reasons.length > 0 && (
-                <>
-                  <ul>
-                    {requirements.reasons.map((r, n) => (
-                      <li key={n}>{r}</li>
-                    ))}
-                  </ul>
-                  <Link href="/configuracion">Revisar configuración ARCA</Link>
-                  <p>
-                    <Link href={`/clientes/${i.customer.id}`}>Revisar datos del cliente</Link>. Si
-                    cambiás sus datos, volvé a preparar la factura para actualizar su copia fiscal.
-                  </p>
-                </>
-              )}
-              <ul aria-label="Diagnóstico para autorizar">
-                {requirements.checks.map((check) => (
-                  <li key={check.id}>
-                    {check.ready ? '✓' : 'Pendiente:'} {check.label}
-                  </li>
-                ))}
-              </ul>
-              <button disabled={mutation.busy} onClick={() => setRevision((v) => v + 1)}>
-                Actualizar requisitos
-              </button>
-              <button
-                className="secondary-button"
-                aria-busy={mutation.busy}
-                disabled={mutation.busy || !requirements.canCheckSequence}
-                aria-describedby="invoice-sequence-help"
-                onClick={() =>
-                  void (async () => {
-                    const next = await mutation.run(() =>
-                      catalogFetch(`${i.id}/fiscal/sequence`, invoiceFiscalReadinessSchema, {
-                        scope: 'invoices',
-                        method: 'POST',
-                        body: {},
-                      }),
-                    );
-                    if (next) setLoaded({ id: i.id, version: i.version, value: next });
-                  })()
-                }
-              >
-                {mutation.busy ? 'Consultando ARCA…' : 'Consultar numeración en ARCA'}
-              </button>
-              <p id="invoice-sequence-help">
-                Esta consulta no emite ni reserva números.{' '}
-                {!requirements.canCheckSequence && 'Primero completá los requisitos indicados.'}
+              <p role="status">
+                <strong>
+                  {requirements.ready
+                    ? '✓ Lista para enviar a ARCA'
+                    : 'Necesitamos completar la preparación'}
+                </strong>
               </p>
-              {requirements.sequence?.status === 'VERIFIED' && (
+              <dl className="data-grid invoice-fiscal-summary">
+                <div>
+                  <dt>Cliente</dt>
+                  <dd>{i.customer.legalName ?? i.customer.name}</dd>
+                </div>
+                <div>
+                  <dt>CUIT</dt>
+                  <dd>{i.customer.cuit ?? 'Pendiente'}</dd>
+                </div>
+                <div>
+                  <dt>Condición frente al IVA</dt>
+                  <dd>{fiscal.receiverVatConditionLabel ?? 'Pendiente'}</dd>
+                </div>
+                <div>
+                  <dt>Comprobante</dt>
+                  <dd>{i.invoiceType ? invoiceTypeLabels[i.invoiceType] : 'Pendiente'}</dd>
+                </div>
+                <div>
+                  <dt>Punto de venta</dt>
+                  <dd>
+                    {requirements.pointOfSale
+                      ? String(requirements.pointOfSale).padStart(5, '0')
+                      : 'Pendiente de configuración'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Neto</dt>
+                  <dd>{formatMoney(i.netAmount)}</dd>
+                </div>
+                <div>
+                  <dt>IVA</dt>
+                  <dd>{formatMoney(i.vatAmount)}</dd>
+                </div>
+                <div>
+                  <dt>Total</dt>
+                  <dd>{formatMoney(i.totalAmount)}</dd>
+                </div>
+              </dl>
+              {requirements.reasons.length > 0 && (
+                <ul>
+                  {requirements.reasons.map((r, n) => (
+                    <li key={n}>{r}</li>
+                  ))}
+                </ul>
+              )}
+              {requirements.configurationRequired && (
                 <p>
-                  ✓ Secuencia consultada. Último número autorizado:{' '}
-                  {requirements.sequence.lastNumber}. Se verificará nuevamente al enviar.
+                  <Link href="/configuracion">Completar configuración de ARCA</Link>
                 </p>
               )}
-              {requirements.conditions.length > 0 && (
-                <div>
-                  <label className="field" htmlFor="invoice-receiver-vat">
-                    Condición IVA del receptor
-                    <select
-                      id="invoice-receiver-vat"
-                      value={condition || String(fiscal.receiverVatConditionId ?? '')}
-                      disabled={mutation.busy}
-                      onChange={(e) => setCondition(e.target.value)}
-                    >
-                      <option value="">Elegí la condición informada por el cliente</option>
-                      {requirements.conditions.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    disabled={mutation.busy || !condition}
-                    onClick={() =>
+              {requirements.canEditReceiver &&
+                (!i.customer.cuit ||
+                  !requirements.checks.find((c) => c.id === 'receiver-vat')?.ready) && (
+                  <form
+                    className="catalog-form"
+                    aria-label="Completar datos fiscales del receptor"
+                    onSubmit={(e) => {
+                      e.preventDefault();
                       void (async () => {
-                        const next = await mutation.run(() =>
-                          catalogFetch(`${i.id}/fiscal/receiver`, invoiceSchema, {
+                        const next = await mutation.run(async () => {
+                          const parsed = invoiceFiscalReceiverSchema.safeParse({
+                            expectedVersion: i.version,
+                            expectedCustomerVersion: requirements.customerVersion,
+                            cuit,
+                            conditionId: Number(condition || fiscal.receiverVatConditionId),
+                          });
+                          if (!parsed.success)
+                            throw new Error(
+                              'Revisá el CUIT y elegí la condición frente al IVA del cliente.',
+                            );
+                          const body = parsed.data;
+                          return catalogFetch(`${i.id}/fiscal/receiver`, invoiceSchema, {
                             scope: 'invoices',
                             method: 'POST',
-                            body: { expectedVersion: i.version, conditionId: Number(condition) },
-                          }),
-                        );
+                            body,
+                          });
+                        });
                         if (next) changed(next);
-                      })()
-                    }
+                      })();
+                    }}
                   >
-                    Guardar condición para el cliente y esta factura
-                  </button>
-                </div>
+                    <h3>Faltan datos para facturar a este cliente</h3>
+                    <p>
+                      Se guardarán en el cliente y en esta factura para que no tengas que volver a
+                      cargarlos.
+                    </p>
+                    <label className="field" htmlFor="invoice-receiver-cuit">
+                      CUIT
+                      <input
+                        id="invoice-receiver-cuit"
+                        value={cuit}
+                        onChange={(e) => setCuit(e.target.value)}
+                        disabled={mutation.busy}
+                        maxLength={32}
+                      />
+                    </label>
+                    <label className="field" htmlFor="invoice-receiver-vat">
+                      Condición frente al IVA
+                      <select
+                        id="invoice-receiver-vat"
+                        aria-label="Condición frente al IVA"
+                        value={condition || String(fiscal.receiverVatConditionId ?? '')}
+                        disabled={mutation.busy}
+                        onChange={(e) => setCondition(e.target.value)}
+                      >
+                        <option value="">Elegí la condición informada por el cliente</option>
+                        {requirements.conditions.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {!requirements.conditions.length && (
+                      <p>No pudimos cargar las condiciones de ARCA. Reintentá la preparación.</p>
+                    )}
+                    <button
+                      className="primary-button"
+                      disabled={
+                        mutation.busy ||
+                        !cuit.trim() ||
+                        !(condition || fiscal.receiverVatConditionId) ||
+                        !requirements.conditions.length
+                      }
+                    >
+                      Guardar y continuar
+                    </button>
+                  </form>
+                )}
+              {!requirements.ready && (
+                <button
+                  disabled={mutation.busy}
+                  onClick={() => {
+                    setLoadError('');
+                    setRevision((v) => v + 1);
+                  }}
+                >
+                  Reintentar
+                </button>
               )}
               {!confirm ? (
                 <button
@@ -286,10 +363,7 @@ export function InvoiceFiscalPanel({
                 </button>
               ) : (
                 <div role="group" aria-label="Confirmar autorización en homologación">
-                  <p>
-                    Esto enviará el comprobante directamente a ARCA mediante Web Service. No se
-                    abrirá una página de ARCA.
-                  </p>
+                  <p>Vas a enviar este comprobante directamente a ARCA mediante Web Service.</p>
                   <p>Ambiente: HOMOLOGACIÓN</p>
                   <p>Este comprobante es de prueba y no tiene efecto fiscal real.</p>
                   <p>
@@ -323,6 +397,47 @@ export function InvoiceFiscalPanel({
                   </button>
                 </div>
               )}
+              <details>
+                <summary>Diagnóstico fiscal</summary>
+                <ul aria-label="Diagnóstico para autorizar">
+                  {requirements.checks.map((check) => (
+                    <li key={check.id}>
+                      {check.ready ? '✓' : 'Pendiente:'} {check.label}
+                    </li>
+                  ))}
+                </ul>
+                <button disabled={mutation.busy} onClick={() => setRevision((v) => v + 1)}>
+                  Actualizar requisitos
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={mutation.busy || !requirements.canCheckSequence}
+                  onClick={() =>
+                    void (async () => {
+                      const next = await mutation.run(() =>
+                        catalogFetch(`${i.id}/fiscal/sequence`, invoiceFiscalReadinessSchema, {
+                          scope: 'invoices',
+                          method: 'POST',
+                          body: {},
+                        }),
+                      );
+                      if (next) setLoaded({ id: i.id, version: i.version, revision, value: next });
+                    })()
+                  }
+                >
+                  Consultar numeración en ARCA
+                </button>
+                {requirements.sequence?.checkedAt && (
+                  <p>
+                    Última consulta:{' '}
+                    {new Date(requirements.sequence.checkedAt).toLocaleString('es-AR', {
+                      timeZone: 'America/Argentina/Buenos_Aires',
+                    })}
+                    . Último número: {requirements.sequence.lastNumber ?? '—'}. Se comprueba
+                    nuevamente al autorizar.
+                  </p>
+                )}
+              </details>
               {!requirements.ready && (
                 <p id="invoice-authorization-help">
                   La autorización no está disponible hasta completar todos los requisitos indicados.

@@ -541,7 +541,7 @@ test('Fiscal settings: GET profile and readiness succeed, OpenSSL state is shown
   const ui = await mount(<FiscalSettingsView isAdmin />);
   try {
     assert.deepEqual(paths.sort(), [
-      '/api/fiscal/arca/invoicing',
+      '/api/fiscal/arca/invoicing/prepare',
       '/api/fiscal/arca/readiness',
       '/api/fiscal/profile',
     ]);
@@ -692,7 +692,7 @@ test('V3 POS UI: source is ARCA, single point is proposed and requires explicit 
   };
   const writes: { url: string; body: unknown }[] = [];
   globalThis.fetch = async (url, init) => {
-    if (init?.method === 'POST') {
+    if (init?.method === 'POST' && !String(url).endsWith('/prepare')) {
       writes.push({ url: String(url), body: JSON.parse(String(init.body)) });
       return Response.json({ ...cfg, pointOfSale: 23, ready: true, reasons: [] });
     }
@@ -704,7 +704,7 @@ test('V3 POS UI: source is ARCA, single point is proposed and requires explicit 
     assert.equal(select.value, '23');
     assert.equal(ui.host.querySelectorAll('input').length, 0);
     assert.equal(writes.length, 0);
-    await act(async () => button(ui.host, 'Confirmar punto de venta de homologación').click());
+    await act(async () => button(ui.host, 'Usar este punto de venta').click());
     assert.deepEqual(writes, [
       {
         url: '/api/fiscal/arca/invoicing/point-of-sale',
@@ -790,6 +790,40 @@ test('Valid active credential with an available TA shows active temporal access 
     assert.match(ui.host.textContent!, /✓ Acceso activo/);
     assert.match(ui.host.textContent!, /Vencimiento del acceso conocido/);
     assert.equal(button(ui.host, 'Probar conexión con ARCA').disabled, false);
+  } finally {
+    await ui.close();
+  }
+});
+
+test('V6 POS: confirmed point is reused and changing it stays collapsed with several available points', async () => {
+  const posts: string[] = [];
+  globalThis.fetch = async (url, init) => {
+    if (init?.method === 'POST') posts.push(String(url));
+    return Response.json({
+      environment: 'HOMOLOGATION',
+      version: 3,
+      pointOfSale: 23,
+      checkedAt: '2026-10-28T18:00:00Z',
+      ready: true,
+      reasons: [],
+      checks: [{ id: 'point', label: 'Punto de venta', ready: true }],
+      references: {
+        points: [23, 42],
+        conditions: { A: [], B: [], C: [] },
+        documentTypes: [],
+        ivaTypes: [],
+      },
+    });
+  };
+  const ui = await mount(<WsfeSettings />);
+  try {
+    const details = [...ui.host.querySelectorAll('details')].find(
+      (d) => d.querySelector('summary')?.textContent === 'Cambiar punto de venta',
+    );
+    assert.ok(details);
+    assert.equal(details.open, false);
+    assert.match(ui.host.textContent!, /Se usará automáticamente en las próximas facturas/);
+    assert.deepEqual(posts, ['/api/fiscal/arca/invoicing/prepare']);
   } finally {
     await ui.close();
   }

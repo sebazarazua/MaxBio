@@ -63,6 +63,7 @@ const fields = {
     ])
     .optional(),
   taxConditionText: optionalText(80),
+  arcaVatConditionId: z.number().int().positive().nullable().optional(),
   addressLine: optionalText(250),
   locality: optionalText(120),
   province: optionalText(100),
@@ -116,6 +117,8 @@ export const customerSchema = z
       .regex(/^[0-9]{11}$/)
       .nullable(),
     taxConditionText: z.string().nullable(),
+    arcaVatConditionId: z.number().int().positive().nullable().default(null),
+    arcaVatConditionLabel: z.string().nullable().default(null),
     addressLine: z.string().nullable(),
     locality: z.string().nullable(),
     province: z.string().nullable(),

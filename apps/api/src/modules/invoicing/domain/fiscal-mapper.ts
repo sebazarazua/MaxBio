@@ -19,6 +19,28 @@ import {
 export const fiscalDocumentTypes = { INVOICE_A: 1, INVOICE_B: 6, INVOICE_C: 11 } as const;
 export const fiscalClass = (type: string) =>
   ({ INVOICE_A: 'A', INVOICE_B: 'B', INVOICE_C: 'C' })[type] as 'A' | 'B' | 'C' | undefined;
+// Existing issuer scope plus official document types / ClaseCmp. Never infer a receiver code from text.
+export function availableInvoiceTypes(
+  issuer: { vatCondition: string | null } | null,
+  conditionId: number | null,
+  refs: WsfeReferences | null,
+) {
+  if (!issuer || !conditionId || !refs) return [];
+  return (Object.keys(fiscalDocumentTypes) as (keyof typeof fiscalDocumentTypes)[]).filter(
+    (type) => {
+      const cls = fiscalClass(type)!;
+      const issuerAllows =
+        issuer.vatCondition === 'RESPONSABLE_INSCRIPTO'
+          ? cls !== 'C'
+          : ['MONOTRIBUTO', 'EXENTO'].includes(issuer.vatCondition ?? '') && cls === 'C';
+      return (
+        issuerAllows &&
+        refs.documentTypes.some((v) => v.id === fiscalDocumentTypes[type]) &&
+        refs.conditions[cls].some((v) => v.id === conditionId)
+      );
+    },
+  );
+}
 const rates = {
   VAT_0: [3, 0n],
   VAT_10_5: [4, 105n],

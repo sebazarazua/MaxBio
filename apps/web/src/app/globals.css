@@ -1594,3 +1594,17 @@ main:has(.geometry-workspace) {
     padding: 10px;
   }
 }
+
+/* The authorization summary keeps the fiscal decision together at narrow widths. */
+.data-grid.invoice-fiscal-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 24px;
+  margin-block: 20px;
+}
+.invoice-fiscal-summary dd {
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.invoice-fiscal-summary > div:last-child dd {
+  font-weight: 700;
+}

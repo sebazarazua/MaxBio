@@ -13,6 +13,7 @@ import {
 import type { InvoiceRecord } from '../src/modules/invoicing/application/invoice-view.js';
 import {
   mapFiscalInvoice,
+  availableInvoiceTypes,
   localFiscalReasons,
   sameFiscalInvoice,
   validateFiscalDate,
@@ -337,4 +338,64 @@ test('WSFE bounded transport: network, HTTP, content type, invalid UTF-8, size a
       (e) => e instanceof WsfeError && !JSON.stringify(e).includes(auth.token),
     );
   }
+});
+
+test('V6 type assistance uses official ClaseCmp and existing issuer scope, never guesses receiver IVA', () => {
+  assert.deepEqual(availableInvoiceTypes(issuer, 1, refs), ['INVOICE_A']);
+  assert.deepEqual(availableInvoiceTypes(issuer, 5, refs), ['INVOICE_B']);
+  assert.deepEqual(availableInvoiceTypes({ vatCondition: 'MONOTRIBUTO' }, 1, refs), ['INVOICE_C']);
+  assert.deepEqual(availableInvoiceTypes(issuer, null, refs), []);
+  assert.deepEqual(availableInvoiceTypes(issuer, 999, refs), []);
+  const shared = structuredClone(refs);
+  shared.conditions.B.push({ id: 1, label: 'Compartida' });
+  assert.deepEqual(availableInvoiceTypes(issuer, 1, shared), ['INVOICE_A', 'INVOICE_B']);
+  shared.documentTypes = shared.documentTypes.filter((v) => v.id !== 1);
+  assert.deepEqual(availableInvoiceTypes(issuer, 1, shared), ['INVOICE_B']);
+});
+
+test('V6: ARCA POS 602 means an empty setup choice; mixed errors, conflicting data and errors in other references remain blockers', async () => {
+  let pointError =
+    '<Errors><Err><Code>602</Code><Msg>Sin Resultados: - Metodo FEParamGetPtosVenta</Msg></Err></Errors>';
+  let otherError = '';
+  const client = new ArcaWsfeClient(async (_url, init) => {
+    const action = new Headers(init?.headers).get('SOAPAction')!;
+    const method = action.replaceAll('"', '').slice(WSFE_NS.length);
+    if (method === 'FEParamGetPtosVenta') return response(soap(method, pointError));
+    if (method === 'FEParamGetTiposCbte')
+      return response(
+        soap(
+          method,
+          otherError +
+            '<ResultGet><CbteTipo><Id>1</Id><Desc>Factura A</Desc></CbteTipo></ResultGet>',
+        ),
+      );
+    if (method === 'FEParamGetTiposIva')
+      return response(
+        soap(method, '<ResultGet><IvaTipo><Id>5</Id><Desc>21%</Desc></IvaTipo></ResultGet>'),
+      );
+    const body = String(init?.body),
+      cls = body.match(/<ClaseCmp>([ABC])<\/ClaseCmp>/)![1];
+    return response(
+      soap(
+        method,
+        `<ResultGet><CondicionIvaReceptor><Id>1</Id><Desc>Responsable Inscripto</Desc><Cmp_Clase>${cls}</Cmp_Clase></CondicionIvaReceptor></ResultGet>`,
+      ),
+    );
+  });
+  const refs = await client.references(auth);
+  assert.deepEqual(refs.points, []);
+  assert.equal(refs.conditions.A[0]?.id, 1);
+  const empty = pointError;
+  pointError = empty.replace(
+    '</Errors>',
+    '<Err><Code>600</Code><Msg>No autorizado</Msg></Err></Errors>',
+  );
+  await assert.rejects(client.references(auth), WsfeError);
+  pointError =
+    empty +
+    '<ResultGet><PtoVenta><Nro>23</Nro><EmisionTipo>CAE</EmisionTipo><Bloqueado>N</Bloqueado></PtoVenta></ResultGet>';
+  await assert.rejects(client.references(auth), WsfeError);
+  pointError = empty;
+  otherError = empty;
+  await assert.rejects(client.references(auth), WsfeError);
 });

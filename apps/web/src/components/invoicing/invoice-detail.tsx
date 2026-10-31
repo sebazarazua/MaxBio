@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import {
+  invoiceFiscalReadinessSchema,
   invoiceDiscardedSchema,
   invoiceHistoryLabels,
   invoiceLineAmounts,
@@ -152,6 +153,31 @@ function InvoiceBody({
 }) {
   const editable = isAdmin && i.status === 'DRAFT';
   const [d, setD] = useState(() => draftOf(i));
+  const [typeChoices, setTypeChoices] = useState<InvoiceView['invoiceType'][] | null>(null);
+  useEffect(() => {
+    if (!editable) return;
+    const abort = new AbortController();
+    void catalogFetch(`${i.id}/fiscal/prepare`, invoiceFiscalReadinessSchema, {
+      scope: 'invoices',
+      method: 'POST',
+      body: {},
+      signal: abort.signal,
+    })
+      .then((r) => {
+        if (abort.signal.aborted) return;
+        setTypeChoices(r.typeAssistanceAvailable ? r.invoiceTypes : null);
+        if (r.invoiceTypes.length === 1)
+          setD((v) =>
+            v.invoiceType && r.invoiceTypes.includes(v.invoiceType)
+              ? v
+              : { ...v, invoiceType: r.invoiceTypes[0]! },
+          );
+      })
+      .catch(() => {
+        /* The draft remains editable; preparation reports the blocker on READY. */
+      });
+    return () => abort.abort();
+  }, [editable, i.id]);
   const [problem, setProblem] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const mutation = useMutation();
@@ -200,6 +226,12 @@ function InvoiceBody({
   async function transition(action: 'ready' | 'reopen') {
     let target = i;
     if (action === 'ready') {
+      if (typeChoices && (!d.invoiceType || !typeChoices.includes(d.invoiceType))) {
+        setProblem(
+          'Elegí un tipo de factura compatible con los datos fiscales del cliente y del emisor.',
+        );
+        return;
+      }
       const missing = readyProblem(i, d);
       if (missing) {
         setProblem(missing);
@@ -287,13 +319,29 @@ function InvoiceBody({
                 }
               >
                 <option value="">Elegí el tipo</option>
-                {invoiceTypeSchema.options.map((t) => (
-                  <option key={t} value={t}>
-                    {invoiceTypeLabels[t]}
+                {d.invoiceType && typeChoices && !typeChoices.includes(d.invoiceType) && (
+                  <option value={d.invoiceType} disabled>
+                    {invoiceTypeLabels[d.invoiceType]} · Revisar compatibilidad
                   </option>
-                ))}
+                )}
+                {(typeChoices ?? invoiceTypeSchema.options)
+                  .filter((t) => t !== null)
+                  .map((t) => (
+                    <option key={t} value={t}>
+                      {invoiceTypeLabels[t]}
+                    </option>
+                  ))}
               </select>
             </Field>
+            {typeChoices?.length === 1 && (
+              <p>Tipo propuesto según los datos fiscales del cliente y del emisor.</p>
+            )}
+            {typeChoices?.length === 0 && (
+              <p role="alert">
+                No hay un tipo de factura compatible con los datos fiscales del cliente y del
+                emisor. Revisá la condición frente al IVA antes de continuar.
+              </p>
+            )}
             <Field label="Fecha de la factura">
               <input
                 type="date"

@@ -58,6 +58,16 @@ export class InvoicingController {
     parse(runtimeZ.object({}).strict(), q);
     return this.fiscal.readiness(actor(r), id);
   }
+  @Post(':id/fiscal/prepare') @HttpCode(200) @Roles('ADMIN') prepare(
+    @Req() r: AuthenticatedRequest,
+    @Param('id', uuid) id: string,
+    @Body() b: unknown,
+    @Query() q: unknown,
+  ) {
+    parse(runtimeZ.object({}).strict(), q);
+    parse(runtimeZ.object({}).strict(), b);
+    return this.fiscal.prepareFiscalAuthorization(actor(r), id);
+  }
   @Post(':id/fiscal/authorize') @HttpCode(200) @Roles('ADMIN') authorize(
     @Req() r: AuthenticatedRequest,
     @Param('id', uuid) id: string,

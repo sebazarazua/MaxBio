@@ -21,6 +21,95 @@ import { requireFiscalAdmin } from './fiscal-access.js';
 export const REFERENCES_TTL_MS = 15 * 60 * 1000;
 @Injectable()
 export class WsfeConfigurationService {
+  private readonly preparations = new Map<string, Promise<WsfeConfiguration>>();
+  private readonly failures = new Map<string, { until: number; message: string }>();
+
+  // Only preparation performs automatic network I/O. GET remains observational.
+  async prepare(c: RequestActorContext): Promise<WsfeConfiguration> {
+    await this.db.client.$transaction((tx) => requireFiscalAdmin(tx, c, this.clock.now()));
+    const pending = this.preparations.get(c.organizationId);
+    if (pending) return pending;
+    const run = this.prepareConfiguration(c).finally(() =>
+      this.preparations.delete(c.organizationId),
+    );
+    this.preparations.set(c.organizationId, run);
+    return run;
+  }
+  private async prepareConfiguration(c: RequestActorContext): Promise<WsfeConfiguration> {
+    let cfg = await this.get(c);
+    const failed = this.failures.get(c.organizationId);
+    if (failed && failed.until > this.clock.now().getTime())
+      return {
+        ...cfg,
+        ready: false,
+        reasons: [failed.message],
+        retryAfter: new Date(failed.until).toISOString(),
+      };
+    this.failures.delete(c.organizationId);
+    if (!cfg.checks.find((v) => v.id === 'credential')?.ready)
+      return {
+        ...cfg,
+        reasons: [
+          'Completá los datos fiscales del emisor y su conexión con ARCA en Configuración.',
+        ],
+      };
+    if (
+      cfg.retryAfter &&
+      new Date(cfg.retryAfter) > this.clock.now() &&
+      !cfg.checks.find((v) => v.id === 'wsaa')?.ready
+    )
+      return {
+        ...cfg,
+        reasons: [
+          `ARCA todavía no permite renovar el acceso. Disponible después de ${new Date(cfg.retryAfter).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour12: false })} (Buenos Aires).`,
+        ],
+      };
+    try {
+      if (!cfg.checks.find((v) => v.id === 'wsaa')?.ready) {
+        // Restores encrypted persisted access, reuses single-flight and existing durable WSAA lock.
+        await this.fiscal.authenticate(c);
+        cfg = await this.get(c);
+      }
+      if (!cfg.checks.find((v) => v.id === 'references')?.ready) cfg = await this.refresh(c);
+      return cfg;
+    } catch {
+      cfg = await this.get(c);
+      const message = cfg.retryAfter
+        ? (cfg.reasons.find((v) => v.includes('renovar')) ??
+          'ARCA todavía no permite renovar el acceso. Esperá hasta el horario indicado.')
+        : 'No pudimos conectarnos con ARCA. Reintentá en unos momentos. Si el problema continúa, revisá la configuración de ARCA.';
+      const until = Math.max(
+        this.clock.now().getTime() + 60000,
+        cfg.retryAfter ? Date.parse(cfg.retryAfter) : 0,
+      );
+      for (const [key, value] of this.failures)
+        if (value.until <= this.clock.now().getTime()) this.failures.delete(key);
+      if (this.failures.size >= 1000) this.failures.delete(this.failures.keys().next().value!);
+      this.failures.set(c.organizationId, { until, message });
+      return {
+        ...cfg,
+        ready: false,
+        reasons: [message],
+        retryAfter: new Date(until).toISOString(),
+      };
+    }
+  }
+
+  async receiverConditions(c: RequestActorContext) {
+    const cfg = await this.prepare(c);
+    if (!cfg.checks.find((v) => v.id === 'references')?.ready || !cfg.references)
+      throw new ServiceUnavailableException(
+        cfg.reasons[0] ?? 'No pudimos actualizar la información de ARCA.',
+      );
+    return [
+      ...new Map(
+        Object.values(cfg.references.conditions)
+          .flat()
+          .map((v) => [v.id, v]),
+      ).values(),
+    ];
+  }
+
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(AuditService) private readonly audit: AuditService,
@@ -55,8 +144,8 @@ export class WsfeConfigurationService {
     if (readiness.access.status !== 'AUTHENTICATED')
       reasons.push(
         readiness.access.retryAfter
-          ? `El acceso WSAA debe renovarse después de ${new Date(readiness.access.retryAfter).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour12: false })} (Buenos Aires).`
-          : 'Consultá ARCA para obtener acceso WSAA y las referencias de facturación.',
+          ? `ARCA todavía no permite renovar el acceso. Disponible después de ${new Date(readiness.access.retryAfter).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour12: false })} (Buenos Aires).`
+          : 'No pudimos obtener el acceso a ARCA. Reintentá la preparación.',
       );
     if (
       !refs ||
@@ -65,13 +154,17 @@ export class WsfeConfigurationService {
       config.wsfeCuit !== readiness.cuit ||
       config.wsfeCredentialId !== readiness.activeCredentialId
     )
-      reasons.push('Consultá nuevamente las referencias de ARCA.');
+      reasons.push('No pudimos actualizar la información de ARCA. Reintentá la preparación.');
     if (
       !config?.pointOfSale ||
       config.pointOfSaleCuit !== readiness.cuit ||
       !refs?.points.includes(config.pointOfSale)
     )
-      reasons.push('Elegí y confirmá un punto de venta habilitado por ARCA para CAE.');
+      reasons.push(
+        referencesReady && !refs?.points.length
+          ? 'ARCA no informa puntos de venta habilitados para facturar con MaxBio. Configurá uno en ARCA y después elegilo en Configuración.'
+          : 'Elegí y confirmá el punto de venta que querés usar con MaxBio.',
+      );
     return {
       retryAfter: readiness.access.retryAfter,
       checks: [
@@ -90,7 +183,7 @@ export class WsfeConfigurationService {
       checkedAt: config?.wsfeCheckedAt?.toISOString() ?? null,
       ready: reasons.length === 0,
       reasons,
-      references: refs,
+      references: referencesReady ? refs : null,
     };
   }
   async fetchReferences(c: RequestActorContext) {

@@ -1,8 +1,10 @@
 'use client';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useId, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import {
+  wsfeConfigurationSchema,
+  type WsfeConfiguration,
   customerCreateSchema,
   customerUpdateSchema,
   customerKindLabels,
@@ -11,6 +13,7 @@ import {
   type CustomerUpdate,
   type CustomerView,
 } from '@maxbio/contracts';
+import { fiscalFetch } from '../../lib/fiscal-api';
 import { customersFetch } from '@/lib/customers-api';
 import { CatalogHttpError } from '@/lib/catalog-api';
 import { useWorkspace } from '../workspace';
@@ -22,7 +25,7 @@ const groups = [
     fields: [
       { key: 'legalName', label: 'Razón social', max: 200 },
       { key: 'cuit', label: 'CUIT', max: 32, help: '11 dígitos o XX-XXXXXXXX-X. Es opcional.' },
-      { key: 'taxConditionText', label: 'Condición fiscal', max: 80 },
+      { key: 'taxConditionText', label: 'Condición fiscal / observación', max: 80 },
     ],
   },
   {
@@ -75,6 +78,32 @@ export function CustomerEditor({ id }: { id?: string }) {
 
 function CustomerForm({ customer, reload }: { customer?: CustomerView; reload: () => void }) {
   const router = useRouter();
+  const [fiscal, setFiscal] = useState<WsfeConfiguration | null>(null);
+  const [fiscalError, setFiscalError] = useState('');
+  const [vatCondition, setVatCondition] = useState(String(customer?.arcaVatConditionId ?? ''));
+  const [fiscalRevision, setFiscalRevision] = useState(0);
+  useEffect(() => {
+    const abort = new AbortController();
+    void fiscalFetch('arca/invoicing/prepare', wsfeConfigurationSchema, 'POST', {}, abort.signal)
+      .then((cfg) => {
+        if (!abort.signal.aborted) {
+          setFiscal(cfg);
+          setFiscalError('');
+        }
+      })
+      .catch(() => {
+        if (!abort.signal.aborted)
+          setFiscalError('No pudimos cargar las condiciones frente al IVA desde ARCA.');
+      });
+    return () => abort.abort();
+  }, [fiscalRevision]);
+  const vatOptions = [
+    ...new Map(
+      Object.values(fiscal?.references?.conditions ?? {})
+        .flat()
+        .map((v) => [v.id, v]),
+    ).values(),
+  ];
   const mutation = useMutation();
   const formId = useId();
   const form = useRef<HTMLFormElement>(null);
@@ -98,7 +127,11 @@ function CustomerForm({ customer, reload }: { customer?: CustomerView; reload: (
     setNotice('');
     if (!attempt.current) {
       const data = new FormData(event.currentTarget);
-      const fields = Object.fromEntries(data.entries());
+      const fields = Object.fromEntries(data.entries()) as Record<string, unknown>;
+      if ('arcaVatConditionId' in fields)
+        fields.arcaVatConditionId = fields.arcaVatConditionId
+          ? Number(fields.arcaVatConditionId)
+          : null;
       if (!customer && !createId.current) createId.current = crypto.randomUUID();
       const parsed = customer
         ? customerUpdateSchema.safeParse({ ...fields, expectedVersion: customer.version })
@@ -225,6 +258,45 @@ function CustomerForm({ customer, reload }: { customer?: CustomerView; reload: (
             <details className="form-details" key={group.title}>
               <summary>{group.title}</summary>
               <div className="form-grid">
+                {group.title === 'Datos comerciales y fiscales' && (
+                  <Field
+                    label="Condición frente al IVA"
+                    help="Se guarda para las próximas facturas. Elegí la condición informada por el cliente."
+                  >
+                    <select
+                      name="arcaVatConditionId"
+                      aria-label="Condición frente al IVA"
+                      value={vatCondition}
+                      onChange={(event) => setVatCondition(event.target.value)}
+                      disabled={!vatOptions.length}
+                    >
+                      <option value="">Sin informar</option>
+                      {customer?.arcaVatConditionId &&
+                        !vatOptions.some((v) => v.id === customer.arcaVatConditionId) && (
+                          <option value={customer.arcaVatConditionId}>
+                            {customer.arcaVatConditionLabel}
+                          </option>
+                        )}
+                      {vatOptions.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.label}
+                        </option>
+                      ))}
+                    </select>
+                    {(!vatOptions.length || fiscalError) && (
+                      <>
+                        <p>
+                          {fiscalError ||
+                            'Las condiciones frente al IVA todavía no están disponibles. Podés guardar el cliente y completarlas al facturar.'}
+                        </p>
+                        <button type="button" onClick={() => setFiscalRevision((v) => v + 1)}>
+                          Reintentar consulta de ARCA
+                        </button>
+                      </>
+                    )}
+                    {fieldError('arcaVatConditionId')}
+                  </Field>
+                )}
                 {group.fields.map((field) => (
                   <Field
                     key={field.key}
