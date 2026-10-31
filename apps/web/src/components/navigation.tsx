@@ -7,13 +7,13 @@ const links = [
   { href: '/productos', label: 'Productos', icon: 'products' },
   { href: '/proveedores', label: 'Proveedores', icon: 'suppliers' },
   { href: '/clientes', label: 'Clientes', icon: 'clients' },
-  { href: '/referencias', label: 'Listas de proveedores', icon: 'products' },
-  { href: '/identificar', label: 'Identificar producto', icon: 'products' },
-  { href: '/remitos', label: 'Remitos', icon: 'products' },
-  { href: '/stock', label: 'Stock', icon: 'products' },
+  { href: '/referencias', label: 'Listas de proveedores', icon: 'list' },
+  { href: '/identificar', label: 'Identificar producto', icon: 'scan' },
+  { href: '/remitos', label: 'Remitos', icon: 'document' },
+  { href: '/stock', label: 'Stock', icon: 'stock' },
   { href: '/facturacion', label: 'Facturación', icon: 'billing' },
   { href: '/trazabilidad', label: 'Trazabilidad', icon: 'trace' },
-  { href: '/configuracion', label: 'Configuración', icon: 'billing' },
+  { href: '/configuracion', label: 'Configuración', icon: 'settings' },
 ] as const;
 export function Navigation() {
   const path = usePathname();

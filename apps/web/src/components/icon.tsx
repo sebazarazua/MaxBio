@@ -10,6 +10,10 @@ const paths = {
   suppliers: 'M3 7h11v11H3V7ZM14 11h4l3 4v3h-7M5 18a2 2 0 1 0 4 0M16 18a2 2 0 1 0 4 0',
   check: 'm5 12 4 4L19 6',
   connection: 'M8 12h8M12 8v8M4 4h5M4 4v5M20 4h-5M20 4v5M4 20h5M4 20v-5M20 20h-5M20 20v-5',
+  list: 'M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01',
+  scan: 'M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 8v8M11 8v8M14 8v8M17 8v8',
+  settings:
+    'M4 7h9M17 7h3M4 17h3M11 17h9M15 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM9 15a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z',
 } as const;
 
 export function Icon({ name, size = 20 }: { name: keyof typeof paths; size?: number }) {
