@@ -1,5 +1,6 @@
 'use client';
 import Link from 'next/link';
+import Image from 'next/image.js';
 import { usePathname } from 'next/navigation';
 import { Icon } from './icon.tsx';
 const links = [
@@ -21,7 +22,7 @@ export function Navigation() {
     <aside className="sidebar">
       <Link href="/" className="brand" aria-label="MaxBio — Inicio">
         <span className="brand-mark" aria-hidden="true">
-          M
+          <Image src="/brand/maxbio-logo.png" alt="" width={38} height={38} unoptimized />
         </span>
         <span>
           MaxBio<span className="brand-description">Gestión de distribución</span>

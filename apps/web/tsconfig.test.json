@@ -10,7 +10,8 @@
     "rewriteRelativeImportExtensions": true,
     "paths": {
       "next/link": ["./test/next-link.d.ts"],
-      "next/navigation": ["./node_modules/next/navigation.d.ts"]
+      "next/navigation": ["./node_modules/next/navigation.d.ts"],
+      "next/image.js": ["./test/next-image.d.ts"]
     }
   },
   "include": [
