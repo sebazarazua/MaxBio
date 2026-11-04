@@ -13,6 +13,7 @@ import { DatabaseService } from '../../../infrastructure/database/database.servi
 import { FiscalService } from './fiscal.service.js';
 import { WsfeConfigurationService } from './wsfe-configuration.service.js';
 import { OpenSslArcaCrypto } from '../arca/openssl-crypto.js';
+import { ArcaError } from '../arca/arca-errors.js';
 
 export async function readLocalCredential(path: string) {
   const stat = await lstat(path);
@@ -43,6 +44,7 @@ async function main() {
       certificate: { type: 'string' },
       activate: { type: 'boolean' },
       check: { type: 'boolean' },
+      status: { type: 'boolean' },
     },
   });
   const input = z
@@ -58,6 +60,7 @@ async function main() {
       'create-organization': z.boolean().optional(),
       activate: z.boolean().optional(),
       check: z.boolean().optional(),
+      status: z.boolean().optional(),
     })
     .strict()
     .parse(values);
@@ -189,6 +192,42 @@ async function main() {
       });
       console.info('Credencial activada.');
     }
+    if (input.status) {
+      // Read-only: database and encrypted ticket storage. No WSAA/WSFE network call.
+      const state = await fiscal.readiness(context),
+        wsfe = await app.get(WsfeConfigurationService).get(context);
+      console.info(
+        JSON.stringify({
+          issuerCuit: state.cuit,
+          fiscalProfile: state.fiscalProfile,
+          canTest: state.canTest,
+          activeCredentialId: state.activeCredentialId,
+          credentials: state.credentials.map((c) => ({
+            id: c.id,
+            commonName: c.commonName,
+            status: c.status,
+            issuerCuit: c.issuerCuit,
+            certificateHolderCuit: c.certificateHolderCuit,
+          })),
+          access: {
+            status: state.access.status,
+            state: state.access.state ?? null,
+            obtainedAt: state.access.obtainedAt,
+            expiresAt: state.access.expiresAt,
+            retryAfter: state.access.retryAfter,
+            lastResultCode: state.access.lastResultCode,
+          },
+          wsfe: {
+            ready: wsfe.ready,
+            checkedAt: wsfe.checkedAt,
+            pointOfSale: wsfe.pointOfSale,
+            points: wsfe.references?.points ?? null,
+            checks: wsfe.checks,
+            reasons: wsfe.reasons,
+          },
+        }),
+      );
+    }
     if (input.check) {
       // These ports only authenticate and read references. Never invoke authorize/FECAESolicitar.
       await fiscal.testConnection(context);
@@ -220,7 +259,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   main().catch((error: unknown) => {
     // Public service exceptions contain only mapped/sanitized fiscal diagnostics.
     // Never print filesystem, OpenSSL stderr, HTTP transport or arbitrary error objects.
-    if (error instanceof HttpException) console.error(error.message);
+    // ArcaError messages are fixed catalog strings (arca-errors.ts): safe to show, never secret-bearing.
+    if (error instanceof HttpException || error instanceof ArcaError) console.error(error.message);
     console.error(
       'No se completó la operación local. Revisá identidad, vigencia, permisos, perfil fiscal y estado pendiente. Los archivos originales y credenciales activas se conservan. No se emitieron comprobantes.',
     );

@@ -44,7 +44,7 @@ test(
         const url = new URL(process.env.DATABASE_URL!);
         url.pathname = '/' + name;
         const db = createDatabaseClient(url.toString());
-        let active: Awaited<ReturnType<typeof db.arcaCredential.findFirst>> = null,
+        let activeId: string | undefined,
           customerId: string | undefined,
           organizationId: string | undefined;
         try {
@@ -56,26 +56,17 @@ test(
             customerId = randomUUID();
             await db.$executeRaw`INSERT INTO "Customer" (id,"organizationId",name,kind,"taxConditionText","searchText","updatedAt") VALUES (${customerId}::uuid,${organizationId}::uuid,'Preserved','COMPANY','Responsable Inscripto','preserved',now())`;
             await db.$executeRaw`INSERT INTO "ArcaIntegrationConfig" ("organizationId","lastResultCode","updatedAt") VALUES (${organizationId}::uuid,'SUCCESS',now())`;
-            active = await db.arcaCredential.create({
-              data: {
-                organizationId,
-                commonName: 'Existing active',
-                legalName: 'Test',
-                cuit: '27110247244',
-                status: 'ACTIVE',
-                generationOperationId: randomUUID(),
-                generationHash: 'a'.repeat(64),
-                privateKeyStorageKey: organizationId + '/' + randomUUID(),
-                csrStorageKey: organizationId + '/' + randomUUID(),
-                certificateStorageKey: organizationId + '/' + randomUUID(),
-                certificateFingerprint: 'existing public fingerprint',
-                certificateSerial: '123',
-                certificateSubject: 'CN=Test',
-                certificateIssuer: 'CN=Test',
-                validFrom: new Date('2026-01-01'),
-                validTo: new Date('2028-01-01'),
-              },
-            });
+            // Raw SQL: the generated client targets the final schema, not this pre-V3 one.
+            activeId = randomUUID();
+            await db.$executeRaw`INSERT INTO "ArcaCredential" (
+              id, "organizationId", "commonName", "legalName", cuit, status,
+              "generationOperationId", "generationHash", "privateKeyStorageKey", "csrStorageKey",
+              "certificateStorageKey", "certificateFingerprint", "certificateSerial", "certificateSubject", "certificateIssuer", "validFrom", "validTo", "updatedAt"
+            ) VALUES (
+              ${activeId}::uuid, ${organizationId}::uuid, 'Existing active', 'Test', '27110247244', 'ACTIVE'::"ArcaCredentialStatus",
+              ${randomUUID()}::uuid, ${'a'.repeat(64)}, ${organizationId + '/' + randomUUID()}, ${organizationId + '/' + randomUUID()},
+              ${organizationId + '/' + randomUUID()}, 'existing public fingerprint', '123', 'CN=Test', 'CN=Test', '2026-01-01T00:00:00Z'::timestamptz, '2028-01-01T00:00:00Z'::timestamptz, '2026-10-27T00:00:00Z'::timestamptz
+            )`;
           }
           for (const name of names.filter((n) => n >= '20261028200000'))
             await cp(join(source, name), join(migrations, name), { recursive: true });
@@ -91,11 +82,15 @@ test(
           ]);
           assert.equal(await db.invoiceFiscalAttempt.count(), 0);
           assert.equal(await db.fiscalSequence.count(), 0);
-          if (active && customerId && organizationId) {
-            assert.deepEqual(
-              await db.arcaCredential.findUniqueOrThrow({ where: { id: active.id } }),
-              active,
-            );
+          if (activeId && customerId && organizationId) {
+            const active = await db.arcaCredential.findUniqueOrThrow({ where: { id: activeId } });
+            assert.equal(active.status, 'ACTIVE');
+            assert.equal(active.version, 1);
+            assert.equal(active.cuit, '27110247244');
+            // Legacy credentials keep issuer = certificate holder after the representation migration.
+            assert.equal(active.certificateHolderCuit, '27110247244');
+            assert.equal(active.certificateFingerprint, 'existing public fingerprint');
+            assert.equal(active.updatedAt.toISOString(), '2026-10-27T00:00:00.000Z');
             const c = await db.customer.findUniqueOrThrow({ where: { id: customerId } });
             assert.equal(c.arcaVatConditionId, null);
             assert.equal(c.taxConditionText, 'Responsable Inscripto');
