@@ -324,6 +324,8 @@ before(
             {
               id: active,
               commonName: 'Synthetic browser fixture',
+              issuerCuit: '27110247244',
+              certificateHolderCuit: '27110247244',
               status: 'ACTIVE',
               version: 1,
               createdAt: at.toISOString(),
@@ -686,6 +688,32 @@ test('Sequence diagnostic reports remote errors, expires, respects access contro
   at = savedTime;
   assert.equal(sends, before);
   assert.equal(await db.invoiceFiscalAttempt.count({ where: { invoiceId: i.id } }), 0);
+});
+
+test('Missing validated IVA and gross income block authorization even with an authenticated credential and a selected POS', async () => {
+  const invoice = await ready();
+  const profile = await db.organizationFiscalProfile.findUniqueOrThrow({
+    where: { organizationId: org },
+  });
+  const sent = sends;
+  try {
+    await db.organizationFiscalProfile.update({
+      where: { organizationId: org },
+      data: { vatCondition: null, grossIncomeRegime: null, grossIncomeNumber: null },
+    });
+    await authorize(invoice, randomUUID(), 400);
+    assert.equal(sends, sent);
+    assert.equal(await db.invoiceFiscalAttempt.count({ where: { invoiceId: invoice.id } }), 0);
+  } finally {
+    await db.organizationFiscalProfile.update({
+      where: { organizationId: org },
+      data: {
+        vatCondition: profile.vatCondition,
+        grossIncomeRegime: profile.grossIncomeRegime,
+        grossIncomeNumber: profile.grossIncomeNumber,
+      },
+    });
+  }
 });
 
 test('READY → CAE, replay, verification and commercial/fiscal immutability', async () => {

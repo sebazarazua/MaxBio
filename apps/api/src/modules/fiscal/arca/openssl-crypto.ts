@@ -5,6 +5,7 @@ import {
   generateKeyPair,
   X509Certificate,
   createPrivateKey,
+  createPublicKey,
   randomBytes,
   sign,
   verify,
@@ -262,6 +263,36 @@ export class OpenSslArcaCrypto implements CmsSigner, OnApplicationBootstrap {
       if (e instanceof ArcaError) throw e;
       throw new ArcaError('CERTIFICATE_INVALID');
     }
+  }
+  /** Local import only: CSR must be valid and belong to the same key and certificate holder. */
+  async validateImport(csr: Buffer, key: Buffer, certificate: Buffer, holder: string, now: Date) {
+    const checked = await this.certificate(certificate, key, holder, now);
+    // Import only WSASS homologation certificates, never production or an arbitrary issuer.
+    const issuer = new X509Certificate(certificate).toLegacyObject().issuer;
+    if (issuer.CN !== 'Computadores Test' || issuer.O !== 'AFIP' || issuer.C !== 'AR')
+      throw new ArcaError('CERTIFICATE_INVALID');
+    if (!csr.length || csr.length > 102400) throw new ArcaError('CERTIFICATE_INVALID');
+    await this.files({ 'request.csr': csr }, async (d) => {
+      const path = join(d, 'request.csr');
+      await this.command(['req', '-in', path, '-verify', '-noout']);
+      const publicKey = await this.command(['req', '-in', path, '-pubkey', '-noout']);
+      const expected = createPublicKey(createPrivateKey(key)).export({
+        type: 'spki',
+        format: 'der',
+      });
+      if (!createPublicKey(publicKey).export({ type: 'spki', format: 'der' }).equals(expected))
+        throw new ArcaError('KEY_MISMATCH');
+      const subject = (
+        await this.command(['req', '-in', path, '-subject', '-noout', '-nameopt', 'RFC2253'])
+      ).toString();
+      if (
+        !new RegExp(`(?:^|,)serialNumber=CUIT ${holder}(?:,|$)`, 'i').test(
+          subject.replace(/^subject=\s*/, '').trim(),
+        )
+      )
+        throw new ArcaError('CUIT_MISMATCH');
+    });
+    return checked;
   }
   async sign(xml: string, key: Buffer, certificate: Buffer) {
     return this.files(

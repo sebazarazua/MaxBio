@@ -150,6 +150,15 @@ export function WsfeSettings() {
                 automáticamente.
               </p>
             ))}
+          {config.references && (
+            <details>
+              <summary>Resultado de la consulta de puntos de venta</summary>
+              <p>
+                FEParamGetPtosVenta: {points.length} puntos habilitados para CAE por ARCA para el
+                emisor de esta organización.
+              </p>
+            </details>
+          )}
           {config.checkedAt && (
             <p>
               Última consulta:{' '}

@@ -231,3 +231,31 @@ test('Credential/tenant/CUIT binding, tampering and near-expiry all fail closed;
     await f.close();
   }
 });
+
+test('Represented issuer and certificate holder both scope persisted tickets and memory after restart', async () => {
+  const f = await fixture(),
+    at = new Date();
+  try {
+    const scope = { ...f.scope, cuit: '30719253136', certificateHolderCuit: '20172868186' };
+    await f.store().save(scope, ticket(at));
+    const restarted = new ArcaTicketProvider({ now: () => at }, f.store());
+    assert.ok(await restarted.restore(scope));
+    assert.equal(
+      restarted.peek(scope.organizationId, scope.credentialId, scope.cuit, '27110247244'),
+      undefined,
+    );
+    assert.equal(
+      await f.store().load({ ...scope, certificateHolderCuit: '27110247244' }, at),
+      undefined,
+    );
+    await f.store().save(scope, ticket(at));
+    assert.equal(await f.store().load({ ...scope, cuit: '27110247244' }, at), undefined);
+    await f.store().save(scope, ticket(at));
+    assert.equal(
+      await f.store().load({ ...scope, certificateHolderCuit: undefined }, at),
+      undefined,
+    );
+  } finally {
+    await f.close();
+  }
+});

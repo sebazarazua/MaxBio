@@ -125,8 +125,7 @@ export class WsfeConfigurationService {
     const parsed = wsfeReferencesSchema.safeParse(config?.wsfeReferences);
     const refs = parsed.success ? parsed.data : null,
       reasons: string[] = [];
-    const credentialReady =
-      readiness.fiscalProfile === 'COMPLETE' && readiness.certificateMatchesKey;
+    const credentialReady = readiness.cuitValid && readiness.certificateMatchesKey;
     const referencesReady = Boolean(
       refs &&
       config?.wsfeCheckedAt &&
@@ -139,8 +138,12 @@ export class WsfeConfigurationService {
       config.pointOfSaleCuit === readiness.cuit &&
       refs?.points.includes(config.pointOfSale),
     );
-    if (readiness.fiscalProfile !== 'COMPLETE' || !readiness.certificateMatchesKey)
-      reasons.push('Completá el perfil fiscal y verificá la credencial activa de homologación.');
+    if (!readiness.certificateMatchesKey || !readiness.cuitValid)
+      reasons.push('Verificá el CUIT emisor y la credencial activa de homologación.');
+    if (readiness.fiscalProfile !== 'COMPLETE')
+      reasons.push(
+        'Completá y verificá los datos fiscales (IVA, domicilio e Ingresos Brutos) antes de emitir. Las consultas de conexión no emiten comprobantes.',
+      );
     if (readiness.access.status !== 'AUTHENTICATED')
       reasons.push(
         readiness.access.retryAfter

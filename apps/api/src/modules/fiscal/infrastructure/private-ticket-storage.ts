@@ -13,6 +13,7 @@ export interface TicketScope {
   organizationId: string;
   credentialId: string;
   cuit: string;
+  certificateHolderCuit?: string;
   privateKeyStorageKey: string;
 }
 export interface PrivateTicketStorage {
@@ -26,6 +27,10 @@ const scopeSchema = z
     organizationId: z.uuidv4(),
     credentialId: z.uuidv4(),
     cuit: z.string().regex(/^\d{11}$/),
+    certificateHolderCuit: z
+      .string()
+      .regex(/^\d{11}$/)
+      .optional(),
     privateKeyStorageKey: z.string(),
   })
   .strict();
@@ -34,6 +39,10 @@ const persisted = z
     organizationId: z.uuidv4(),
     credentialId: z.uuidv4(),
     cuit: z.string().regex(/^\d{11}$/),
+    certificateHolderCuit: z
+      .string()
+      .regex(/^\d{11}$/)
+      .optional(),
     service: z.literal('wsfe'),
     environment: z.literal('HOMOLOGATION'),
     obtainedAt: z.iso.datetime(),
@@ -58,6 +67,9 @@ export class EncryptedPrivateTicketStorage implements PrivateTicketStorage {
       organizationId: scope.organizationId,
       credentialId: scope.credentialId,
       cuit: scope.cuit,
+      ...(scope.certificateHolderCuit && scope.certificateHolderCuit !== scope.cuit
+        ? { certificateHolderCuit: scope.certificateHolderCuit }
+        : {}),
       service: 'wsfe' as const,
       environment: 'HOMOLOGATION' as const,
     };
@@ -122,7 +134,14 @@ export class EncryptedPrivateTicketStorage implements PrivateTicketStorage {
       decipher.setAuthTag(bytes.subarray(17, 33));
       plain = Buffer.concat([decipher.update(bytes.subarray(33)), decipher.final()]);
       const data = persisted.parse(JSON.parse(plain.toString('utf8')));
-      for (const k of ['organizationId', 'credentialId', 'cuit', 'service', 'environment'] as const)
+      for (const k of [
+        'organizationId',
+        'credentialId',
+        'cuit',
+        'certificateHolderCuit',
+        'service',
+        'environment',
+      ] as const)
         if (data[k] !== identity[k]) throw new Error();
       const obtainedAt = new Date(data.obtainedAt),
         expiresAt = new Date(data.expiresAt);

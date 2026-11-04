@@ -1424,7 +1424,10 @@ model ArcaCredential {
   environment ArcaEnvironment @default(HOMOLOGATION)
   commonName String @db.VarChar(64)
   legalName String @db.VarChar(200)
+  // Represented issuer; immutable snapshot for WSFE.
   cuit String @db.VarChar(11)
+  // Certificate subject / WSAA destination. Null supports pre-migration fixtures only.
+  certificateHolderCuit String? @db.VarChar(11)
   status ArcaCredentialStatus @default(CSR_READY)
   version Int @default(1)
   generationOperationId String @db.Uuid

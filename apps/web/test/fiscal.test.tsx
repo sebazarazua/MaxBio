@@ -181,6 +181,8 @@ const credential = (
 ): ArcaReadiness['credentials'][number] => ({
   id,
   commonName: 'MaxBio Homologacion',
+  issuerCuit: '27110247244',
+  certificateHolderCuit: '27110247244',
   status: 'ACTIVE',
   version: 3,
   createdAt: '2026-10-27T20:36:36.542Z',
@@ -380,6 +382,8 @@ test('ARCA UI: generate once, pending request, certificate activation, expiry, e
   const pending = {
     id,
     commonName: 'MaxBio Homologacion',
+    issuerCuit: '27110247244',
+    certificateHolderCuit: '27110247244',
     status: 'CSR_READY' as const,
     version: 1,
     createdAt: '2026-10-27T10:00:00.000Z',
@@ -824,6 +828,25 @@ test('V6 POS: confirmed point is reused and changing it stays collapsed with sev
     assert.equal(details.open, false);
     assert.match(ui.host.textContent!, /Se usará automáticamente en las próximas facturas/);
     assert.deepEqual(posts, ['/api/fiscal/arca/invoicing/prepare']);
+  } finally {
+    await ui.close();
+  }
+});
+
+test('Represented identity shows issuer and certificate holder separately without exposing a private key upload', async () => {
+  const c = credential({ issuerCuit: '30719253136', certificateHolderCuit: '20172868186' });
+  const ui = await mount(
+    <ArcaConnection
+      arca={readiness({ cuit: '30719253136', activeCredentialId: c.id, credentials: [c] })}
+      changed={() => {}}
+    />,
+  );
+  try {
+    assert.match(ui.host.textContent!, /30-71925313-6/);
+    assert.match(ui.host.textContent!, /20-17286818-6/);
+    assert.match(ui.host.textContent!, /CUIT emisor/);
+    assert.match(ui.host.textContent!, /CUIT titular del certificado/);
+    assert.equal(ui.host.querySelector('input[name=privateKey]'), null);
   } finally {
     await ui.close();
   }

@@ -269,6 +269,7 @@ export function ArcaConnection({
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [commonName, setCommonName] = useState('MaxBio Homologacion'),
+    [holderCuit, setHolderCuit] = useState(''),
     [rotate, setRotate] = useState(false),
     [confirmDiscard, setConfirmDiscard] = useState(false);
   const pending = arca.credentials.find((c) => c.id === arca.pendingCredentialId),
@@ -307,6 +308,7 @@ export function ArcaConnection({
       operationId: crypto.randomUUID(),
       expectedVersion: arca.version,
       commonName,
+      ...(holderCuit.trim() ? { certificateHolderCuit: holderCuit } : {}),
       replacePending: rotate,
     };
     const result = await fiscalFetch(
@@ -349,12 +351,15 @@ export function ArcaConnection({
     verified =
       valid &&
       arca.certificateMatchesKey &&
-      arca.fiscalProfile === 'COMPLETE' &&
       Boolean(arca.lastVerifiedAt || arca.access.status === 'AUTHENTICATED'),
     history = arca.credentials.filter((c) => ['REPLACED', 'DISCARDED'].includes(c.status));
   return (
     <section className="catalog-panel arca-settings" aria-labelledby="arca-title">
       <h2 id="arca-title">ARCA</h2>
+      <p>
+        El emisor factura con su CUIT. El titular del certificado puede ser un representante
+        autorizado en ARCA.
+      </p>
       <div className={verified ? 'arca-overview arca-connected' : 'arca-overview'}>
         <h3>Credencial ARCA</h3>
         <p className="arca-connection-state" role="status">
@@ -370,8 +375,16 @@ export function ArcaConnection({
             <dd>Homologación</dd>
           </div>
           <div>
-            <dt>CUIT</dt>
+            <dt>CUIT emisor</dt>
             <dd>{arca.cuit ? formatFiscalCuit(arca.cuit) : 'Pendiente'}</dd>
+          </div>
+          <div>
+            <dt>CUIT titular del certificado</dt>
+            <dd>
+              {(active ?? pending)?.certificateHolderCuit
+                ? formatFiscalCuit((active ?? pending)!.certificateHolderCuit)
+                : 'Pendiente'}
+            </dd>
           </div>
           <div>
             <dt>Certificado</dt>
@@ -617,7 +630,11 @@ export function ArcaConnection({
                     Vigencia: {day(c.validFrom)} — {day(c.validTo)}
                   </p>
                 )}
-                {c.issuer && <p>Emisor: {c.issuer}</p>}
+                {c.issuer && <p>Autoridad certificante: {c.issuer}</p>}
+                <p>
+                  CUIT emisor: {formatFiscalCuit(c.issuerCuit)} · Titular del certificado:{' '}
+                  {formatFiscalCuit(c.certificateHolderCuit)}
+                </p>
                 {c.fingerprint && (
                   <details>
                     <summary>Datos del certificado histórico</summary>
@@ -687,6 +704,24 @@ export function ArcaConnection({
                 maxLength={64}
                 disabled={busy}
               />
+            </label>
+            <label className="field" htmlFor="arca-holder-cuit">
+              CUIT titular del certificado (si representa a otra persona)
+              <input
+                id="arca-holder-cuit"
+                value={holderCuit}
+                maxLength={32}
+                placeholder={arca.cuit ?? 'CUIT del titular'}
+                disabled={busy}
+                onChange={(e) => {
+                  setHolderCuit(e.target.value);
+                  attempt.current = null;
+                }}
+              />
+              <span>
+                Si queda vacío, se utiliza el CUIT emisor. La representación debe estar autorizada
+                en ARCA.
+              </span>
             </label>
             <button
               className="primary-button"

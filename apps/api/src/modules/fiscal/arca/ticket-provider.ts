@@ -13,11 +13,11 @@ export class ArcaTicketProvider {
     private readonly clock: ArcaClock = systemArcaClock,
     private readonly storage?: PrivateTicketStorage,
   ) {}
-  private key(org: string, credential: string, cuit = '') {
-    return `${org}:HOMOLOGATION:wsfe:${credential}:${cuit}`;
+  private key(org: string, credential: string, cuit = '', holder = '') {
+    return `${org}:HOMOLOGATION:wsfe:${credential}:${cuit}${holder && holder !== cuit ? `:${holder}` : ''}`;
   }
-  peek(org: string, credential: string, cuit = '') {
-    const key = this.key(org, credential, cuit),
+  peek(org: string, credential: string, cuit = '', holder = '') {
+    const key = this.key(org, credential, cuit, holder),
       ticket = this.tickets.get(key);
     if (ticket && ticket.expiresAt <= this.clock.now()) {
       this.tickets.delete(key);
@@ -26,10 +26,19 @@ export class ArcaTicketProvider {
     return ticket;
   }
   async restore(scope: TicketScope) {
-    const memory = this.peek(scope.organizationId, scope.credentialId, scope.cuit);
+    const memory = this.peek(
+      scope.organizationId,
+      scope.credentialId,
+      scope.cuit,
+      scope.certificateHolderCuit,
+    );
     if (memory) return memory;
     const ticket = await this.storage?.load(scope, this.clock.now());
-    if (ticket) this.retain(this.key(scope.organizationId, scope.credentialId, scope.cuit), ticket);
+    if (ticket)
+      this.retain(
+        this.key(scope.organizationId, scope.credentialId, scope.cuit, scope.certificateHolderCuit),
+        ticket,
+      );
     return ticket;
   }
   async persist(scope: TicketScope, ticket: AccessTicket) {
@@ -54,8 +63,8 @@ export class ArcaTicketProvider {
   ): Promise<AccessTicket> {
     if (scope && (scope.organizationId !== org || scope.credentialId !== credential))
       return Promise.reject(new ArcaError('CUIT_MISMATCH'));
-    const key = this.key(org, credential, scope?.cuit),
-      ticket = this.peek(org, credential, scope?.cuit);
+    const key = this.key(org, credential, scope?.cuit, scope?.certificateHolderCuit),
+      ticket = this.peek(org, credential, scope?.cuit, scope?.certificateHolderCuit);
     if (ticket && ticket.expiresAt.getTime() - this.clock.now().getTime() > TICKET_MARGIN_MS)
       return Promise.resolve(ticket);
     // WSAA forbids another TA while the preceding TA remains valid (spec 1.2.2).

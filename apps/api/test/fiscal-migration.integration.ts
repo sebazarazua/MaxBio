@@ -95,6 +95,7 @@ test(
               where: { id: activeId },
             });
             assert.equal(active.status, 'ACTIVE');
+            assert.equal(active.certificateHolderCuit, active.cuit);
             assert.equal(active.updatedAt.toISOString(), '2026-10-27T00:00:00.000Z');
             assert.equal(active.replacedAt, null);
             assert.equal(active.discardedAt, null);

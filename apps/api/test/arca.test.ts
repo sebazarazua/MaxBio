@@ -577,3 +577,75 @@ test('FiscalModule wires real WSAA/WSFE clients and the real fiscal provider wit
   assert.equal(binding(FISCAL_PROVIDER).useExisting, ArcaWsfeProvider);
   assert.ok(providers.includes(ArcaWsfeProvider));
 });
+
+test('External representation import validates Javier holder, CSR/key, validity and homologation issuer; WSAA destination is holder, never represented issuer', async () => {
+  const holder = '20172868186',
+    issuer = '30719253136';
+  assert.ok(validCuit(holder) && validCuit(issuer));
+  const generated = await crypto.generate('Javier Alberto Alquezar', holder, 'maxbiohomojavier');
+  const wrong = await crypto.generate('Other', holder, 'other');
+  const code = (expected: string) => (e: unknown) => e instanceof ArcaError && e.code === expected;
+  try {
+    const cert = await wsassCertificate(generated.csr, { cuit: holder, alias: 'maxbiohomojavier' });
+    const checked = await crypto.validateImport(
+      generated.csr,
+      generated.privateKey,
+      cert,
+      holder,
+      now,
+    );
+    assert.equal(checked.commonName, 'maxbiohomojavier');
+    await assert.rejects(
+      crypto.validateImport(generated.csr, wrong.privateKey, cert, holder, now),
+      code('KEY_MISMATCH'),
+    );
+    await assert.rejects(
+      crypto.validateImport(wrong.csr, generated.privateKey, cert, holder, now),
+      code('KEY_MISMATCH'),
+    );
+    await assert.rejects(
+      crypto.validateImport(generated.csr, generated.privateKey, cert, issuer, now),
+      code('CUIT_MISMATCH'),
+    );
+    await assert.rejects(
+      crypto.validateImport(generated.csr, generated.privateKey, cert, holder, new Date(0)),
+      code('CERTIFICATE_INVALID'),
+    );
+    await assert.rejects(
+      crypto.validateImport(
+        generated.csr,
+        generated.privateKey,
+        cert,
+        holder,
+        new Date(now.getTime() + 3 * 86400000),
+      ),
+      code('CERTIFICATE_EXPIRED'),
+    );
+    const production = await wsassCertificate(generated.csr, {
+      cuit: holder,
+      issuer: 'Computadores Production',
+    });
+    await assert.rejects(
+      crypto.validateImport(generated.csr, generated.privateKey, production, holder, now),
+      code('PRODUCTION_BLOCKED'),
+    );
+    const response = soap(ticketXml(now, holder, 'maxbiohomojavier'));
+    assert.ok(parseSoapTicket(response, { cuit: holder, commonName: 'maxbiohomojavier' }, now));
+    assert.throws(
+      () => parseSoapTicket(response, { cuit: issuer, commonName: 'maxbiohomojavier' }, now),
+      ArcaError,
+    );
+    assert.throws(
+      () =>
+        parseSoapTicket(
+          soapFault('coe.notAuthorized'),
+          { cuit: holder, commonName: 'maxbiohomojavier' },
+          now,
+        ),
+      code('SERVICE_UNAUTHORIZED'),
+    );
+  } finally {
+    generated.privateKey.fill(0);
+    wrong.privateKey.fill(0);
+  }
+});

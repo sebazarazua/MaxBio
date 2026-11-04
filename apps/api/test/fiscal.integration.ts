@@ -34,6 +34,11 @@ import {
   EncryptedPrivateTicketStorage,
 } from '../src/modules/fiscal/infrastructure/private-ticket-storage.js';
 import { CMS_SIGNER } from '../src/modules/fiscal/arca/openssl-crypto.js';
+import { WsfeConfigurationService } from '../src/modules/fiscal/application/wsfe-configuration.service.js';
+import { FiscalService } from '../src/modules/fiscal/application/fiscal.service.js';
+import { ArcaWsfeProvider } from '../src/modules/fiscal/arca/wsfe-provider.js';
+import type { ArcaWsfeClient } from '../src/modules/fiscal/arca/wsfe-client.js';
+import type { RequestActorContext } from '../src/common/auth/request-context.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
 import { crypto, ephemeralFiles, testCertificate, wsassCertificate } from './arca-fixtures.js';
 
@@ -899,4 +904,135 @@ test('WSAA retry persistence, original error visibility, restart reservation and
   assert.equal(legacy.canTest, false);
   assert.match(legacy.access.testBlockedReason!, /no está disponible en este proceso/);
   assert.equal(await client.invoiceFiscalAttempt.count(), 0);
+});
+
+test('External credential import: tenant isolation, atomic audit, explicit activation, represented WSFE issuer and preserved Bourbon', async () => {
+  const fiscal = app.get(FiscalService),
+    holder = '20172868186',
+    issuer = '30719253136';
+  const previous = await client.arcaCredential.findMany({ where: { organizationId: org } });
+  const session = await client.session.findUniqueOrThrow({
+    where: { tokenHash: tokenVerifier(cookies[2]!.slice('maxbio-session='.length)) },
+  });
+  const membership = await client.membership.findUniqueOrThrow({
+    where: { id: session.activeMembershipId! },
+  });
+  const c: RequestActorContext = {
+    organizationId: foreign,
+    userId: session.userId,
+    membershipId: membership.id,
+    sessionId: session.id,
+    role: 'ADMIN',
+    requestId: randomUUID(),
+  };
+  await checked(
+    await request(
+      'profile',
+      'PUT',
+      { ...fields, cuit: issuer, legalName: 'MAX BIO S.A.', expectedVersion: 0 },
+      2,
+    ),
+  );
+  const generated = await crypto.generate('Javier Alberto Alquezar', holder, 'maxbiohomojavier');
+  try {
+    const cert = await wsassCertificate(generated.csr, { cuit: holder, alias: 'maxbiohomojavier' });
+    const input = {
+      issuerCuit: issuer,
+      certificateHolderCuit: holder,
+      privateKey: generated.privateKey,
+      csr: generated.csr,
+      certificate: cert,
+      expectedVersion: 0,
+    };
+    const beforeCalls = calls;
+    await assert.rejects(fiscal.importCredential({ ...c, role: 'OPERATOR' }, input));
+    await assert.rejects(fiscal.importCredential({ ...c, organizationId: org }, input));
+    await assert.rejects(fiscal.importCredential(c, { ...input, issuerCuit: '27110247244' }));
+    failAudit = true;
+    try {
+      await assert.rejects(fiscal.importCredential(c, input));
+    } finally {
+      failAudit = false;
+    }
+    assert.equal(await client.arcaCredential.count({ where: { organizationId: foreign } }), 0);
+    assert.deepEqual(await readdir(join(root, foreign)).catch(() => []), []);
+    const imported = await fiscal.importCredential(c, input);
+    assert.equal(imported.status, 'CERTIFICATE_INSTALLED');
+    assert.equal((await fiscal.importCredential(c, input)).id, imported.id);
+    assert.equal(calls, beforeCalls);
+    assert.equal((await readiness(2)).activeCredentialId, null);
+    const second = await crypto.generate('Javier', holder, 'second');
+    try {
+      const secondCert = await wsassCertificate(second.csr, { cuit: holder });
+      await assert.rejects(
+        fiscal.importCredential(c, {
+          ...input,
+          csr: second.csr,
+          privateKey: second.privateKey,
+          certificate: secondCert,
+          expectedVersion: 1,
+        }),
+      );
+    } finally {
+      second.privateKey.fill(0);
+    }
+    await client.organizationFiscalProfile.update({
+      where: { organizationId: foreign },
+      data: { vatCondition: null, grossIncomeRegime: null, grossIncomeNumber: null },
+    });
+    let state = await readiness(2);
+    assert.equal(state.fiscalProfile, 'INCOMPLETE');
+    const credential = state.credentials.find((v) => v.id === imported.id)!;
+    assert.equal(credential.issuerCuit, issuer);
+    assert.equal(credential.certificateHolderCuit, holder);
+    await fiscal.activate(c, imported.id, {
+      expectedVersion: credential.version,
+      expectedConfigVersion: state.version,
+    });
+    await fiscal.testConnection(c);
+    assert.deepEqual(wsaaIdentity, { cuit: holder, commonName: 'maxbiohomojavier' });
+    const provider = new ArcaWsfeProvider(fiscal, {
+      references: async (auth: { cuit: string }) => {
+        assert.equal(auth.cuit, issuer);
+        return { points: [], conditions: { A: [], B: [], C: [] }, documentTypes: [], ivaTypes: [] };
+      },
+    } as unknown as ArcaWsfeClient);
+    assert.equal((await provider.references(c)).cuit, issuer);
+    const configuration = new WsfeConfigurationService(
+      { client } as DatabaseService,
+      app.get(AuditService),
+      fiscal,
+      provider,
+      { now: () => at },
+    );
+    const diagnostic = await configuration.prepare(c);
+    assert.equal(diagnostic.ready, false);
+    assert.equal(diagnostic.checks.find((v) => v.id === 'references')?.ready, true);
+    assert.ok(diagnostic.reasons.some((v) => v.includes('datos fiscales')));
+    assert.deepEqual(diagnostic.references?.points, []);
+
+    await assert.rejects(
+      provider.last(c, { issuerCuit: '27110247244', pointOfSale: 1, documentType: 1 }),
+    );
+    app.get(ArcaTicketProvider).invalidate(foreign);
+    state = await readiness(2);
+    assert.equal(state.access.status, 'AUTHENTICATED');
+    assert.equal(calls, beforeCalls + 1);
+    const audit = await client.auditEvent.findFirstOrThrow({
+      where: {
+        organizationId: foreign,
+        resourceId: imported.id,
+        action: 'ARCA_CREDENTIAL_IMPORTED',
+      },
+    });
+    assert.equal(JSON.stringify(audit.metadata).includes('PRIVATE KEY'), false);
+    assert.deepEqual(
+      await client.arcaCredential.findMany({ where: { organizationId: org } }),
+      previous,
+    );
+    assert.equal(await client.invoiceFiscalAttempt.count(), 0);
+    assert.equal(await client.invoice.count(), 0);
+  } finally {
+    generated.privateKey.fill(0);
+  }
 });

@@ -102,6 +102,8 @@ export const arcaCredentialSchema = z
   .object({
     id: z.uuidv4(),
     commonName: z.string(),
+    issuerCuit: cuitSchema,
+    certificateHolderCuit: cuitSchema,
     status: z.enum(['CSR_READY', 'CERTIFICATE_INSTALLED', 'ACTIVE', 'REPLACED', 'DISCARDED']),
     version: z.number().int().positive(),
     createdAt: z.iso.datetime(),
@@ -167,6 +169,7 @@ export const arcaReadinessSchema = z
 export const arcaGenerateSchema = z
   .object({
     operationId: z.uuidv4(),
+    certificateHolderCuit: cuitSchema.optional(),
     expectedVersion: z.number().int().nonnegative(),
     commonName: z
       .string()

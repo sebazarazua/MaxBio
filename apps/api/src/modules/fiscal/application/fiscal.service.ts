@@ -47,6 +47,8 @@ import { ArcaTicketProvider } from '../arca/ticket-provider.js';
 
 type Tx = Prisma.TransactionClient;
 type Credential = Prisma.ArcaCredentialGetPayload<object>;
+export const certificateHolder = (c: { cuit: string; certificateHolderCuit?: string | null }) =>
+  c.certificateHolderCuit ?? c.cuit;
 type Profile = Prisma.OrganizationFiscalProfileGetPayload<object>;
 const scope = (org: string) => ({ organizationId: org, environment: 'HOMOLOGATION' as const });
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -185,6 +187,14 @@ export class FiscalService {
     if (fiscalCompleteness(profile) !== 'COMPLETE')
       throw new BadRequestException('Completá los datos fiscales antes de configurar la conexión.');
   }
+  private identified(
+    profile: Profile | null,
+  ): asserts profile is Profile & { legalName: string; cuit: string } {
+    if (!profile?.legalName || !profile.cuit || !validCuit(profile.cuit))
+      throw new BadRequestException(
+        'Completá la razón social y el CUIT emisor antes de probar la conexión.',
+      );
+  }
   async getProfile(c: RequestActorContext) {
     this.admin(c);
     return {
@@ -299,7 +309,8 @@ export class FiscalService {
             })
           : null;
         const now = this.clock.now(),
-          complete = fiscalCompleteness(p) === 'COMPLETE';
+          complete = fiscalCompleteness(p) === 'COMPLETE',
+          identityReady = Boolean(p?.legalName && p.cuit && validCuit(p.cuit));
         let filesValid = false;
         if (
           active &&
@@ -313,7 +324,12 @@ export class FiscalService {
               this.storage.read(c.organizationId, active.certificateStorageKey),
             ]);
             try {
-              const checked = await this.crypto.certificate(cert, key, active.cuit, now);
+              const checked = await this.crypto.certificate(
+                cert,
+                key,
+                certificateHolder(active),
+                now,
+              );
               filesValid = checked.fingerprint === active.certificateFingerprint;
             } finally {
               key.fill(0);
@@ -324,7 +340,7 @@ export class FiscalService {
         }
         let ticket;
         let storageError = false;
-        if (active && filesValid && complete) {
+        if (active && filesValid && identityReady) {
           try {
             ticket = await this.tickets.restore(this.ticketScope(c.organizationId, active));
           } catch {
@@ -335,7 +351,7 @@ export class FiscalService {
           ticket &&
           ticket.expiresAt.getTime() - now.getTime() > TICKET_MARGIN_MS &&
           filesValid &&
-          complete,
+          identityReady,
         );
         const waiting = Boolean(
           config?.authBlockedUntil && config.authBlockedUntil > now && !usable,
@@ -385,7 +401,7 @@ export class FiscalService {
                       ['CORRECTABLE', 'TRANSIENT'].includes(wsaaRetryCategory(code))
                     ? 'Hay una pausa mínima de seguridad. Corregí la causa informada antes de volver a probar.'
                     : 'El último intento quedó sin un acceso utilizable y pudo haber creado un TA. Se conserva la espera por seguridad.'
-              : !complete
+              : !identityReady
                 ? 'Completá los datos fiscales del emisor.'
                 : !filesValid
                   ? 'Se requiere una credencial activa vigente y un certificado que corresponda a su clave.'
@@ -408,13 +424,19 @@ export class FiscalService {
           ),
           certificateMatchesKey: filesValid,
           canTest: Boolean(
-            !storageError && complete && filesValid && (openssl || usable) && (!waiting || usable),
+            !storageError &&
+            identityReady &&
+            filesValid &&
+            (openssl || usable) &&
+            (!waiting || usable),
           ),
           activeCredentialId: active?.id ?? null,
           pendingCredentialId: pending?.id ?? null,
           credentials: records.map((r) => ({
             id: r.id,
             commonName: r.commonName,
+            issuerCuit: r.cuit,
+            certificateHolderCuit: certificateHolder(r),
             status: r.status,
             version: r.version,
             createdAt: r.createdAt.toISOString(),
@@ -485,6 +507,110 @@ export class FiscalService {
       /* DB outcome uncertain: keep files, never delete a possibly committed credential. */
     }
   }
+  /** Server-only administrative import. No controller, no browser upload of private keys. */
+  async importCredential(
+    c: RequestActorContext,
+    input: {
+      issuerCuit: string;
+      certificateHolderCuit: string;
+      privateKey: Buffer;
+      csr: Buffer;
+      certificate: Buffer;
+      expectedVersion: number;
+    },
+  ) {
+    this.admin(c);
+    if (!validCuit(input.issuerCuit) || !validCuit(input.certificateHolderCuit))
+      throw new BadRequestException('CUIT inválido.');
+    const checked = await this.crypto.validateImport(
+      input.csr,
+      input.privateKey,
+      input.certificate,
+      input.certificateHolderCuit,
+      this.clock.now(),
+    );
+    const id = randomUUID(),
+      keys: string[] = [];
+    try {
+      return await this.write(c, async (tx) => {
+        const profile = await tx.organizationFiscalProfile.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        if (profile?.cuit !== input.issuerCuit || !profile.legalName)
+          throw new ArcaError('CUIT_MISMATCH');
+        const existing = await tx.arcaCredential.findFirst({
+          where: {
+            ...scope(c.organizationId),
+            certificateFingerprint: checked.fingerprint,
+            status: { in: ['ACTIVE', 'CERTIFICATE_INSTALLED'] },
+          },
+        });
+        if (existing) {
+          if (
+            existing.cuit !== input.issuerCuit ||
+            certificateHolder(existing) !== input.certificateHolderCuit
+          )
+            throw new ArcaError('CUIT_MISMATCH');
+          return { id: existing.id, status: existing.status, imported: false };
+        }
+        const config = await tx.arcaIntegrationConfig.findUnique({
+          where: { organizationId: c.organizationId },
+        });
+        this.version(config?.version ?? 0, input.expectedVersion);
+        await this.active(tx, c.organizationId);
+        if (
+          await tx.arcaCredential.findFirst({
+            where: {
+              ...scope(c.organizationId),
+              status: { in: ['CSR_READY', 'CERTIFICATE_INSTALLED'] },
+            },
+          })
+        )
+          throw new ConflictException(
+            'Ya hay una credencial pendiente. Revisala antes de importar otra.',
+          );
+        keys.push(await this.storage.put(c.organizationId, input.privateKey));
+        keys.push(await this.storage.put(c.organizationId, input.csr));
+        keys.push(await this.storage.put(c.organizationId, Buffer.from(checked.pem)));
+        await tx.arcaCredential.create({
+          data: {
+            id,
+            organizationId: c.organizationId,
+            cuit: input.issuerCuit,
+            certificateHolderCuit: input.certificateHolderCuit,
+            legalName: profile.legalName,
+            commonName: checked.commonName,
+            status: 'CERTIFICATE_INSTALLED',
+            generationOperationId: randomUUID(),
+            generationHash: digest({
+              fingerprint: checked.fingerprint,
+              issuer: input.issuerCuit,
+              holder: input.certificateHolderCuit,
+            }),
+            privateKeyStorageKey: keys[0]!,
+            csrStorageKey: keys[1]!,
+            certificateStorageKey: keys[2]!,
+            certificateFingerprint: checked.fingerprint,
+            certificateSerial: checked.serial,
+            certificateSubject: checked.subject,
+            certificateIssuer: checked.issuer,
+            validFrom: checked.validFrom,
+            validTo: checked.validTo,
+          },
+        });
+        await tx.arcaIntegrationConfig.upsert({
+          where: { organizationId: c.organizationId },
+          create: { organizationId: c.organizationId },
+          update: { version: { increment: 1 } },
+        });
+        await this.audit.success(c, 'ARCA_CREDENTIAL_IMPORTED', 'ArcaCredential', id, tx);
+        return { id, status: 'CERTIFICATE_INSTALLED', imported: true };
+      });
+    } catch (e) {
+      await this.cleanup(c.organizationId, id, keys);
+      throw e;
+    }
+  }
   async generate(c: RequestActorContext, input: ArcaGenerate) {
     const id = randomUUID(),
       keys: string[] = [];
@@ -521,7 +647,11 @@ export class FiscalService {
           where: { organizationId: c.organizationId },
         });
         this.complete(p);
-        const generated = await this.crypto.generate(p.legalName, p.cuit, input.commonName);
+        const generated = await this.crypto.generate(
+          p.legalName,
+          input.certificateHolderCuit ?? p.cuit,
+          input.commonName,
+        );
         try {
           keys.push(await this.storage.put(c.organizationId, generated.privateKey));
           keys.push(await this.storage.put(c.organizationId, generated.csr));
@@ -549,6 +679,7 @@ export class FiscalService {
             commonName: input.commonName,
             legalName: p.legalName,
             cuit: p.cuit,
+            certificateHolderCuit: input.certificateHolderCuit ?? p.cuit,
             generationOperationId: input.operationId,
             generationHash: hash,
             privateKeyStorageKey: keys[0]!,
@@ -599,7 +730,7 @@ export class FiscalService {
           checked = await this.crypto.certificate(
             Buffer.from(input.certificateBase64, 'base64'),
             key,
-            p.cuit,
+            certificateHolder(row),
             this.clock.now(),
           );
         } finally {
@@ -645,14 +776,14 @@ export class FiscalService {
       const p = await tx.organizationFiscalProfile.findUnique({
         where: { organizationId: c.organizationId },
       });
-      this.complete(p);
+      this.identified(p);
       if (row.cuit !== p.cuit) throw new ArcaError('CUIT_MISMATCH');
       const key = await this.storage.read(c.organizationId, row.privateKeyStorageKey);
       try {
         await this.crypto.certificate(
           await this.storage.read(c.organizationId, row.certificateStorageKey),
           key,
-          p.cuit,
+          certificateHolder(row),
           this.clock.now(),
         );
       } finally {
@@ -765,7 +896,7 @@ export class FiscalService {
       const p = await tx.organizationFiscalProfile.findUnique({
         where: { organizationId: c.organizationId },
       });
-      this.complete(p);
+      this.identified(p);
       if (!active?.certificateStorageKey) throw new ArcaError('CERTIFICATE_MISSING');
       if (active.cuit !== p.cuit) throw new ArcaError('CUIT_MISMATCH');
       const state = certificateState(active, this.clock.now());
@@ -798,7 +929,7 @@ export class FiscalService {
             const { commonName } = await this.crypto.certificate(
               certificate,
               key,
-              identity.cuit,
+              certificateHolder(identity),
               this.clock.now(),
             );
             const tra = this.tra.create(this.clock.now()),
@@ -811,7 +942,7 @@ export class FiscalService {
               const p = await tx.organizationFiscalProfile.findUnique({
                 where: { organizationId: c.organizationId },
               });
-              this.complete(p);
+              this.identified(p);
               if (
                 row.status !== 'ACTIVE' ||
                 row.version !== identity.version ||
@@ -845,7 +976,7 @@ export class FiscalService {
             try {
               const ticket = await this.wsaa.login(
                 cms,
-                { cuit: identity.cuit, commonName },
+                { cuit: certificateHolder(identity), commonName },
                 this.clock.now(),
               );
               if (ticket.expiresAt.getTime() - this.clock.now().getTime() <= TICKET_MARGIN_MS)
@@ -1004,6 +1135,9 @@ export class FiscalService {
       organizationId: org,
       credentialId: credential.id,
       cuit: credential.cuit,
+      ...(certificateHolder(credential) !== credential.cuit
+        ? { certificateHolderCuit: certificateHolder(credential) }
+        : {}),
       privateKeyStorageKey: credential.privateKeyStorageKey,
     };
   }

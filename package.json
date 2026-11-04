@@ -28,7 +28,8 @@
     "db:migrate": "pnpm --filter @maxbio/database migrate:deploy",
     "db:migrate:dev": "pnpm --filter @maxbio/database migrate:dev",
     "db:seed": "pnpm --filter @maxbio/database build && pnpm --filter @maxbio/database seed",
-    "db:studio": "pnpm --filter @maxbio/database studio"
+    "db:studio": "pnpm --filter @maxbio/database studio",
+    "arca:import": "pnpm prepare:packages && pnpm --filter @maxbio/api arca:import"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",
